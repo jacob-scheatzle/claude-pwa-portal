@@ -18,7 +18,7 @@ from portal.db import get_db
 from portal.deps import require_admin
 from portal.models import ApiToken, User
 from portal.security import check_csrf, hash_password, validate_password
-from portal.settings_store import get_setting, set_setting, smtp_config
+from portal.settings_store import get_setting, set_secret, set_setting, smtp_config
 from portal.smtp import send_message
 from portal.web import flash, render
 
@@ -69,7 +69,7 @@ def settings_save(
     set_setting(db, "smtp_port", smtp_port.strip())
     set_setting(db, "smtp_username", smtp_username.strip())
     if smtp_password:
-        set_setting(db, "smtp_password", smtp_password)
+        set_secret(db, "smtp_password", smtp_password)
     set_setting(db, "smtp_from", smtp_from.strip())
     set_setting(db, "smtp_use_tls", "true" if smtp_use_tls == "on" else "false")
     db.commit()

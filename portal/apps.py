@@ -280,6 +280,7 @@ async def install_bundle(
     bundle: UploadFile,
     *,
     allow_replace: bool = False,
+    expected_slug: Optional[str] = None,
 ) -> InstallResult:
     """Validate, extract, and register a child-app zip.
 
@@ -287,6 +288,11 @@ async def install_bundle(
     ``UploadError`` is raised. When True, the on-disk app directory is swapped
     atomically and the matching DB row is updated in place; per-user storage
     under ``data/storage/<slug>/`` is left untouched.
+
+    When ``expected_slug`` is set, the manifest's slug must match it; otherwise
+    an ``UploadError`` is raised before any filesystem or DB mutation. Used by
+    the replace endpoints to prevent a cross-slug overwrite where a bundle
+    whose manifest names slug "B" is uploaded to the URL for slug "A".
 
     Raises ``UploadError`` on any failure.
     """
@@ -298,6 +304,12 @@ async def install_bundle(
         # Blocking zip/file work moves to a worker thread so we don't block the
         # event loop on large uploads. DB writes stay on the main thread.
         manifest = await anyio.to_thread.run_sync(_prepare_bundle, tmp_path)
+
+        if expected_slug is not None and manifest.slug != expected_slug:
+            raise UploadError(
+                f"Bundle slug '{manifest.slug}' does not match URL slug "
+                f"'{expected_slug}'."
+            )
 
         existing = db.exec(select(App).where(App.slug == manifest.slug)).first()
         apps_root = _apps_root()
@@ -416,17 +428,13 @@ async def admin_apps_replace(
     if app_row is None:
         raise HTTPException(404)
     try:
-        result = await install_bundle(db, admin, bundle, allow_replace=True)
+        result = await install_bundle(
+            db, admin, bundle, allow_replace=True, expected_slug=slug,
+        )
     except UploadError as e:
         return render(
             request, "admin_apps_upload.html",
             user=admin, error=str(e), status_code=400,
-        )
-    if result.slug != slug:
-        # The uploaded manifest's slug doesn't match the URL slug.
-        raise HTTPException(
-            400,
-            f"Bundle slug '{result.slug}' does not match URL slug '{slug}'.",
         )
     flash(request, f"Replaced ‘{result.name}’ (slug: {result.slug})")
     return RedirectResponse("/admin/apps", status_code=303)
@@ -447,14 +455,11 @@ async def api_apps_replace(
     if app_row is None:
         raise HTTPException(404, f"App '{slug}' not found")
     try:
-        result = await install_bundle(db, user, bundle, allow_replace=True)
+        result = await install_bundle(
+            db, user, bundle, allow_replace=True, expected_slug=slug,
+        )
     except UploadError as e:
         raise HTTPException(400, str(e))
-    if result.slug != slug:
-        raise HTTPException(
-            400,
-            f"Bundle slug '{result.slug}' does not match URL slug '{slug}'.",
-        )
     return {
         "slug": result.slug,
         "name": result.name,

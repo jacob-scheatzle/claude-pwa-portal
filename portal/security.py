@@ -1,4 +1,5 @@
 import secrets
+from typing import Optional
 
 import bcrypt
 from fastapi import HTTPException, Request
@@ -38,4 +39,12 @@ def csrf_token(request: Request) -> str:
 def check_csrf(request: Request, submitted: str) -> None:
     expected = request.session.get("_csrf")
     if not expected or not submitted or not secrets.compare_digest(expected, submitted):
+        raise HTTPException(403, "CSRF check failed")
+
+
+def check_csrf_header(request: Request, x_csrf: Optional[str]) -> None:
+    """CSRF check for JSON/fetch endpoints that read the token from a header
+    (X-CSRF-Token) rather than a form field. Logic mirrors ``check_csrf``."""
+    expected = request.session.get("_csrf")
+    if not expected or not x_csrf or not secrets.compare_digest(expected, x_csrf):
         raise HTTPException(403, "CSRF check failed")

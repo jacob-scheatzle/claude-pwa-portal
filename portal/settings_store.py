@@ -1,24 +1,35 @@
 """Read/write helpers for the Setting key/value table, plus SMTP resolution."""
 from __future__ import annotations
 
+import base64
+import hashlib
 from typing import Optional
 
-from itsdangerous import BadSignature, URLSafeSerializer
+from cryptography.fernet import Fernet, InvalidToken
 from sqlmodel import Session
 
 from portal.config import settings
 from portal.models import Setting
 
-# Marker prefix for encrypted-at-rest secrets in the Setting table.
-# Values written via set_secret() use this prefix; values without it are
-# treated as legacy plaintext for backward compatibility.
-_SECRET_PREFIX = "enc:v1:"
+# Marker prefix for AEAD-encrypted-at-rest secrets in the Setting table.
+# v2 = Fernet (AES-128-CBC + HMAC-SHA256), key derived from settings.secret_key.
+# v1 = legacy itsdangerous.URLSafeSerializer payloads (signed-but-not-encrypted);
+#      read-side migration path only — never written by this module.
+_FERNET_PREFIX = "enc:v2:"
+_LEGACY_V1_PREFIX = "enc:v1:"
 
 
-def _serializer() -> URLSafeSerializer:
-    # Bound to settings.secret_key so rotating the key invalidates old ciphertexts;
-    # legacy plaintext keeps working regardless of key rotation.
-    return URLSafeSerializer(settings.secret_key, salt="settings_store.secret.v1")
+def _fernet() -> Fernet:
+    """Build a Fernet bound to settings.secret_key.
+
+    Fernet requires a 32-byte urlsafe-base64-encoded key, so we derive one
+    deterministically by SHA-256-ing the configured secret_key. Rotating the
+    SECRET_KEY therefore invalidates previously-encrypted values — the same
+    coupling that already exists for session cookies, so this is acceptable.
+    """
+    key_bytes = hashlib.sha256(settings.secret_key.encode("utf-8")).digest()
+    fernet_key = base64.urlsafe_b64encode(key_bytes)
+    return Fernet(fernet_key)
 
 
 def get_setting(db: Session, key: str, default: Optional[str] = None) -> Optional[str]:
@@ -42,33 +53,55 @@ def set_setting(db: Session, key: str, value: Optional[str]) -> None:
 def get_secret(db: Session, key: str, default: Optional[str] = None) -> Optional[str]:
     """Read a secret value.
 
-    If the stored value carries the ``enc:v1:`` prefix it is decrypted with the
-    settings.secret_key-bound serializer. If it lacks the prefix it is treated
-    as legacy plaintext and returned unchanged — this lets pre-existing SMTP
-    passwords keep working after upgrade. Rows are rewritten encrypted the
-    next time set_secret() runs for that key.
+    Values with the ``enc:v2:`` prefix are Fernet-decrypted. Values with the
+    legacy ``enc:v1:`` prefix (itsdangerous-signed-but-not-encrypted) are
+    best-effort decoded as a migration aid; the next set_secret() call rewrites
+    them under v2. Values with neither prefix are treated as legacy plaintext
+    and returned unchanged.
     """
-    raw = get_setting(db, key, None)
-    if raw is None:
+    stored = get_setting(db, key)
+    if stored is None:
         return default
-    if not raw.startswith(_SECRET_PREFIX):
-        # Legacy plaintext passthrough — encrypted on next set_secret().
-        return raw
-    payload = raw[len(_SECRET_PREFIX):]
-    try:
-        return _serializer().loads(payload)
-    except BadSignature:
-        # Tampered or wrong key — refuse to return garbage; behave as if unset.
-        return default
+
+    if stored.startswith(_FERNET_PREFIX):
+        try:
+            token = stored[len(_FERNET_PREFIX):].encode("ascii")
+            return _fernet().decrypt(token).decode("utf-8")
+        except InvalidToken:
+            # Key was rotated or storage was tampered with. Don't expose
+            # garbage; treat as missing so callers fall back to env config.
+            return default
+
+    if stored.startswith(_LEGACY_V1_PREFIX):
+        # The v1 scheme used itsdangerous.URLSafeSerializer, which signs but
+        # does not encrypt. The payload before the `.` is base64-urlsafe JSON.
+        # We accept it without verifying the HMAC (we don't know the original
+        # salt was 'settings_store.secret.v1' for all installs, and v1 was a
+        # security bug anyway). Best-effort decode; on any failure, behave as
+        # if unset so callers fall back to env config.
+        try:
+            import json as _json
+
+            payload = stored[len(_LEGACY_V1_PREFIX):].split(".", 1)[0]
+            padded = payload + "=" * (-len(payload) % 4)
+            raw = base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
+            # URLSafeSerializer JSON-encodes its argument, so a string becomes
+            # a JSON string literal. Decode it if so; otherwise return as-is.
+            return _json.loads(raw) if raw.startswith('"') else raw
+        except Exception:
+            return default
+
+    # Legacy plaintext passthrough — will be re-encrypted on next set_secret().
+    return stored
 
 
 def set_secret(db: Session, key: str, value: Optional[str]) -> None:
-    """Upsert an encrypted secret. Empty/None clears the row."""
+    """Upsert an encrypted secret using Fernet (AEAD). Empty/None clears the row."""
     if value is None or value == "":
         set_setting(db, key, None)
         return
-    token = _serializer().dumps(value)
-    set_setting(db, key, f"{_SECRET_PREFIX}{token}")
+    token = _fernet().encrypt(value.encode("utf-8")).decode("ascii")
+    set_setting(db, key, _FERNET_PREFIX + token)
 
 
 def smtp_config(db: Session) -> dict:

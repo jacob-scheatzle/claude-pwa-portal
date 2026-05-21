@@ -99,7 +99,7 @@ await portal.pdf.download({
 const blob = await portal.pdf.render({ html: "...", filename: "..." });
 ```
 
-The HTML you pass is rendered server-side. You can include `<style>` blocks. External resources need to be inline or fetchable from the portal origin.
+The HTML you pass is rendered server-side. You can include `<style>` blocks and inline CSS. External resources (images, fonts) are blocked by a strict URL fetcher and must be embedded as `data:` URIs.
 
 ### Email
 ```js

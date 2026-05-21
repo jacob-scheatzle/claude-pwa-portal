@@ -262,6 +262,12 @@ def login_submit(
             status_code=401,
         )
     _clear_login_failures(key)
+    # Rotate the session on login to defeat session fixation: a pre-planted
+    # session id (MITM before TLS terminated, leaked link, etc.) must not
+    # survive the auth boundary. Clearing the dict changes its signed value,
+    # so Starlette emits a fresh Set-Cookie. _csrf is regenerated lazily by
+    # the next render call.
+    request.session.clear()
     request.session["user_id"] = user.id
     return RedirectResponse(_safe_next(next), status_code=303)
 
@@ -309,6 +315,11 @@ def profile_change_password(
     user.password_hash = hash_password(new_password)
     db.add(user)
     db.commit()
+    # Rotate the session after a successful password change: this invalidates
+    # any other sessions that may have been hijacked under the old password,
+    # forcing the attacker out while keeping the current browser signed in.
+    request.session.clear()
+    request.session["user_id"] = user.id
     flash(request, "Password updated.")
     return RedirectResponse("/profile", status_code=303)
 

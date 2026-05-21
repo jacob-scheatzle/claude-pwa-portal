@@ -11,6 +11,13 @@
 		Referrer-Policy "strict-origin-when-cross-origin"
 		Permissions-Policy "camera=(), microphone=(), geolocation=()"
 		Cross-Origin-Opener-Policy "same-origin"
+		# Portal-shell CSP. Stricter than the child-app CSP below: no 'unsafe-eval',
+		# no blob:, no data: in default-src. 'unsafe-inline' is required because
+		# base.html ships an inline <script> for service-worker registration and
+		# templates use inline <style>. frame-ancestors 'none' blocks a malicious
+		# child app from iframing the shell. The @apps matcher below overwrites
+		# this header for /apps/* (Caddy `header` directives set/replace by default).
+		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
 	}
 
 	# Child apps shipped under /apps/<slug>/ are written with Claude and rely on

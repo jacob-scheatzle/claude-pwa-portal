@@ -78,12 +78,21 @@ def _resolve_app_slug(
     header — a malicious child app at ``/apps/evil/`` could set it to
     ``finance-app`` and read another app's namespace. For cookie auth we
     extract the slug from the Origin/Referer URL path instead.
+
+    The decision is driven by ``request.state.auth_method`` (set by
+    ``current_user_or_token``), NOT by the raw Authorization header. That
+    matters because a malicious page can send any ``Authorization: Bearer …``
+    string — when the token is invalid the dep falls back to cookie auth, and
+    we must apply the cookie-side Referer check in that case.
     """
-    auth = request.headers.get("authorization", "")
-    is_token = auth.lower().startswith("bearer ")
-    if is_token:
+    auth_method = getattr(request.state, "auth_method", None)
+    if auth_method == "token":
         slug = x_portal_app  # token clients can name any app
-    else:
+        if not slug:
+            raise HTTPException(
+                400, "X-Portal-App header required for token auth"
+            )
+    elif auth_method == "cookie":
         ref = request.headers.get("referer", "") or request.headers.get("origin", "")
         m = _REFERER_APP_RE.match(ref)
         if not m:
@@ -93,6 +102,10 @@ def _resolve_app_slug(
                 "token with X-Portal-App",
             )
         slug = m.group(1)
+    else:
+        # No authenticated session and no valid token — callers should have
+        # been rejected by _require_user first, but be defensive.
+        raise HTTPException(401, "Authentication required")
     return _require_app(db, slug)
 
 
@@ -307,7 +320,18 @@ def storage_get(
     if not target.is_file():
         raise HTTPException(404)
     mt, _ = mimetypes.guess_type(str(target))
-    return FileResponse(target, media_type=mt or "application/octet-stream")
+    # Force download rather than inline rendering. A malicious child app
+    # could otherwise stash an `evil.html` then trick the user into clicking
+    # /api/v1/storage/evil.html — served same-origin as text/html, that's an
+    # XSS pivot into the portal. Content-Disposition: attachment neutralizes
+    # it. Sanitize the basename so the filename can't break out of the header.
+    basename = Path(safe).name or "download"
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", basename) or "download"
+    return FileResponse(
+        target,
+        media_type=mt or "application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{safe_name}"'},
+    )
 
 
 @router.put("/storage/{key:path}")

@@ -20,6 +20,9 @@ def current_user(
     user_id = request.session.get("user_id")
     if user_id is None:
         return None
+    # Record how this request authenticated so downstream code (e.g. the
+    # storage app-slug resolver) can distinguish cookie vs bearer auth.
+    request.state.auth_method = "cookie"
     return db.get(User, user_id)
 
 
@@ -28,7 +31,13 @@ def current_user_or_token(
     db: Annotated[Session, Depends(get_db)],
     authorization: Annotated[Optional[str], Header()] = None,
 ) -> Optional[User]:
-    """Accept either a session cookie or `Authorization: Bearer <token>`."""
+    """Accept either a session cookie or `Authorization: Bearer <token>`.
+
+    Sets ``request.state.auth_method`` to ``"token"`` when the bearer header
+    resolved to a valid ApiToken, or ``"cookie"`` when the session cookie
+    authenticated the request. An invalid bearer that falls through to cookie
+    auth produces ``"cookie"`` — callers MUST NOT trust the raw header.
+    """
     if authorization and authorization.lower().startswith("bearer "):
         raw = authorization[7:].strip()
         if raw:
@@ -46,10 +55,16 @@ def current_user_or_token(
                     api_token.last_used_at = now
                     db.add(api_token)
                     db.commit()
+                request.state.auth_method = "token"
                 return db.get(User, api_token.created_by)
+            # Invalid bearer: deliberately fall through to cookie auth for
+            # back-compat, but DO NOT set auth_method="token" — the bearer
+            # was bogus, so any "I'm a token client" privileges (e.g. naming
+            # an arbitrary app via X-Portal-App) must not apply.
     user_id = request.session.get("user_id")
     if user_id is None:
         return None
+    request.state.auth_method = "cookie"
     return db.get(User, user_id)
 
 
