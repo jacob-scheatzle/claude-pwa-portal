@@ -7,6 +7,7 @@ from sqlmodel import Session, select
 
 from portal.db import get_db
 from portal.models import ApiToken, User
+from portal.sessions import get_active_session, touch_session
 
 # Only persist a token's last_used_at when this much time has elapsed since the
 # previous write, to avoid a commit on every authenticated API request.
@@ -17,13 +18,18 @@ def current_user(
     request: Request,
     db: Annotated[Session, Depends(get_db)],
 ) -> Optional[User]:
-    user_id = request.session.get("user_id")
-    if user_id is None:
+    # Authoritative auth state lives in the UserSession table; the cookie is
+    # just a pointer. Legacy cookies that only carry "user_id" (no
+    # "session_id") are intentionally invalid — those users re-login.
+    session_id = request.session.get("session_id")
+    session_row = get_active_session(db, session_id)
+    if session_row is None:
         return None
+    touch_session(db, session_row)
     # Record how this request authenticated so downstream code (e.g. the
     # storage app-slug resolver) can distinguish cookie vs bearer auth.
     request.state.auth_method = "cookie"
-    return db.get(User, user_id)
+    return db.get(User, session_row.user_id)
 
 
 def current_user_or_token(
@@ -61,11 +67,13 @@ def current_user_or_token(
             # back-compat, but DO NOT set auth_method="token" — the bearer
             # was bogus, so any "I'm a token client" privileges (e.g. naming
             # an arbitrary app via X-Portal-App) must not apply.
-    user_id = request.session.get("user_id")
-    if user_id is None:
+    session_id = request.session.get("session_id")
+    session_row = get_active_session(db, session_id)
+    if session_row is None:
         return None
+    touch_session(db, session_row)
     request.state.auth_method = "cookie"
-    return db.get(User, user_id)
+    return db.get(User, session_row.user_id)
 
 
 def require_user(user: Annotated[Optional[User], Depends(current_user)]) -> User:

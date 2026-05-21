@@ -22,6 +22,7 @@ from portal.security import (
     validate_password,
     verify_password,
 )
+from portal.sessions import create_session, revoke_all_for_user, revoke_session
 from portal.settings_store import get_setting, set_setting
 from portal.web import STATIC_DIR, flash, render
 
@@ -213,7 +214,9 @@ def setup_submit(
     db.commit()
     db.refresh(user)
 
-    request.session["user_id"] = user.id
+    # create_session needs user.id, which only exists after the commit above.
+    sid = create_session(db, user)
+    request.session["session_id"] = sid
     return RedirectResponse("/", status_code=303)
 
 
@@ -268,16 +271,21 @@ def login_submit(
     # so Starlette emits a fresh Set-Cookie. _csrf is regenerated lazily by
     # the next render call.
     request.session.clear()
-    request.session["user_id"] = user.id
+    sid = create_session(db, user)
+    request.session["session_id"] = sid
     return RedirectResponse(_safe_next(next), status_code=303)
 
 
 @app.post("/logout")
 def logout(
     request: Request,
+    db: DbDep,
     csrf: Annotated[str, Form(alias="_csrf")] = "",
 ):
     check_csrf(request, csrf)
+    # Revoke the server-side row BEFORE clearing the cookie so a stolen
+    # pre-logout cookie can't continue to authenticate.
+    revoke_session(db, request.session.get("session_id"))
     request.session.clear()
     return RedirectResponse("/login", status_code=303)
 
@@ -315,11 +323,14 @@ def profile_change_password(
     user.password_hash = hash_password(new_password)
     db.add(user)
     db.commit()
-    # Rotate the session after a successful password change: this invalidates
-    # any other sessions that may have been hijacked under the old password,
-    # forcing the attacker out while keeping the current browser signed in.
+    # Rotate the session after a successful password change: revoke every
+    # active session for this user (logging out other devices that may have
+    # been hijacked under the old password) and mint a fresh one for the
+    # current browser so the user stays signed in here.
+    revoke_all_for_user(db, user.id)
+    new_sid = create_session(db, user)
     request.session.clear()
-    request.session["user_id"] = user.id
+    request.session["session_id"] = new_sid
     flash(request, "Password updated.")
     return RedirectResponse("/profile", status_code=303)
 

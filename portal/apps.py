@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Annotated, Optional
 
 import anyio
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, Field, ValidationError, field_validator
 from sqlmodel import Session, select
@@ -443,14 +443,20 @@ async def admin_apps_replace(
 @router.put("/api/v1/apps/{slug}")
 async def api_apps_replace(
     slug: str,
+    request: Request,
     db: DbDep,
     user: TokenUserDep,
     bundle: UploadFile = File(...),
+    x_csrf: Annotated[Optional[str], Header(alias="X-CSRF-Token")] = None,
 ):
     if user is None:
         raise HTTPException(401, "Sign in required")
     if user.role != "admin":
         raise HTTPException(403, "Admin role required")
+    # Cross-module import: both routers are siblings under the same app; a
+    # dedicated shared module for one helper would be over-engineering.
+    from portal.api import _require_csrf_for_cookie
+    _require_csrf_for_cookie(request, x_csrf)
     app_row = db.exec(select(App).where(App.slug == slug)).first()
     if app_row is None:
         raise HTTPException(404, f"App '{slug}' not found")

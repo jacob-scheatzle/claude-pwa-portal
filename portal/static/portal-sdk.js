@@ -25,12 +25,48 @@
 		return h;
 	}
 
-	async function call(path, opts) {
+	// Lazy CSRF token cache. Populated on first state-changing call; cleared
+	// and refetched once if the server rejects with 403 (e.g. session rotated
+	// across login/logout while the SDK held a stale token).
+	var _csrfToken = null;
+	async function getCsrf() {
+		if (_csrfToken) return _csrfToken;
+		try {
+			var res = await fetch("/api/v1/csrf-token", { credentials: "same-origin" });
+			if (!res.ok) return null; // bearer-auth or unauthenticated — caller skips the header
+			var data = await res.json();
+			_csrfToken = data && data.csrf_token ? data.csrf_token : null;
+			return _csrfToken;
+		} catch (_) {
+			return null;
+		}
+	}
+
+	var CSRF_METHODS = ["POST", "PUT", "DELETE", "PATCH"];
+
+	async function call(path, opts, _retried) {
 		opts = opts || {};
 		opts.credentials = "same-origin";
-		opts.headers = buildHeaders(opts.headers);
+		var method = (opts.method || "GET").toUpperCase();
+		if (CSRF_METHODS.indexOf(method) !== -1) {
+			var csrf = await getCsrf();
+			if (csrf) {
+				opts.headers = buildHeaders(opts.headers);
+				opts.headers["X-CSRF-Token"] = csrf;
+			} else {
+				opts.headers = buildHeaders(opts.headers);
+			}
+		} else {
+			opts.headers = buildHeaders(opts.headers);
+		}
 		var res = await fetch("/api/v1" + path, opts);
 		if (!res.ok) {
+			// Single-shot retry on a 403 in case the cached CSRF went stale
+			// (e.g. user logged out + back in). Capped at one retry to avoid loops.
+			if (res.status === 403 && !_retried && CSRF_METHODS.indexOf(method) !== -1) {
+				_csrfToken = null;
+				return call(path, opts, true);
+			}
 			var detail = res.statusText;
 			try {
 				var body = await res.clone().json();

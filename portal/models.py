@@ -45,3 +45,15 @@ class ApiToken(SQLModel, table=True):
     created_by: int = Field(foreign_key="user.id")
     created_at: datetime = Field(default_factory=_utcnow)
     last_used_at: Optional[datetime] = None
+
+
+class UserSession(SQLModel, table=True):
+    # Server-side session record. The cookie payload only carries the opaque
+    # ``id`` (a random token); auth state lives here so logout / password
+    # change can revoke a session even though its signed cookie is still
+    # within its max_age window. Name avoids colliding with sqlmodel.Session.
+    id: str = Field(primary_key=True)
+    user_id: int = Field(foreign_key="user.id", index=True)
+    created_at: datetime = Field(default_factory=_utcnow)
+    last_seen_at: datetime = Field(default_factory=_utcnow)
+    revoked_at: Optional[datetime] = None

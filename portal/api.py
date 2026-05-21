@@ -51,6 +51,27 @@ def _require_admin(user: Optional[User]) -> User:
     return me
 
 
+def _require_csrf_for_cookie(request: Request, x_csrf: Optional[str]) -> None:
+    """Skip for bearer tokens; require X-CSRF-Token for cookie sessions.
+
+    Cookie-auth callers are subject to CSRF because a malicious cross-origin
+    page can ride the browser's session cookie. Bearer-token callers
+    (the Claude skill, server-to-server) carry the token explicitly and so
+    are not subject to CSRF — they skip this check entirely.
+
+    Note: this is defense-in-depth on top of SameSite=Lax. It does NOT
+    protect against a malicious same-origin child app at /apps/evil/,
+    which can read the CSRF token via /api/v1/csrf-token just like any
+    other same-origin script. The structural fix for that is separate
+    origins per child app.
+    """
+    auth_method = getattr(request.state, "auth_method", None)
+    if auth_method == "token":
+        return
+    from portal.security import check_csrf_header
+    check_csrf_header(request, x_csrf)
+
+
 def _require_app(db: Session, slug: Optional[str]) -> App:
     if not slug:
         raise HTTPException(400, "X-Portal-App header missing")
@@ -117,6 +138,21 @@ def user_me(user: UserDep):
     return {"id": me.id, "email": me.email, "role": me.role}
 
 
+@router.get("/csrf-token")
+def get_csrf_token(request: Request, user: UserDep):
+    """Return the current cookie session's CSRF token.
+
+    Cookie auth required. Bearer-token clients don't need a CSRF token
+    (they're not subject to CSRF) — they get a 400 if they call this.
+    """
+    _require_user(user)
+    auth_method = getattr(request.state, "auth_method", None)
+    if auth_method != "cookie":
+        raise HTTPException(400, "CSRF token only relevant for cookie auth")
+    from portal.security import csrf_token as _csrf_token
+    return {"csrf_token": _csrf_token(request)}
+
+
 # ----- /pdf -----
 
 class PdfRequest(BaseModel):
@@ -140,8 +176,14 @@ def _no_external_fetcher(url, timeout=10, ssl_context=None):
 
 
 @router.post("/pdf/render")
-def pdf_render(req: PdfRequest, user: UserDep):
+def pdf_render(
+    req: PdfRequest,
+    request: Request,
+    user: UserDep,
+    x_csrf: Annotated[Optional[str], Header(alias="X-CSRF-Token")] = None,
+):
     _require_user(user)
+    _require_csrf_for_cookie(request, x_csrf)
     try:
         from weasyprint import HTML  # lazy: avoid hard import at startup
     except ImportError:
@@ -226,8 +268,15 @@ def _enforce_recipient_allowlist(to_list: list[str], allowed: Optional[set[str]]
 
 
 @router.post("/email/send")
-def email_send(req: EmailRequest, user: UserDep, db: DbDep):
+def email_send(
+    req: EmailRequest,
+    request: Request,
+    user: UserDep,
+    db: DbDep,
+    x_csrf: Annotated[Optional[str], Header(alias="X-CSRF-Token")] = None,
+):
     me = _require_user(user)
+    _require_csrf_for_cookie(request, x_csrf)
     cfg = smtp_config(db)
     if not cfg["host"]:
         raise HTTPException(503, "Email service unavailable: SMTP not configured")
@@ -341,8 +390,10 @@ async def storage_put(
     user: UserDep,
     db: DbDep,
     x_portal_app: AppHeader = None,
+    x_csrf: Annotated[Optional[str], Header(alias="X-CSRF-Token")] = None,
 ):
     me = _require_user(user)
+    _require_csrf_for_cookie(request, x_csrf)
     app_row = _resolve_app_slug(request, me, x_portal_app, db)
     safe = _validate_key(key)
     ns = _ns_dir(app_row.slug, me.id)
@@ -388,8 +439,10 @@ async def storage_put(
 def storage_delete(
     key: str, request: Request, user: UserDep, db: DbDep,
     x_portal_app: AppHeader = None,
+    x_csrf: Annotated[Optional[str], Header(alias="X-CSRF-Token")] = None,
 ):
     me = _require_user(user)
+    _require_csrf_for_cookie(request, x_csrf)
     app_row = _resolve_app_slug(request, me, x_portal_app, db)
     safe = _validate_key(key)
     ns = _ns_dir(app_row.slug, me.id)
@@ -408,11 +461,14 @@ def storage_delete(
 
 @router.post("/apps/upload")
 async def apps_upload(
+    request: Request,
     user: UserDep,
     db: DbDep,
     bundle: UploadFile = File(...),
+    x_csrf: Annotated[Optional[str], Header(alias="X-CSRF-Token")] = None,
 ):
     admin = _require_admin(user)
+    _require_csrf_for_cookie(request, x_csrf)
     try:
         result = await install_bundle(db, admin, bundle)
     except UploadError as e:
