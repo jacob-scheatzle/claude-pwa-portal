@@ -1,0 +1,10 @@
+{
+	"slug": "REPLACE-ME",
+	"name": "REPLACE ME",
+	"version": "0.1.0",
+	"description": "Replace with a one-line description.",
+	"icon": "icon.png",
+	"entry": "index.html",
+	"services": [],
+	"min_portal_version": "0.1.0"
+}

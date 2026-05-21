@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Portal — {{ user.email }}{% endblock %}
+{% block content %}
+<h1>Apps</h1>
+
+{% if apps %}
+<div class="tile-grid">
+	{% for app in apps %}
+	<a class="tile" href="/apps/{{ app.slug }}/">
+		{% if app.icon %}
+		<img src="/apps/{{ app.slug }}/{{ app.icon }}" alt="">
+		{% else %}
+		<img src="/static/icons/icon-192.png" alt="">
+		{% endif %}
+		<span>{{ app.name }}</span>
+	</a>
+	{% endfor %}
+</div>
+{% else %}
+<div class="empty">
+	<h2>No apps yet</h2>
+	<p>Your portal is empty.</p>
+	{% if user.role == "admin" %}
+	<p><a href="/admin/apps/upload" class="nav-link">Upload your first app</a>.</p>
+	{% else %}
+	<p>Ask your admin to upload one.</p>
+	{% endif %}
+</div>
+{% endif %}
+{% endblock %}

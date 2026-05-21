@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Set up your portal{% endblock %}
+{% block content %}
+<h1>Welcome — set up your portal</h1>
+<p>Create the admin account. You can add staff later from the dashboard.</p>
+
+{% if errors %}
+<div class="error"><ul>{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul></div>
+{% endif %}
+
+<form method="post" action="/setup" autocomplete="off">
+	<div>
+		<label for="email">Admin email</label>
+		<input type="email" name="email" id="email" required value="{{ email|default('') }}">
+	</div>
+	<div>
+		<label for="password">Password</label>
+		<input type="password" name="password" id="password" required minlength="8" autocomplete="new-password">
+		<div class="hint">At least 8 characters.</div>
+	</div>
+	<div>
+		<label for="password_confirm">Confirm password</label>
+		<input type="password" name="password_confirm" id="password_confirm" required minlength="8" autocomplete="new-password">
+	</div>
+	<div>
+		<label for="site_url">Site URL</label>
+		<input type="text" name="site_url" id="site_url" required value="{{ site_url|default(site_url_default or 'localhost') }}">
+		<div class="hint">Your domain, a CNAME, or your VPS sslip.io address.</div>
+	</div>
+	<button type="submit">Create admin account</button>
+</form>
+{% endblock %}

@@ -1,0 +1,10 @@
+{
+	"slug": "hello-receipt",
+	"name": "Hello Receipt",
+	"version": "0.1.0",
+	"description": "Reference child app: form → PDF + email + saved history. Demonstrates every portal SDK service.",
+	"icon": "icon.png",
+	"entry": "index.html",
+	"services": ["pdf", "email", "storage"],
+	"min_portal_version": "0.1.0"
+}

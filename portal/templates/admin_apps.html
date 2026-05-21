@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Apps — Portal admin{% endblock %}
+{% block container_class %}wide{% endblock %}
+{% block content %}
+<div class="row-between">
+	<h1>Apps</h1>
+	<a href="/admin/apps/upload"><button type="button">Upload</button></a>
+</div>
+
+{% if apps %}
+<table class="apps">
+	<thead>
+		<tr>
+			<th>Name</th>
+			<th>Slug</th>
+			<th>Version</th>
+			<th>Status</th>
+			<th></th>
+		</tr>
+	</thead>
+	<tbody>
+		{% for app in apps %}
+		<tr>
+			<td><strong>{{ app.name }}</strong>{% if app.description %}<div class="hint">{{ app.description }}</div>{% endif %}</td>
+			<td><code>{{ app.slug }}</code></td>
+			<td>{{ app.version }}</td>
+			<td>
+				{% if app.enabled %}
+				<span class="pill on">enabled</span>
+				{% else %}
+				<span class="pill off">disabled</span>
+				{% endif %}
+			</td>
+			<td class="actions">
+				<a class="nav-link" href="/apps/{{ app.slug }}/" target="_blank">Open</a>
+				<form method="post" action="/admin/apps/{{ app.slug }}/toggle" style="display:inline;">
+					<button class="linkish" type="submit">{{ 'Disable' if app.enabled else 'Enable' }}</button>
+				</form>
+				<form method="post" action="/admin/apps/{{ app.slug }}/delete" style="display:inline;"
+					onsubmit="return confirm('Delete {{ app.name }}? This removes the app and its files on disk.');">
+					<button class="linkish danger" type="submit">Delete</button>
+				</form>
+			</td>
+		</tr>
+		{% endfor %}
+	</tbody>
+</table>
+{% else %}
+<div class="empty">
+	<h2>No apps yet</h2>
+	<p><a href="/admin/apps/upload">Upload your first app</a>.</p>
+</div>
+{% endif %}
+{% endblock %}

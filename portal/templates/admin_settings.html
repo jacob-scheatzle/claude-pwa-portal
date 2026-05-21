@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Settings — Portal admin{% endblock %}
+{% block content %}
+<h1>Settings</h1>
+
+<form method="post" action="/admin/settings" autocomplete="off">
+	<fieldset>
+		<legend>Portal</legend>
+		<div>
+			<label for="site_url">Site URL</label>
+			<input type="text" name="site_url" id="site_url" value="{{ site_url }}" required>
+			<div class="hint">Used in links and surfaced to the Claude skill. Caddy/DNS changes still need a redeploy.</div>
+		</div>
+	</fieldset>
+
+	<fieldset>
+		<legend>SMTP (outgoing email)</legend>
+		<p class="hint">DB values override <code>.env</code>. Leave any field blank to fall back to the env value.</p>
+		<div>
+			<label for="smtp_host">Host</label>
+			<input type="text" name="smtp_host" id="smtp_host" value="{{ smtp_host }}" placeholder="e.g. smtp.gmail.com">
+		</div>
+		<div style="display:grid; grid-template-columns:1fr 1fr; gap:0.75rem;">
+			<div>
+				<label for="smtp_port">Port</label>
+				<input type="number" name="smtp_port" id="smtp_port" value="{{ smtp_port }}" placeholder="587">
+			</div>
+			<div style="display:flex; align-items:end; padding-bottom:0.4rem;">
+				<label style="font-weight:500;"><input type="checkbox" name="smtp_use_tls" {% if smtp_use_tls %}checked{% endif %}> Use STARTTLS</label>
+			</div>
+		</div>
+		<div class="hint">STARTTLS for 587. Port 465 uses implicit SSL automatically.</div>
+		<div>
+			<label for="smtp_username">Username</label>
+			<input type="text" name="smtp_username" id="smtp_username" value="{{ smtp_username }}" autocomplete="off">
+		</div>
+		<div>
+			<label for="smtp_password">Password</label>
+			<input type="password" name="smtp_password" id="smtp_password" placeholder="{% if smtp_password_set %}•••••••• (stored — leave blank to keep){% else %}not set{% endif %}" autocomplete="new-password">
+		</div>
+		<div>
+			<label for="smtp_from">From address</label>
+			<input type="text" name="smtp_from" id="smtp_from" value="{{ smtp_from }}" placeholder='"PWA Portal" &lt;noreply@example.com&gt;'>
+		</div>
+	</fieldset>
+
+	<button type="submit">Save</button>
+</form>
+
+<form method="post" action="/admin/settings/smtp/test" style="margin-top:1rem;">
+	<button type="submit" class="linkish">Send test email to my account</button>
+</form>
+{% endblock %}

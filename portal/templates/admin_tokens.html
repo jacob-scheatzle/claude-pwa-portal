@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}API tokens — Portal admin{% endblock %}
+{% block container_class %}wide{% endblock %}
+{% block content %}
+<h1>API tokens</h1>
+<p>Bearer tokens for the Claude skill and other automation. Treat them like passwords — anyone with a token acts as the user who created it.</p>
+
+{% if last_token %}
+<div class="flash" style="background:#fef3c7; color:#854d0e;">
+	<strong>Save this token now</strong> — it won't be shown again.<br>
+	<strong>{{ last_token_name }}</strong>
+	<code style="display:block; padding:0.5rem; margin-top:0.5rem; font-size:0.85rem; word-break:break-all; background:rgba(0,0,0,0.08); border-radius:0.25rem;">{{ last_token }}</code>
+</div>
+{% endif %}
+
+<form method="post" action="/admin/tokens" style="margin-top:1.5rem;">
+	<div style="display:flex; gap:0.5rem; align-items:end;">
+		<div style="flex:1;">
+			<label for="name">Token name</label>
+			<input type="text" name="name" id="name" required placeholder="e.g. claude-skill" maxlength="80">
+		</div>
+		<button type="submit">Create token</button>
+	</div>
+</form>
+
+{% if tokens %}
+<table class="apps" style="margin-top:1.5rem;">
+	<thead>
+		<tr>
+			<th>Name</th>
+			<th>Prefix</th>
+			<th>Created</th>
+			<th>Last used</th>
+			<th></th>
+		</tr>
+	</thead>
+	<tbody>
+		{% for t in tokens %}
+		<tr>
+			<td><strong>{{ t.name }}</strong></td>
+			<td><code>{{ t.prefix }}…</code></td>
+			<td>{{ t.created_at.strftime("%Y-%m-%d") }}</td>
+			<td>{% if t.last_used_at %}{{ t.last_used_at.strftime("%Y-%m-%d %H:%M UTC") }}{% else %}—{% endif %}</td>
+			<td>
+				<form method="post" action="/admin/tokens/{{ t.id }}/delete" style="display:inline;" onsubmit="return confirm('Revoke {{ t.name }}? Anyone using this token will be locked out.');">
+					<button class="linkish danger" type="submit">Revoke</button>
+				</form>
+			</td>
+		</tr>
+		{% endfor %}
+	</tbody>
+</table>
+{% else %}
+<p class="hint" style="margin-top:1.5rem;">No tokens yet.</p>
+{% endif %}
+{% endblock %}

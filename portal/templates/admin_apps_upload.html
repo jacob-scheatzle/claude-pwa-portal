@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Upload app — Portal admin{% endblock %}
+{% block content %}
+<h1>Upload an app</h1>
+<p>Drop in a <code>.zip</code> with a <code>portal.json</code> at the root. Max 50&nbsp;MB.</p>
+
+{% if error %}
+<div class="error">{{ error }}</div>
+{% endif %}
+
+<form method="post" action="/admin/apps/upload" enctype="multipart/form-data">
+	<div>
+		<label for="bundle">App bundle (.zip)</label>
+		<input type="file" name="bundle" id="bundle" accept=".zip,application/zip" required>
+	</div>
+	<button type="submit">Upload</button>
+</form>
+
+<p style="margin-top:2rem;"><a href="/admin/apps" class="nav-link">&larr; Back to apps</a></p>
+
+<details style="margin-top:2rem;">
+	<summary><strong>portal.json schema</strong></summary>
+	<pre>{
+  "slug": "my-app",            // required, kebab-case, 2&ndash;40 chars
+  "name": "My App",            // required, 1&ndash;60 chars
+  "version": "0.1.0",          // required
+  "description": "...",        // optional, &le;200 chars
+  "icon": "icon.png",          // optional, relative path in zip
+  "entry": "index.html",       // optional, default index.html
+  "services": ["pdf","email"], // optional; allowed: pdf, email, storage
+  "min_portal_version": "0.1"  // optional
+}</pre>
+</details>
+{% endblock %}
