@@ -9,6 +9,7 @@
 {% endif %}
 
 <form method="post" action="/admin/apps/upload" enctype="multipart/form-data">
+	<input type="hidden" name="_csrf" value="{{ csrf_token }}">
 	<div>
 		<label for="bundle">App bundle (.zip)</label>
 		<input type="file" name="bundle" id="bundle" accept=".zip,application/zip" required>

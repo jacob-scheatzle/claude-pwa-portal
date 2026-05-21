@@ -34,10 +34,12 @@
 			<td class="actions">
 				<a class="nav-link" href="/apps/{{ app.slug }}/" target="_blank">Open</a>
 				<form method="post" action="/admin/apps/{{ app.slug }}/toggle" style="display:inline;">
+					<input type="hidden" name="_csrf" value="{{ csrf_token }}">
 					<button class="linkish" type="submit">{{ 'Disable' if app.enabled else 'Enable' }}</button>
 				</form>
 				<form method="post" action="/admin/apps/{{ app.slug }}/delete" style="display:inline;"
 					onsubmit="return confirm('Delete {{ app.name }}? This removes the app and its files on disk.');">
+					<input type="hidden" name="_csrf" value="{{ csrf_token }}">
 					<button class="linkish danger" type="submit">Delete</button>
 				</form>
 			</td>

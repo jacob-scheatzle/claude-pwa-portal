@@ -2,12 +2,17 @@
 """Upload a packaged PWA Portal app zip to a portal.
 
 Usage:
-    upload.py <zip_path> [--portal-url URL] [--token TOKEN]
+    upload.py <zip_path> [--replace] [--portal-url URL] [--token TOKEN]
 
 Defaults are read (in order) from:
     1. CLI flags
     2. PORTAL_URL / PORTAL_TOKEN environment variables
     3. ~/.config/pwa-portal/config.json (created by configure.py)
+
+When --replace is passed, the script targets `PUT /api/v1/apps/<slug>`
+(in-place update; per-user storage is preserved). The slug is read from the
+zip's `portal.json`. Without --replace, the script POSTs to
+`/api/v1/apps/upload` and the portal rejects an existing slug.
 """
 from __future__ import annotations
 
@@ -18,6 +23,7 @@ import secrets
 import sys
 import urllib.error
 import urllib.request
+import zipfile
 from pathlib import Path
 
 CONFIG_PATH = Path.home() / ".config" / "pwa-portal" / "config.json"
@@ -45,9 +51,33 @@ def build_multipart(zip_path: Path) -> tuple[bytes, str]:
     return b"".join(parts), boundary
 
 
+def read_slug_from_zip(zip_path: Path) -> str:
+    try:
+        with zipfile.ZipFile(zip_path) as zf:
+            with zf.open("portal.json") as f:
+                manifest = json.load(f)
+    except (KeyError, zipfile.BadZipFile) as e:
+        raise SystemExit(
+            f"Could not read portal.json from {zip_path}: {e}"
+        )
+    except json.JSONDecodeError as e:
+        raise SystemExit(f"portal.json in {zip_path} is not valid JSON: {e}")
+    slug = manifest.get("slug")
+    if not isinstance(slug, str) or not slug:
+        raise SystemExit(
+            f"portal.json in {zip_path} is missing a 'slug' field."
+        )
+    return slug
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Upload a portal app zip.")
     parser.add_argument("zip_path", help="Path to the packaged .zip")
+    parser.add_argument(
+        "--replace",
+        action="store_true",
+        help="Replace an existing app in place (preserves per-user storage).",
+    )
     parser.add_argument("--portal-url", help="Portal base URL (e.g. https://portal.example.com)")
     parser.add_argument("--token", help="API token (from <portal_url>/admin/tokens)")
     args = parser.parse_args()
@@ -78,11 +108,17 @@ def main() -> int:
         return 1
 
     body, boundary = build_multipart(zip_path)
-    url = f"{portal_url}/api/v1/apps/upload"
+    if args.replace:
+        slug = read_slug_from_zip(zip_path)
+        url = f"{portal_url}/api/v1/apps/{slug}"
+        method = "PUT"
+    else:
+        url = f"{portal_url}/api/v1/apps/upload"
+        method = "POST"
     req = urllib.request.Request(
         url,
         data=body,
-        method="POST",
+        method=method,
         headers={
             "Authorization": f"Bearer {token}",
             "Content-Type": f"multipart/form-data; boundary={boundary}",
@@ -114,8 +150,9 @@ def main() -> int:
         print(response_body)
         return 0
 
+    verb = "Replaced" if args.replace else "Uploaded"
     print(
-        f"Uploaded {result.get('name')} "
+        f"{verb} {result.get('name')} "
         f"(slug: {result.get('slug')}, version: {result.get('version')})"
     )
     print(f"Live at: {portal_url}/apps/{result.get('slug')}/")

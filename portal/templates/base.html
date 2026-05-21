@@ -194,7 +194,9 @@
 			<a href="/admin/settings" class="nav-link">Settings</a>
 			<a href="/admin/tokens" class="nav-link">Tokens</a>
 			{% endif %}
+			<a href="/profile" class="nav-link">Profile</a>
 			<form method="post" action="/logout" style="margin:0;">
+				<input type="hidden" name="_csrf" value="{{ csrf_token }}">
 				<button type="submit" class="linkish">Sign out ({{ user.email }})</button>
 			</form>
 		</nav>

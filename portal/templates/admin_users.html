@@ -22,6 +22,7 @@
 			</td>
 			<td>
 				<form method="post" action="/admin/users/{{ u.id }}/role" style="display:inline;">
+					<input type="hidden" name="_csrf" value="{{ csrf_token }}">
 					<select name="role" onchange="this.form.submit()" {% if u.id == user.id %}disabled title="Use another admin to change your own role"{% endif %}>
 						<option value="admin" {% if u.role == "admin" %}selected{% endif %}>admin</option>
 						<option value="user" {% if u.role == "user" %}selected{% endif %}>user</option>
@@ -33,12 +34,14 @@
 				<details>
 					<summary class="linkish">Reset password</summary>
 					<form method="post" action="/admin/users/{{ u.id }}/reset-password" style="margin-top:0.5rem; display:flex; gap:0.5rem;">
+						<input type="hidden" name="_csrf" value="{{ csrf_token }}">
 						<input type="password" name="password" required minlength="8" placeholder="New password" autocomplete="new-password">
 						<button type="submit">Set</button>
 					</form>
 				</details>
 				{% if u.id != user.id %}
 				<form method="post" action="/admin/users/{{ u.id }}/delete" style="display:inline;" onsubmit="return confirm('Delete {{ u.email }}?');">
+					<input type="hidden" name="_csrf" value="{{ csrf_token }}">
 					<button class="linkish danger" type="submit">Delete</button>
 				</form>
 				{% endif %}
@@ -50,6 +53,7 @@
 
 <h2 style="margin-top:2rem;">Add user</h2>
 <form method="post" action="/admin/users" style="max-width:24rem;">
+	<input type="hidden" name="_csrf" value="{{ csrf_token }}">
 	<div>
 		<label for="new_email">Email</label>
 		<input type="email" name="email" id="new_email" required>

@@ -1,5 +1,5 @@
 import hashlib
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Annotated, Optional
 
 from fastapi import Depends, Header, HTTPException, Request, status
@@ -7,6 +7,10 @@ from sqlmodel import Session, select
 
 from portal.db import get_db
 from portal.models import ApiToken, User
+
+# Only persist a token's last_used_at when this much time has elapsed since the
+# previous write, to avoid a commit on every authenticated API request.
+_TOKEN_LAST_USED_REFRESH = timedelta(seconds=60)
 
 
 def current_user(
@@ -33,9 +37,15 @@ def current_user_or_token(
                 select(ApiToken).where(ApiToken.token_hash == token_hash)
             ).first()
             if api_token is not None:
-                api_token.last_used_at = datetime.now(timezone.utc)
-                db.add(api_token)
-                db.commit()
+                now = datetime.now(timezone.utc)
+                last = api_token.last_used_at
+                # Treat naive last_used_at as UTC for the comparison.
+                if last is not None and last.tzinfo is None:
+                    last = last.replace(tzinfo=timezone.utc)
+                if last is None or (now - last) > _TOKEN_LAST_USED_REFRESH:
+                    api_token.last_used_at = now
+                    db.add(api_token)
+                    db.commit()
                 return db.get(User, api_token.created_by)
     user_id = request.session.get("user_id")
     if user_id is None:

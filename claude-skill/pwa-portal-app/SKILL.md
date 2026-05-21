@@ -224,12 +224,23 @@ f.onsubmit = async (e) => {
 
 ## Re-uploading an updated app
 
-The portal currently rejects uploads whose slug already exists. To ship an update:
-1. Delete the existing app at `<portal_url>/admin/apps` (or via API).
-2. Bump `version` in `portal.json`.
-3. Package + upload as usual.
+To ship an update in place, preserving per-user storage:
 
-(A non-destructive "update" flow lands in a later portal release.)
+1. Bump `version` in `portal.json`.
+2. Repackage:
+   ```
+   python3 ~/.claude/skills/pwa-portal-app/scripts/package.py /path/to/<slug>
+   ```
+3. Upload with `--replace`:
+   ```
+   python3 ~/.claude/skills/pwa-portal-app/scripts/upload.py --replace /path/to/<slug>-<version>.zip
+   ```
+   On success prints `Replaced <name> (slug: ..., version: ...)`. Per-user data
+   under `data/storage/<slug>/<user_id>/*` is left untouched.
+
+Omitting `--replace` keeps the original behavior: the portal rejects an upload
+whose slug already exists. Use that for first-time installs, and `--replace`
+for updates. Avoid deleting and re-uploading — deletion wipes per-user storage.
 
 ## Things to remember
 

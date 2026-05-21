@@ -14,6 +14,7 @@
 {% endif %}
 
 <form method="post" action="/admin/tokens" style="margin-top:1.5rem;">
+	<input type="hidden" name="_csrf" value="{{ csrf_token }}">
 	<div style="display:flex; gap:0.5rem; align-items:end;">
 		<div style="flex:1;">
 			<label for="name">Token name</label>
@@ -43,6 +44,7 @@
 			<td>{% if t.last_used_at %}{{ t.last_used_at.strftime("%Y-%m-%d %H:%M UTC") }}{% else %}—{% endif %}</td>
 			<td>
 				<form method="post" action="/admin/tokens/{{ t.id }}/delete" style="display:inline;" onsubmit="return confirm('Revoke {{ t.name }}? Anyone using this token will be locked out.');">
+					<input type="hidden" name="_csrf" value="{{ csrf_token }}">
 					<button class="linkish danger" type="submit">Revoke</button>
 				</form>
 			</td>

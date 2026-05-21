@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Profile — {{ user.email }}{% endblock %}
+{% block content %}
+<h1>Your profile</h1>
+
+<dl style="display:grid; grid-template-columns:auto 1fr; gap:0.35rem 1rem; margin:1rem 0 2rem;">
+	<dt style="font-weight:600; opacity:0.75;">Email</dt>
+	<dd style="margin:0;">{{ user.email }}</dd>
+	<dt style="font-weight:600; opacity:0.75;">Role</dt>
+	<dd style="margin:0;">{{ user.role }}</dd>
+</dl>
+
+{% if errors %}
+<div class="error"><ul>{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul></div>
+{% endif %}
+
+<h2 style="font-size:1.15rem; margin-top:2rem;">Change password</h2>
+<form method="post" action="/profile/change-password" autocomplete="off">
+	<input type="hidden" name="_csrf" value="{{ csrf_token }}">
+	<div>
+		<label for="old_password">Current password</label>
+		<input type="password" name="old_password" id="old_password" required autocomplete="current-password">
+	</div>
+	<div>
+		<label for="new_password">New password</label>
+		<input type="password" name="new_password" id="new_password" required minlength="8" autocomplete="new-password">
+		<div class="hint">At least 8 characters.</div>
+	</div>
+	<div>
+		<label for="new_password_confirm">Confirm new password</label>
+		<input type="password" name="new_password_confirm" id="new_password_confirm" required minlength="8" autocomplete="new-password">
+	</div>
+	<button type="submit">Update password</button>
+</form>
+{% endblock %}

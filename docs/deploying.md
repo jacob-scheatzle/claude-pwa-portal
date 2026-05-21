@@ -54,6 +54,16 @@ SMTP_USE_TLS=true
 
 If you're using a custom domain, point its A record at your VPS IP *before* the first `docker compose up`. Caddy will request a Let's Encrypt cert on startup.
 
+## 2.5. Secure the env file
+
+`.env` holds your `SECRET_KEY` and (optionally) SMTP credentials. Lock it down so only the deploying user can read it:
+
+```bash
+chmod 600 .env
+```
+
+Anyone with read access to this file can forge session cookies and read your SMTP password.
+
 ## 3. Boot it
 
 ```bash
@@ -175,3 +185,17 @@ The reset command prompts you for the new password.
 - **Token blast radius:** API tokens act as the user who created them. Treat admin-created tokens like admin passwords; revoke unused ones.
 - **Backups encryption:** SQLite files contain hashed passwords (bcrypt) but also plaintext SMTP credentials. Encrypt backup destinations.
 - **Outbound network:** if your VPS firewall blocks outbound traffic, allow your SMTP host on the relevant port (usually 587 or 465). Public SMTP usage is often blocked on residential ISPs; cloud VPSes are typically fine.
+
+## Production hardening checklist
+
+Run through these before you point real users at the portal:
+
+- [ ] `chmod 600 .env` — only the deploying user can read secrets.
+- [ ] `COOKIES_SECURE=true` in `.env` (now the default in `.env.example`).
+- [ ] SMTP password is encrypted at rest in the SQLite DB (automatic — nothing to configure).
+- [ ] Back up `data/` regularly (see [Backups](#backups) above).
+- [ ] Plan for `SECRET_KEY` rotation — it boots every user out, so ideally only rotate on confirmed compromise.
+- [ ] Restrict outbound network on the VPS to your SMTP host(s) (egress firewall / security group).
+- [ ] Don't share the host with untrusted users — the SQLite DB on disk contains SMTP credentials (encrypted, but the decryption key lives next to it in `.env`).
+- [ ] The Dockerfile now runs as UID 1001. The `data/` directory on the host must be writable by that uid; if you see permission errors after first boot, run `chown -R 1001:1001 data/` on the host and `docker compose restart portal`.
+- [ ] *(Optional, further hardening)* Try `read_only: true` on the portal service in `docker-compose.yml`. The container already gets `tmpfs: [/tmp]` for scratch space; `/data` stays writable via the bind mount. Test thoroughly before relying on it — some libraries write outside the expected paths.

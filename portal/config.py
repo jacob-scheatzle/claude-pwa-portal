@@ -29,6 +29,12 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
+if settings.secret_key == "change-me-before-running-in-production" and settings.site_url != "localhost":
+    raise RuntimeError(
+        "SECRET_KEY is the placeholder value; refusing to start with "
+        f"site_url={settings.site_url!r}. Set SECRET_KEY in .env."
+    )
+
 
 def ensure_data_dir() -> Path:
     p = Path(settings.data_dir)

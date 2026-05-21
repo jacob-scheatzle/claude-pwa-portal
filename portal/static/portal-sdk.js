@@ -11,6 +11,10 @@
 	var pathMatch = window.location.pathname.match(/^\/apps\/([^\/]+)/);
 	var appSlug = pathMatch ? pathMatch[1] : null;
 
+	function requireAppSlug() {
+		if (!appSlug) throw new Error("Portal SDK: this script must be loaded from /apps/<slug>/...; current path is " + window.location.pathname);
+	}
+
 	function encKey(k) {
 		return String(k).split("/").map(encodeURIComponent).join("/");
 	}
@@ -96,6 +100,7 @@
 
 		storage: {
 			async put(key, value) {
+				requireAppSlug();
 				var body, ct;
 				if (value instanceof Blob) {
 					body = value;
@@ -104,8 +109,12 @@
 					body = value;
 					ct = "text/plain; charset=utf-8";
 				} else {
-					body = JSON.stringify(value);
-					ct = "application/json";
+					try {
+						body = JSON.stringify(value);
+						ct = "application/json";
+					} catch (e) {
+						throw new Error("portal.storage.put: value is not JSON-serializable: " + e.message);
+					}
 				}
 				var res = await call("/storage/" + encKey(key), {
 					method: "PUT",
@@ -115,16 +124,25 @@
 				return res.json();
 			},
 			async get(key) {
+				requireAppSlug();
 				var res = await call("/storage/" + encKey(key));
 				var ct = res.headers.get("Content-Type") || "";
-				if (ct.indexOf("application/json") === 0) return res.json();
+				if (ct.indexOf("application/json") === 0) {
+					try {
+						return await res.json();
+					} catch (e) {
+						throw new Error("portal.storage.get(" + key + "): stored value is not valid JSON: " + e.message);
+					}
+				}
 				if (ct.indexOf("text/") === 0) return res.text();
 				return res.blob();
 			},
 			async list() {
+				requireAppSlug();
 				return (await call("/storage")).json();
 			},
 			async delete(key) {
+				requireAppSlug();
 				return (await call("/storage/" + encKey(key), { method: "DELETE" })).json();
 			},
 		},

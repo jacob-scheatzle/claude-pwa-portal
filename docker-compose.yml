@@ -1,6 +1,7 @@
 services:
   portal:
     build: .
+    user: "1001:1001"
     environment:
       SITE_URL: ${SITE_URL:-localhost}
       SECRET_KEY: ${SECRET_KEY:?SECRET_KEY must be set in .env}
@@ -10,6 +11,9 @@ services:
       - ./data:/data
     expose:
       - "8000"
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp]
     restart: unless-stopped
 
   caddy:
@@ -23,6 +27,9 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: [no-new-privileges:true]
     depends_on:
       - portal
     restart: unless-stopped

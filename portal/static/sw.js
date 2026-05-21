@@ -1,7 +1,7 @@
 // Portal service worker. Minimal for now: take control fast and pass through
 // the network. Richer caching strategies (and child-app SW scopes) come later.
 
-const CACHE = "portal-shell-v1";
+const CACHE = "portal-shell-v2";
 const PRECACHE = [
 	"/manifest.webmanifest",
 	"/static/icons/icon-192.png",
@@ -29,7 +29,22 @@ self.addEventListener("activate", (event) => {
 
 self.addEventListener("fetch", (event) => {
 	if (event.request.method !== "GET") return;
+	let url;
+	try {
+		url = new URL(event.request.url);
+	} catch (_) {
+		return;
+	}
+	if (!url.pathname.startsWith("/static/")) return;
 	event.respondWith(
-		fetch(event.request).catch(() => caches.match(event.request))
+		fetch(event.request)
+			.then((res) => {
+				if (res && res.ok) {
+					const copy = res.clone();
+					caches.open(CACHE).then((c) => c.put(event.request, copy)).catch(() => {});
+				}
+				return res;
+			})
+			.catch(() => caches.match(event.request))
 	);
 });

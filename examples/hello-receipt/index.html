@@ -121,9 +121,13 @@
 		}
 
 		function newReceiptId() {
-			// Sortable: <epoch_ms>-<random4>
+			const ts = String(Date.now()).padStart(14, "0");
 			const r = Math.floor(Math.random() * 0xffff).toString(16).padStart(4, "0");
-			return `${Date.now()}-${r}`;
+			return `${ts}-${r}`;
+		}
+
+		function safeFilename(name) {
+			return String(name).replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, 80) || "receipt";
 		}
 
 		function receiptHtml(d) {
@@ -202,7 +206,7 @@
 					const data = await portal.storage.get(key);
 					await portal.pdf.download({
 						html: receiptHtml(data),
-						filename: `receipt-${data.name.replace(/\s+/g, "_")}.pdf`,
+						filename: safeFilename(`receipt-${data.name}.pdf`),
 					});
 				} else if (action === "delete") {
 					if (!confirm("Delete this receipt from history?")) return;
@@ -224,7 +228,7 @@
 			try {
 				await portal.pdf.download({
 					html: receiptHtml(data),
-					filename: "receipt-preview.pdf",
+					filename: safeFilename("receipt-preview.pdf"),
 				});
 				setStatus("");
 			} catch (err) {
@@ -251,7 +255,7 @@
 				await portal.storage.put(`receipts/${id}.json`, { id, ...data, savedAt: new Date().toISOString() });
 				await portal.pdf.download({
 					html,
-					filename: `receipt-${id}.pdf`,
+					filename: safeFilename(`receipt-${id}.pdf`),
 				});
 
 				if (wantEmail) {

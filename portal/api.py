@@ -6,9 +6,11 @@ from __future__ import annotations
 import io
 import mimetypes
 import re
-import smtplib
+import time
+from collections import deque
 from email.message import EmailMessage
 from pathlib import Path
+from threading import Lock
 from typing import Annotated, Optional
 
 from fastapi import (
@@ -23,7 +25,11 @@ from portal.config import settings
 from portal.db import get_db
 from portal.deps import current_user_or_token
 from portal.models import App, User
-from portal.settings_store import smtp_config
+from portal.settings_store import get_setting, smtp_config
+from portal.smtp import send_message
+
+# Re-export for callers that still import from portal.api (back-compat shim).
+_smtp_send = send_message
 
 router = APIRouter(prefix="/api/v1")
 
@@ -56,6 +62,40 @@ def _require_app(db: Session, slug: Optional[str]) -> App:
     return app_row
 
 
+_REFERER_APP_RE = re.compile(r"^https?://[^/]+/apps/([^/]+)/")
+
+
+def _resolve_app_slug(
+    request: Request,
+    user: User,
+    x_portal_app: Optional[str],
+    db: Session,
+) -> App:
+    """Pick the authoritative app slug for a storage request.
+
+    Bearer-token clients (the Claude skill, CI, etc.) may name any app via
+    ``X-Portal-App``. Browser/cookie clients can't be trusted with that
+    header — a malicious child app at ``/apps/evil/`` could set it to
+    ``finance-app`` and read another app's namespace. For cookie auth we
+    extract the slug from the Origin/Referer URL path instead.
+    """
+    auth = request.headers.get("authorization", "")
+    is_token = auth.lower().startswith("bearer ")
+    if is_token:
+        slug = x_portal_app  # token clients can name any app
+    else:
+        ref = request.headers.get("referer", "") or request.headers.get("origin", "")
+        m = _REFERER_APP_RE.match(ref)
+        if not m:
+            raise HTTPException(
+                400,
+                "Storage requires browser context under /apps/<slug>/ or a bearer "
+                "token with X-Portal-App",
+            )
+        slug = m.group(1)
+    return _require_app(db, slug)
+
+
 # ----- /user -----
 
 @router.get("/user/me")
@@ -71,6 +111,21 @@ class PdfRequest(BaseModel):
     filename: str = "document.pdf"
 
 
+def _no_external_fetcher(url, timeout=10, ssl_context=None):
+    """url_fetcher that blocks every scheme except data: URIs.
+
+    Stops WeasyPrint from making outbound HTTP/file/etc. requests on behalf
+    of caller-controlled HTML (SSRF / local file exfiltration). Inline assets
+    via ``data:`` are still allowed.
+    """
+    if not url.startswith("data:"):
+        raise ValueError(
+            f"External resource fetching is disabled (got {url[:60]!r})"
+        )
+    from weasyprint.urls import default_url_fetcher
+    return default_url_fetcher(url, timeout=timeout, ssl_context=ssl_context)
+
+
 @router.post("/pdf/render")
 def pdf_render(req: PdfRequest, user: UserDep):
     _require_user(user)
@@ -83,7 +138,7 @@ def pdf_render(req: PdfRequest, user: UserDep):
 
     buf = io.BytesIO()
     try:
-        HTML(string=req.html).write_pdf(buf)
+        HTML(string=req.html, url_fetcher=_no_external_fetcher).write_pdf(buf)
     except Exception as e:
         raise HTTPException(500, f"PDF render failed: {e}")
     buf.seek(0)
@@ -104,24 +159,57 @@ class EmailRequest(BaseModel):
     html: Optional[str] = None
 
 
-def _smtp_send(msg: EmailMessage, cfg: dict) -> None:
-    host = cfg["host"]
-    port = cfg["port"]
-    if port == 465:
-        server = smtplib.SMTP_SSL(host, port, timeout=30)
-    else:
-        server = smtplib.SMTP(host, port, timeout=30)
-        if cfg["use_tls"]:
-            server.starttls()
-    try:
-        if cfg["username"]:
-            server.login(cfg["username"], cfg["password"] or "")
-        server.send_message(msg)
-    finally:
-        try:
-            server.quit()
-        except Exception:
-            pass
+# Per-user, in-memory, rolling-hour send counter. NOTE: this is per-process,
+# so it only protects a single-instance deployment. Multi-worker setups would
+# need a shared store (Redis/DB) to enforce the same cap globally.
+_EMAIL_RATE_WINDOW_SECONDS = 3600
+_EMAIL_RATE_LIMIT_PER_HOUR = 30
+_email_send_log: dict[int, deque] = {}
+_email_rate_lock = Lock()
+
+
+def _check_email_rate(user_id: int) -> None:
+    """Raise 429 if ``user_id`` has exceeded the rolling-hour send limit."""
+    now = time.monotonic()
+    cutoff = now - _EMAIL_RATE_WINDOW_SECONDS
+    with _email_rate_lock:
+        dq = _email_send_log.get(user_id)
+        if dq is None:
+            dq = deque()
+            _email_send_log[user_id] = dq
+        while dq and dq[0] < cutoff:
+            dq.popleft()
+        if len(dq) >= _EMAIL_RATE_LIMIT_PER_HOUR:
+            raise HTTPException(
+                429,
+                f"Email send rate limit exceeded "
+                f"({_EMAIL_RATE_LIMIT_PER_HOUR}/hour per user, per process).",
+            )
+        dq.append(now)
+
+
+def _recipient_domain_allowlist(db: Session) -> Optional[set[str]]:
+    """Parse the ``email_recipient_domains`` Setting into a lowercase set.
+
+    Returns None when unset/empty (i.e. no restriction).
+    """
+    raw = get_setting(db, "email_recipient_domains", None)
+    if not raw:
+        return None
+    domains = {d.strip().lower() for d in raw.split(",") if d.strip()}
+    return domains or None
+
+
+def _enforce_recipient_allowlist(to_list: list[str], allowed: Optional[set[str]]) -> None:
+    if not allowed:
+        return
+    for addr in to_list:
+        _, _, domain = str(addr).rpartition("@")
+        if domain.lower() not in allowed:
+            raise HTTPException(
+                400,
+                f"Recipient domain not allowed: {addr}",
+            )
 
 
 @router.post("/email/send")
@@ -134,6 +222,9 @@ def email_send(req: EmailRequest, user: UserDep, db: DbDep):
         raise HTTPException(400, "Provide at least one of `text` or `html`")
 
     to_list = req.to if isinstance(req.to, list) else [req.to]
+    _enforce_recipient_allowlist(to_list, _recipient_domain_allowlist(db))
+    _check_email_rate(me.id)
+
     msg = EmailMessage()
     msg["From"] = cfg["from_addr"] or cfg["username"] or me.email
     msg["To"] = ", ".join(str(t) for t in to_list)
@@ -148,7 +239,7 @@ def email_send(req: EmailRequest, user: UserDep, db: DbDep):
         msg.set_content(req.text or "")
 
     try:
-        _smtp_send(msg, cfg)
+        send_message(msg, cfg)
     except Exception as e:
         raise HTTPException(502, f"Email send failed: {e}")
     return {"status": "sent", "count": len(to_list)}
@@ -183,23 +274,29 @@ def _ns_usage(ns: Path) -> int:
 
 
 @router.get("/storage")
-def storage_list(user: UserDep, db: DbDep, x_portal_app: AppHeader = None):
+def storage_list(
+    request: Request, user: UserDep, db: DbDep, x_portal_app: AppHeader = None,
+):
     me = _require_user(user)
-    app_row = _require_app(db, x_portal_app)
+    app_row = _resolve_app_slug(request, me, x_portal_app, db)
     ns = _ns_dir(app_row.slug, me.id)
     items = []
+    usage = 0
     for p in ns.rglob("*"):
         if p.is_file():
-            items.append({"key": p.relative_to(ns).as_posix(), "size": p.stat().st_size})
-    return {"items": items, "usage": sum(i["size"] for i in items), "limit": MAX_NAMESPACE_BYTES}
+            size = p.stat().st_size
+            items.append({"key": p.relative_to(ns).as_posix(), "size": size})
+            usage += size
+    return {"items": items, "usage": usage, "limit": MAX_NAMESPACE_BYTES}
 
 
 @router.get("/storage/{key:path}")
 def storage_get(
-    key: str, user: UserDep, db: DbDep, x_portal_app: AppHeader = None
+    key: str, request: Request, user: UserDep, db: DbDep,
+    x_portal_app: AppHeader = None,
 ):
     me = _require_user(user)
-    app_row = _require_app(db, x_portal_app)
+    app_row = _resolve_app_slug(request, me, x_portal_app, db)
     safe = _validate_key(key)
     ns = _ns_dir(app_row.slug, me.id)
     target = (ns / safe).resolve()
@@ -222,7 +319,7 @@ async def storage_put(
     x_portal_app: AppHeader = None,
 ):
     me = _require_user(user)
-    app_row = _require_app(db, x_portal_app)
+    app_row = _resolve_app_slug(request, me, x_portal_app, db)
     safe = _validate_key(key)
     ns = _ns_dir(app_row.slug, me.id)
     target = (ns / safe).resolve()
@@ -243,7 +340,9 @@ async def storage_put(
                         f"object exceeds {MAX_OBJECT_BYTES // (1024 * 1024)}MB limit",
                     )
                 f.write(chunk)
-    except HTTPException:
+    except Exception:
+        # Disk error, oversized body, network drop — any path that leaves
+        # a partial file behind should clean up before re-raising.
         target.unlink(missing_ok=True)
         raise
 
@@ -263,10 +362,11 @@ async def storage_put(
 
 @router.delete("/storage/{key:path}")
 def storage_delete(
-    key: str, user: UserDep, db: DbDep, x_portal_app: AppHeader = None
+    key: str, request: Request, user: UserDep, db: DbDep,
+    x_portal_app: AppHeader = None,
 ):
     me = _require_user(user)
-    app_row = _require_app(db, x_portal_app)
+    app_row = _resolve_app_slug(request, me, x_portal_app, db)
     safe = _validate_key(key)
     ns = _ns_dir(app_row.slug, me.id)
     target = (ns / safe).resolve()

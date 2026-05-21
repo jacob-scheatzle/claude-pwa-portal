@@ -4,6 +4,7 @@
 <h1>Settings</h1>
 
 <form method="post" action="/admin/settings" autocomplete="off">
+	<input type="hidden" name="_csrf" value="{{ csrf_token }}">
 	<fieldset>
 		<legend>Portal</legend>
 		<div>
@@ -48,6 +49,7 @@
 </form>
 
 <form method="post" action="/admin/settings/smtp/test" style="margin-top:1rem;">
+	<input type="hidden" name="_csrf" value="{{ csrf_token }}">
 	<button type="submit" class="linkish">Send test email to my account</button>
 </form>
 {% endblock %}

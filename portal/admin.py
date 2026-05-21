@@ -10,15 +10,16 @@ from typing import Annotated, Optional
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from pydantic import EmailStr, TypeAdapter, ValidationError
+from sqlalchemy import func
 from sqlmodel import Session, select
 
-from portal.api import _smtp_send
 from portal.config import settings
 from portal.db import get_db
 from portal.deps import require_admin
 from portal.models import ApiToken, User
-from portal.security import hash_password, validate_password
+from portal.security import check_csrf, hash_password, validate_password
 from portal.settings_store import get_setting, set_setting, smtp_config
+from portal.smtp import send_message
 from portal.web import flash, render
 
 router = APIRouter()
@@ -60,7 +61,9 @@ def settings_save(
     smtp_password: Annotated[str, Form()] = "",
     smtp_from: Annotated[str, Form()] = "",
     smtp_use_tls: Annotated[Optional[str], Form()] = None,
+    csrf: Annotated[str, Form(alias="_csrf")] = "",
 ):
+    check_csrf(request, csrf)
     set_setting(db, "site_url", site_url.strip())
     set_setting(db, "smtp_host", smtp_host.strip())
     set_setting(db, "smtp_port", smtp_port.strip())
@@ -75,7 +78,13 @@ def settings_save(
 
 
 @router.post("/admin/settings/smtp/test")
-def settings_smtp_test(request: Request, db: DbDep, admin: AdminDep):
+def settings_smtp_test(
+    request: Request,
+    db: DbDep,
+    admin: AdminDep,
+    csrf: Annotated[str, Form(alias="_csrf")] = "",
+):
+    check_csrf(request, csrf)
     cfg = smtp_config(db)
     if not cfg["host"]:
         flash(request, "SMTP not configured.", level="error")
@@ -89,7 +98,7 @@ def settings_smtp_test(request: Request, db: DbDep, admin: AdminDep):
         f"Sent at {datetime.now(timezone.utc).isoformat()}\n"
     )
     try:
-        _smtp_send(msg, cfg)
+        send_message(msg, cfg)
     except Exception as e:
         flash(request, f"SMTP test failed: {e}", level="error")
         return RedirectResponse("/admin/settings", status_code=303)
@@ -102,6 +111,7 @@ def settings_smtp_test(request: Request, db: DbDep, admin: AdminDep):
 @router.get("/admin/tokens")
 def tokens_list(request: Request, db: DbDep, admin: AdminDep):
     tokens = db.exec(select(ApiToken).order_by(ApiToken.created_at.desc())).all()
+    # Fallback for legacy session-stored values (e.g. from a prior redirect flow).
     last_token = request.session.pop("_last_token", None)
     last_token_name = request.session.pop("_last_token_name", None)
     return render(
@@ -115,7 +125,9 @@ def tokens_list(request: Request, db: DbDep, admin: AdminDep):
 def tokens_create(
     request: Request, db: DbDep, admin: AdminDep,
     name: Annotated[str, Form()],
+    csrf: Annotated[str, Form(alias="_csrf")] = "",
 ):
+    check_csrf(request, csrf)
     name = name.strip()
     if not name:
         flash(request, "Token name is required.", level="error")
@@ -126,16 +138,22 @@ def tokens_create(
         name=name, token_hash=token_hash, prefix=raw[:8], created_by=admin.id,
     ))
     db.commit()
-    request.session["_last_token"] = raw
-    request.session["_last_token_name"] = name
-    return RedirectResponse("/admin/tokens", status_code=303)
+    # Render directly so the raw token survives only this response — no session round-trip.
+    tokens = db.exec(select(ApiToken).order_by(ApiToken.created_at.desc())).all()
+    return render(
+        request, "admin_tokens.html",
+        user=admin, tokens=tokens,
+        last_token=raw, last_token_name=name,
+    )
 
 
 @router.post("/admin/tokens/{token_id}/delete")
 def tokens_delete(
     request: Request, db: DbDep, admin: AdminDep,
     token_id: int,
+    csrf: Annotated[str, Form(alias="_csrf")] = "",
 ):
+    check_csrf(request, csrf)
     token = db.get(ApiToken, token_id)
     if token is None:
         raise HTTPException(404)
@@ -149,7 +167,9 @@ def tokens_delete(
 # ----- Users -----
 
 def _count_admins(db: Session) -> int:
-    return len(db.exec(select(User).where(User.role == "admin")).all())
+    return db.exec(
+        select(func.count()).select_from(User).where(User.role == "admin")
+    ).one()
 
 
 @router.get("/admin/users")
@@ -167,7 +187,9 @@ def users_create(
     email: Annotated[str, Form()],
     password: Annotated[str, Form()],
     role: Annotated[str, Form()] = "user",
+    csrf: Annotated[str, Form(alias="_csrf")] = "",
 ):
+    check_csrf(request, csrf)
     if role not in ("admin", "user"):
         flash(request, "Invalid role.", level="error")
         return RedirectResponse("/admin/users", status_code=303)
@@ -195,7 +217,9 @@ def users_set_role(
     request: Request, db: DbDep, admin: AdminDep,
     user_id: int,
     role: Annotated[str, Form()],
+    csrf: Annotated[str, Form(alias="_csrf")] = "",
 ):
+    check_csrf(request, csrf)
     if role not in ("admin", "user"):
         flash(request, "Invalid role.", level="error")
         return RedirectResponse("/admin/users", status_code=303)
@@ -217,7 +241,9 @@ def users_reset_password(
     request: Request, db: DbDep, admin: AdminDep,
     user_id: int,
     password: Annotated[str, Form()],
+    csrf: Annotated[str, Form(alias="_csrf")] = "",
 ):
+    check_csrf(request, csrf)
     target = db.get(User, user_id)
     if target is None:
         raise HTTPException(404)
@@ -236,7 +262,9 @@ def users_reset_password(
 def users_delete(
     request: Request, db: DbDep, admin: AdminDep,
     user_id: int,
+    csrf: Annotated[str, Form(alias="_csrf")] = "",
 ):
+    check_csrf(request, csrf)
     target = db.get(User, user_id)
     if target is None:
         raise HTTPException(404)

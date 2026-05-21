@@ -5,6 +5,7 @@ from fastapi import Request
 from fastapi.templating import Jinja2Templates
 
 from portal.models import User
+from portal.security import csrf_token
 
 BASE_DIR = Path(__file__).parent
 STATIC_DIR = BASE_DIR / "static"
@@ -23,7 +24,12 @@ def render(
     return templates.TemplateResponse(
         request,
         name,
-        {**context, "user": user, "flashes": flashes},
+        {
+            **context,
+            "user": user,
+            "flashes": flashes,
+            "csrf_token": csrf_token(request),
+        },
         status_code=status_code,
     )
 

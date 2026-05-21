@@ -4,22 +4,26 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 import shutil
 import tempfile
 import zipfile
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+import anyio
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, Field, ValidationError, field_validator
 from sqlmodel import Session, select
 
 from portal.config import settings
 from portal.db import get_db
-from portal.deps import current_user, require_admin
+from portal.deps import current_user, current_user_or_token, require_admin
 from portal.models import App, User
+from portal.security import check_csrf
 from portal.web import flash, render
 
 router = APIRouter()
@@ -38,6 +42,7 @@ class PortalAppManifest(BaseModel):
     icon: Optional[str] = None
     entry: str = "index.html"
     services: list[str] = Field(default_factory=list)
+    # Reserved for future portal/app compatibility checks; accepted but unused today.
     min_portal_version: Optional[str] = None
 
     @field_validator("slug")
@@ -87,6 +92,7 @@ def _apps_root() -> Path:
 
 async def _stream_to_temp(upload: UploadFile, max_bytes: int) -> Path:
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
+    tmp_name = tmp.name
     written = 0
     try:
         while True:
@@ -99,15 +105,21 @@ async def _stream_to_temp(upload: UploadFile, max_bytes: int) -> Path:
                     f"Upload exceeds {max_bytes // (1024 * 1024)}MB limit"
                 )
             tmp.write(chunk)
-        return Path(tmp.name)
-    except Exception:
+        tmp.close()
+        return Path(tmp_name)
+    except BaseException:
+        # Close first so the unlink can succeed on platforms that hold a lock
+        # on open files, then remove the partial file. Avoids the prior
+        # close-after-unlink ordering where a finally close could double-act.
         try:
-            os.unlink(tmp.name)
+            tmp.close()
+        except Exception:
+            pass
+        try:
+            os.unlink(tmp_name)
         except OSError:
             pass
         raise
-    finally:
-        tmp.close()
 
 
 def _validate_zip(path: Path) -> None:
@@ -124,10 +136,18 @@ def _validate_zip(path: Path) -> None:
             if info.is_dir():
                 continue
             name = info.filename
-            if name.startswith("/") or name.startswith("\\") or ".." in Path(name).parts:
+            # Explicit backslash rejection: Windows separators don't survive
+            # Path(name).parts on POSIX, so a substring check is required.
+            if "\\" in name:
+                raise UploadError(f"Unsafe path in zip (backslash): {name}")
+            if name.startswith("/"):
+                raise UploadError(f"Unsafe path in zip: {name}")
+            parts = Path(name).parts
+            if ".." in parts or any(p.startswith("\\") for p in parts):
                 raise UploadError(f"Unsafe path in zip: {name}")
             mode = (info.external_attr >> 16) & 0o170000
             if mode == 0o120000:
+                # POSIX-created symlink entry.
                 raise UploadError(f"Symlink not allowed: {name}")
             total += info.file_size
             if total > MAX_UNCOMPRESSED_BYTES:
@@ -188,10 +208,48 @@ def _safe_extract(zip_path: Path, dest: Path) -> None:
                 shutil.copyfileobj(src, out)
 
 
+def _prepare_bundle(tmp_path: Path) -> PortalAppManifest:
+    """Blocking validation + manifest parse (run via to_thread)."""
+    _validate_zip(tmp_path)
+    manifest = _read_manifest(tmp_path)
+    _check_required_files(tmp_path, manifest)
+    return manifest
+
+
+def _extract_into(tmp_path: Path, dest: Path) -> None:
+    """Blocking extraction (run via to_thread)."""
+    _safe_extract(tmp_path, dest)
+
+
+def _atomic_replace(dest: Path, new_dir: Path) -> None:
+    """Swap `new_dir` into `dest`, moving the old `dest` aside and removing it.
+
+    Both paths must live under the same parent directory so the renames are
+    atomic on POSIX.
+    """
+    suffix = secrets.token_hex(6)
+    old_dir = dest.with_name(dest.name + f".old-{suffix}")
+    if dest.exists():
+        os.rename(dest, old_dir)
+    try:
+        os.rename(new_dir, dest)
+    except OSError:
+        # Roll back: try to restore old_dir if we moved it.
+        if old_dir.exists() and not dest.exists():
+            try:
+                os.rename(old_dir, dest)
+            except OSError:
+                pass
+        raise
+    if old_dir.exists():
+        shutil.rmtree(old_dir, ignore_errors=True)
+
+
 # ----- Deps -----
 
 DbDep = Annotated[Session, Depends(get_db)]
 UserDep = Annotated[Optional[User], Depends(current_user)]
+TokenUserDep = Annotated[Optional[User], Depends(current_user_or_token)]
 AdminDep = Annotated[User, Depends(require_admin)]
 
 
@@ -213,56 +271,109 @@ class InstallResult:
     slug: str
     name: str
     version: str
+    replaced: bool = False
 
 
 async def install_bundle(
-    db: Session, uploader: User, bundle: UploadFile
+    db: Session,
+    uploader: User,
+    bundle: UploadFile,
+    *,
+    allow_replace: bool = False,
 ) -> InstallResult:
-    """Validate, extract, and register a child-app zip. Raises UploadError on any failure."""
+    """Validate, extract, and register a child-app zip.
+
+    When ``allow_replace`` is False (default) and the slug already exists, an
+    ``UploadError`` is raised. When True, the on-disk app directory is swapped
+    atomically and the matching DB row is updated in place; per-user storage
+    under ``data/storage/<slug>/`` is left untouched.
+
+    Raises ``UploadError`` on any failure.
+    """
     if not bundle.filename or not bundle.filename.lower().endswith(".zip"):
         raise UploadError("Please upload a .zip file.")
 
     tmp_path = await _stream_to_temp(bundle, MAX_ZIP_BYTES)
     try:
-        _validate_zip(tmp_path)
-        manifest = _read_manifest(tmp_path)
-        _check_required_files(tmp_path, manifest)
+        # Blocking zip/file work moves to a worker thread so we don't block the
+        # event loop on large uploads. DB writes stay on the main thread.
+        manifest = await anyio.to_thread.run_sync(_prepare_bundle, tmp_path)
 
         existing = db.exec(select(App).where(App.slug == manifest.slug)).first()
-        if existing is not None:
+        apps_root = _apps_root()
+        dest = apps_root / manifest.slug
+
+        if existing is not None and not allow_replace:
             raise UploadError(
                 f"An app with slug '{manifest.slug}' already exists. "
-                "Delete it first to re-upload."
+                "Use the replace endpoint (--replace in the skill CLI) to update it."
             )
 
-        dest = _apps_root() / manifest.slug
-        if dest.exists():
-            raise UploadError(
-                f"App directory already exists on disk at {dest}. "
-                "Remove it manually and try again."
+        if existing is None:
+            if dest.exists():
+                raise UploadError(
+                    f"App directory already exists on disk at {dest}. "
+                    "Remove it manually and try again."
+                )
+            try:
+                await anyio.to_thread.run_sync(_extract_into, tmp_path, dest)
+            except UploadError:
+                shutil.rmtree(dest, ignore_errors=True)
+                raise
+
+            app_row = App(
+                slug=manifest.slug,
+                name=manifest.name,
+                description=manifest.description,
+                version=manifest.version,
+                icon=manifest.icon,
+                entry=manifest.entry,
+                services=manifest.services,
+                enabled=True,
+                uploaded_by=uploader.id,
+            )
+            db.add(app_row)
+            db.commit()
+            return InstallResult(
+                slug=app_row.slug,
+                name=app_row.name,
+                version=app_row.version,
+                replaced=False,
             )
 
+        # Replace path: extract to a sibling temp dir, then atomically swap.
+        staging_name = f".{manifest.slug}.new-{secrets.token_hex(6)}"
+        staging = apps_root / staging_name
         try:
-            _safe_extract(tmp_path, dest)
+            await anyio.to_thread.run_sync(_extract_into, tmp_path, staging)
         except UploadError:
-            shutil.rmtree(dest, ignore_errors=True)
+            shutil.rmtree(staging, ignore_errors=True)
+            raise
+        except Exception:
+            shutil.rmtree(staging, ignore_errors=True)
             raise
 
-        app_row = App(
-            slug=manifest.slug,
-            name=manifest.name,
-            description=manifest.description,
-            version=manifest.version,
-            icon=manifest.icon,
-            entry=manifest.entry,
-            services=manifest.services,
-            enabled=True,
-            uploaded_by=uploader.id,
-        )
-        db.add(app_row)
+        try:
+            await anyio.to_thread.run_sync(_atomic_replace, dest, staging)
+        except Exception:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise
+
+        existing.name = manifest.name
+        existing.description = manifest.description
+        existing.version = manifest.version
+        existing.icon = manifest.icon
+        existing.entry = manifest.entry
+        existing.services = manifest.services
+        existing.uploaded_by = uploader.id
+        existing.uploaded_at = datetime.now(timezone.utc)
+        db.add(existing)
         db.commit()
         return InstallResult(
-            slug=app_row.slug, name=app_row.name, version=app_row.version
+            slug=existing.slug,
+            name=existing.name,
+            version=existing.version,
+            replaced=True,
         )
     finally:
         try:
@@ -277,7 +388,9 @@ async def admin_apps_upload(
     db: DbDep,
     admin: AdminDep,
     bundle: UploadFile = File(...),
+    csrf: str = Form(default="", alias="_csrf"),
 ):
+    check_csrf(request, csrf)
     try:
         result = await install_bundle(db, admin, bundle)
     except UploadError as e:
@@ -289,8 +402,76 @@ async def admin_apps_upload(
     return RedirectResponse("/admin/apps", status_code=303)
 
 
+@router.post("/admin/apps/{slug}/replace")
+async def admin_apps_replace(
+    slug: str,
+    request: Request,
+    db: DbDep,
+    admin: AdminDep,
+    bundle: UploadFile = File(...),
+    csrf: str = Form(default="", alias="_csrf"),
+):
+    check_csrf(request, csrf)
+    app_row = db.exec(select(App).where(App.slug == slug)).first()
+    if app_row is None:
+        raise HTTPException(404)
+    try:
+        result = await install_bundle(db, admin, bundle, allow_replace=True)
+    except UploadError as e:
+        return render(
+            request, "admin_apps_upload.html",
+            user=admin, error=str(e), status_code=400,
+        )
+    if result.slug != slug:
+        # The uploaded manifest's slug doesn't match the URL slug.
+        raise HTTPException(
+            400,
+            f"Bundle slug '{result.slug}' does not match URL slug '{slug}'.",
+        )
+    flash(request, f"Replaced ‘{result.name}’ (slug: {result.slug})")
+    return RedirectResponse("/admin/apps", status_code=303)
+
+
+@router.put("/api/v1/apps/{slug}")
+async def api_apps_replace(
+    slug: str,
+    db: DbDep,
+    user: TokenUserDep,
+    bundle: UploadFile = File(...),
+):
+    if user is None:
+        raise HTTPException(401, "Sign in required")
+    if user.role != "admin":
+        raise HTTPException(403, "Admin role required")
+    app_row = db.exec(select(App).where(App.slug == slug)).first()
+    if app_row is None:
+        raise HTTPException(404, f"App '{slug}' not found")
+    try:
+        result = await install_bundle(db, user, bundle, allow_replace=True)
+    except UploadError as e:
+        raise HTTPException(400, str(e))
+    if result.slug != slug:
+        raise HTTPException(
+            400,
+            f"Bundle slug '{result.slug}' does not match URL slug '{slug}'.",
+        )
+    return {
+        "slug": result.slug,
+        "name": result.name,
+        "version": result.version,
+        "replaced": True,
+    }
+
+
 @router.post("/admin/apps/{slug}/toggle")
-def admin_apps_toggle(slug: str, request: Request, db: DbDep, admin: AdminDep):
+def admin_apps_toggle(
+    slug: str,
+    request: Request,
+    db: DbDep,
+    admin: AdminDep,
+    csrf: str = Form(default="", alias="_csrf"),
+):
+    check_csrf(request, csrf)
     app_row = db.exec(select(App).where(App.slug == slug)).first()
     if app_row is None:
         raise HTTPException(404)
@@ -303,7 +484,14 @@ def admin_apps_toggle(slug: str, request: Request, db: DbDep, admin: AdminDep):
 
 
 @router.post("/admin/apps/{slug}/delete")
-def admin_apps_delete(slug: str, request: Request, db: DbDep, admin: AdminDep):
+def admin_apps_delete(
+    slug: str,
+    request: Request,
+    db: DbDep,
+    admin: AdminDep,
+    csrf: str = Form(default="", alias="_csrf"),
+):
+    check_csrf(request, csrf)
     app_row = db.exec(select(App).where(App.slug == slug)).first()
     if app_row is None:
         raise HTTPException(404)

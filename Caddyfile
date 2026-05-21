@@ -4,8 +4,18 @@
 	encode zstd gzip
 
 	header {
-		# Basic security headers; child-app CSP comes later when SDK lands.
-		X-Content-Type-Options nosniff
-		Referrer-Policy strict-origin-when-cross-origin
+		# HSTS is only emitted over HTTPS by Caddy automatically.
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Frame-Options "DENY"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		Cross-Origin-Opener-Policy "same-origin"
 	}
+
+	# Child apps shipped under /apps/<slug>/ are written with Claude and rely on
+	# inline scripts/styles. 'unsafe-inline' + 'unsafe-eval' are intentional;
+	# frame-ancestors 'none' blocks a malicious child from iframing the portal shell.
+	@apps path /apps/*
+	header @apps Content-Security-Policy "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
 }

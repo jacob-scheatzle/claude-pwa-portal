@@ -1,4 +1,7 @@
+import secrets
+
 import bcrypt
+from fastapi import HTTPException, Request
 
 MIN_PASSWORD_LEN = 8
 MAX_PASSWORD_BYTES = 72  # bcrypt's hard limit
@@ -22,3 +25,17 @@ def validate_password(password: str) -> list[str]:
     if len(password.encode("utf-8")) > MAX_PASSWORD_BYTES:
         errors.append(f"Password must be {MAX_PASSWORD_BYTES} bytes or fewer.")
     return errors
+
+
+def csrf_token(request: Request) -> str:
+    tok = request.session.get("_csrf")
+    if not tok:
+        tok = secrets.token_urlsafe(32)
+        request.session["_csrf"] = tok
+    return tok
+
+
+def check_csrf(request: Request, submitted: str) -> None:
+    expected = request.session.get("_csrf")
+    if not expected or not submitted or not secrets.compare_digest(expected, submitted):
+        raise HTTPException(403, "CSRF check failed")
