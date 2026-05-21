@@ -14,11 +14,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /build
 COPY pyproject.toml ./
 COPY portal/ ./portal/
+COPY alembic.ini ./
+COPY alembic/ ./alembic/
 RUN pip install --no-cache-dir .
 
 WORKDIR /
 USER portal
 ENV PYTHONUNBUFFERED=1
+# Alembic config lives in /build alongside the source we COPY'd above. The
+# portal package itself gets pip-installed into site-packages, so
+# Path(__file__).parent.parent inside portal/db.py won't find these files —
+# init_db() reads these env vars to locate them.
+ENV ALEMBIC_DIR=/build/alembic
+ENV ALEMBIC_INI=/build/alembic.ini
 EXPOSE 8000
 # --proxy-headers + --forwarded-allow-ips=* makes uvicorn honor X-Forwarded-For/Proto
 # from Caddy. Caddy is the only thing in front of uvicorn and sits on the Docker

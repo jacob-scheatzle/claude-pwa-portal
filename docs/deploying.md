@@ -143,7 +143,19 @@ git pull
 docker compose up --build -d
 ```
 
-SQLModel applies non-destructive schema migrations on startup (new tables get added; existing tables are not altered). Take a backup before any update.
+Alembic runs `upgrade head` automatically on container start, applying any pending schema migrations shipped with the release. If a migration fails, the container exits with a clear error in `docker compose logs portal` — fix forward (or roll back the image), then restart. To roll back the schema itself, exec into the container and run `alembic downgrade <revision>` (you'll need to know the previous revision id from `alembic history`).
+
+**Always take a backup of `data/portal.db` before any update** (see [Backups](#backups)). Migrations alter table structure; a bad migration on an un-backed-up DB is hard to recover from.
+
+### Migrations
+
+- Schema migrations live in `alembic/versions/` and ship with releases. They run automatically when the container starts; no manual step is needed during a normal upgrade.
+- If you're extending the portal yourself, after changing a model in `portal/models.py`:
+  ```bash
+  .venv/bin/alembic revision --autogenerate -m "describe change"
+  ```
+  Run this from the repo root with the venv active.
+- **Always inspect the generated migration before committing it.** Alembic's autogenerate is best-effort and can miss things like column-type changes, server-side defaults, custom `sa.JSON` columns, and renames-vs-drop+add. Open the new file in `alembic/versions/`, sanity-check the `upgrade()`/`downgrade()` ops against the diff you intended, and edit by hand if needed.
 
 ## CLI for admin emergencies
 
