@@ -45,18 +45,40 @@ See [docs/deploying.md](docs/deploying.md) for the full VPS guide (Caddy auto-HT
 
 Two paths.
 
-### With Claude (recommended for non-developers)
+### With Claude
+
+The skill can be installed for two Claude surfaces. They have different capabilities — pick the one available to you.
+
+#### Path A — Claude Code CLI (full automation, recommended)
+
+If you have [Claude Code](https://claude.com/claude-code) installed locally, the skill scaffolds, packages, **and uploads** apps to your portal automatically — Claude does the whole pipeline.
 
 ```bash
 bash claude-skill/pwa-portal-app/install.sh
 python3 ~/.claude/skills/pwa-portal-app/scripts/configure.py
 ```
 
-Then ask Claude something like:
+Then in Claude Code, ask:
 
 > *"Make me a quoting tool for my portal — should let me enter line items, generate a PDF, and email it to the customer."*
 
-Claude reads the skill, scaffolds the app, implements your spec, packages it, and uploads it through the portal's API. See [`claude-skill/pwa-portal-app/SKILL.md`](claude-skill/pwa-portal-app/SKILL.md) for everything Claude knows.
+Claude reads the skill, scaffolds the app, implements your spec, calls `package.py`, and uploads via `upload.py`.
+
+#### Path B — claude.ai web (conversational guide only)
+
+You can also upload the skill to [claude.ai](https://claude.ai) and use it from the web app. **Important limitation:** claude.ai runs skills inside a remote sandbox that has no access to your local machine or your portal's VPS — so the `package.py` and `upload.py` scripts cannot run on your behalf. Claude can generate the `portal.json` and `index.html` for you and tell you the exact commands to run, but **you'll have to run them yourself in a terminal**.
+
+If that fits your workflow:
+
+1. **Package the skill as a zip** (excluding the install script, which only matters for Claude Code):
+   ```bash
+   cd claude-skill/pwa-portal-app
+   zip -r ../pwa-portal-app.zip . -x install.sh -x "*.DS_Store" -x "__pycache__/*"
+   ```
+2. **Upload to claude.ai:** in the claude.ai web app, open **Settings → Features → Skills → +** → **Upload a skill** → select `pwa-portal-app.zip`.
+3. **Use it:** in any chat, prompt Claude to build something for the portal — the skill name (`pwa-portal-app`) primes Claude to follow the conventions in `SKILL.md`. Claude will give you the file contents and the terminal commands; you paste them.
+
+See [`claude-skill/pwa-portal-app/SKILL.md`](claude-skill/pwa-portal-app/SKILL.md) for the full skill content — same on both surfaces.
 
 ### Manually
 
