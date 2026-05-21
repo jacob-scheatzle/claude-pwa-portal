@@ -1,5 +1,14 @@
 FROM python:3.12-slim
 
+# System libraries WeasyPrint needs at runtime.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+		libpango-1.0-0 \
+		libpangoft2-1.0-0 \
+		libharfbuzz0b \
+		libfontconfig1 \
+		fonts-dejavu-core \
+	&& rm -rf /var/lib/apt/lists/*
+
 WORKDIR /build
 COPY pyproject.toml ./
 COPY portal/ ./portal/
