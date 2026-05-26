@@ -141,7 +141,14 @@ def index(request: Request, db: DbDep, user: UserDep):
     visible = db.exec(
         select(App).where(App.enabled == True).order_by(App.name)  # noqa: E712
     ).all()
-    return render(request, "dashboard.html", user=user, apps=visible)
+    return render(
+        request,
+        "dashboard.html",
+        user=user,
+        apps=visible,
+        same_origin_mode=bool(settings.child_apps_same_origin),
+        site_url=settings.site_url,
+    )
 
 
 # ----- PWA endpoints -----

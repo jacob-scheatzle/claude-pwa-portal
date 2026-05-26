@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}{{ app.name }} — Portal{% endblock %}
+{% block container_class %}app-launcher-container{% endblock %}
+{% block content %}
+<style>
+	/* The launcher replaces the centered container's padding so the iframe
+	   can stretch edge-to-edge below the topbar. The container is still
+	   present (base.html owns it) but we override its layout here. */
+	main.container.app-launcher-container {
+		max-width: none;
+		padding: 0;
+		margin: 0;
+	}
+	.app-frame-bar {
+		display: flex;
+		align-items: center;
+		gap: 0.75rem;
+		padding: 0.5rem 1.5rem;
+		border-bottom: 1px solid rgba(127,127,127,0.18);
+		background: rgba(127,127,127,0.04);
+		font-size: 0.9rem;
+	}
+	.app-frame-bar .muted { opacity: 0.6; font-size: 0.8rem; }
+	.app-frame {
+		position: fixed;
+		left: 0;
+		right: 0;
+		bottom: 0;
+		/* Topbar (~46px) + app-frame-bar (~38px). A small overlap is fine
+		   because both have explicit borders; the iframe takes the rest. */
+		top: 90px;
+		border: 0;
+		width: 100%;
+		height: calc(100vh - 90px);
+		background: white;
+	}
+	@media (prefers-color-scheme: dark) {
+		.app-frame { background: #111; }
+	}
+</style>
+<div class="app-frame-bar">
+	<a href="/" class="nav-link">← Apps</a>
+	<strong>{{ app.name }}</strong>
+	<span class="muted">{{ app.version }}</span>
+</div>
+<iframe
+	class="app-frame"
+	src="{{ iframe_src }}"
+	sandbox="allow-scripts allow-forms allow-popups allow-same-origin allow-modals allow-downloads"
+	allow="clipboard-read; clipboard-write; fullscreen"
+	title="{{ app.name }}"
+></iframe>
+{% endblock %}

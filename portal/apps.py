@@ -547,19 +547,26 @@ def app_root_redirect(slug: str):
     return RedirectResponse(f"/apps/{slug}/", status_code=308)
 
 
-@router.get("/apps/{slug}/launch")
-def app_launch(
+@router.get("/apps/{slug}/")
+def serve_app_index(
     slug: str,
     request: Request,
     db: DbDep,
-    user: RequireUserDep,
+    user: UserDep,
 ):
-    """Mint a single-use launch token and redirect to the app subdomain.
+    """Entry point for opening a child app from the portal origin.
 
-    Only reachable in the isolated-origin model. When
-    ``CHILD_APPS_SAME_ORIGIN`` is true (the current default), this endpoint
-    404s — child apps still live at ``/apps/<slug>/`` under the portal origin
-    and there's nothing to launch into.
+    Two modes:
+
+    - ``CHILD_APPS_SAME_ORIGIN`` truthy (legacy): serve the child app's
+      ``index.html`` directly out of the portal origin, exactly as before
+      Phase A. The browser stays on ``/apps/<slug>/`` and the app shares
+      a cookie jar with the portal.
+    - ``CHILD_APPS_SAME_ORIGIN`` falsy (new default): mint a single-use
+      launch token and render the iframe wrapper template. The wrapper
+      embeds ``<slug>.apps.<SITE_URL>/#token=<token>`` inside an iframe
+      sandbox; the browser's address bar stays on the portal so an
+      installed PWA keeps its identity.
 
     The token's slug is bound at mint time. The exchange endpoint on the
     subdomain refuses to mint an AppSession if its host-derived slug doesn't
@@ -567,7 +574,10 @@ def app_launch(
     it accepted on app B's subdomain.
     """
     if settings.child_apps_same_origin:
-        raise HTTPException(404)
+        return _serve_app_file(slug, db, user, path="")
+
+    if user is None:
+        return RedirectResponse(f"/login?next=/apps/{slug}/", status_code=303)
 
     app_row = db.exec(select(App).where(App.slug == slug)).first()
     if app_row is None or not app_row.enabled:
@@ -588,19 +598,20 @@ def app_launch(
 
     scheme = "https" if settings.cookies_secure else "http"
     # Preserve the port the portal is reached on, so a dev hitting
-    # http://lvh.me:8000/apps/x/launch ends up on
+    # http://lvh.me:8000/apps/x/ ends up loading the iframe at
     # http://x.apps.lvh.me:8000/#token=... rather than the bare hostname.
     host = request.headers.get("host", settings.site_url)
     port = ""
     if ":" in host and not host.startswith("["):
         port = ":" + host.rsplit(":", 1)[1]
-    target = f"{scheme}://{slug}.apps.{settings.site_url}{port}/#token={token}"
-    return RedirectResponse(target, status_code=303)
-
-
-@router.get("/apps/{slug}/")
-def serve_app_index(slug: str, request: Request, db: DbDep, user: UserDep):
-    return _serve_app_file(slug, db, user, path="")
+    iframe_src = f"{scheme}://{slug}.apps.{settings.site_url}{port}/#token={token}"
+    return render(
+        request,
+        "app_launcher.html",
+        user=user,
+        app=app_row,
+        iframe_src=iframe_src,
+    )
 
 
 @router.get("/apps/{slug}/{path:path}")
@@ -689,6 +700,10 @@ def _serve_app_subdomain_path(
 def _launch_redirect_response(request: Request, slug: str) -> RedirectResponse:
     """Bounce a no-cookie subdomain hit back to the portal-origin launcher.
 
+    Phase C: the launcher lives at ``/apps/<slug>/`` (the iframe wrapper page
+    mints the launch token directly). The interim ``/apps/<slug>/launch``
+    endpoint that Phase A added has been folded in and removed.
+
     Preserves whatever port the request arrived on. In dev (uvicorn on 8000,
     lvh.me) that's how the bounce can land back on the same port; in prod
     (Caddy on 443 with cookies_secure=True) the port is implicit in the
@@ -699,7 +714,7 @@ def _launch_redirect_response(request: Request, slug: str) -> RedirectResponse:
     port = ""
     if ":" in host and not host.startswith("["):
         port = ":" + host.rsplit(":", 1)[1]
-    target = f"{scheme}://{settings.site_url}{port}/apps/{slug}/launch"
+    target = f"{scheme}://{settings.site_url}{port}/apps/{slug}/"
     return RedirectResponse(target, status_code=303)
 
 
