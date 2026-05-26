@@ -37,6 +37,39 @@
 					<input type="hidden" name="_csrf" value="{{ csrf_token }}">
 					<button class="action-chip" type="submit">{{ 'Disable' if app.enabled else 'Enable' }}</button>
 				</form>
+				{% set requested = app.requested_origins or [] %}
+				{% set allowed = app.allowed_origins or [] %}
+				{% set extras = [] %}
+				{% for o in allowed %}{% if o not in requested %}{% set _ = extras.append(o) %}{% endif %}{% endfor %}
+				<details style="display:inline-block;">
+					<summary class="action-chip">Network ({{ allowed|length }})</summary>
+					<div class="action-chip-panel">
+						<form method="post" action="/admin/apps/{{ app.slug }}/network">
+							<input type="hidden" name="_csrf" value="{{ csrf_token }}">
+							<div class="hint">External HTTPS origins this app can <code>fetch()</code>. Same-origin calls and the portal SDK are always allowed.</div>
+							{% if requested %}
+								<div style="margin-top:0.5rem; font-weight:600; font-size:0.8rem;">Requested by app</div>
+								<ul style="list-style:none; padding:0; margin:0.3rem 0;">
+									{% for o in requested %}
+									<li style="padding:0.15rem 0;">
+										<label style="font-weight:400; display:flex; align-items:center; gap:0.5rem;">
+											<input type="checkbox" name="allowed_requested" value="{{ o }}"
+												{% if o in allowed %}checked{% endif %}>
+											<code>{{ o }}</code>
+										</label>
+									</li>
+									{% endfor %}
+								</ul>
+							{% else %}
+								<div class="hint" style="margin-top:0.4rem;">The app's manifest did not request any external origins.</div>
+							{% endif %}
+							<div style="margin-top:0.6rem; font-weight:600; font-size:0.8rem;">Admin-added (one per line, <code>https://host[:port]</code>)</div>
+							<textarea name="extras" rows="3" style="width:100%; font-family:var(--font-mono, monospace); font-size:0.85rem;">{% for o in extras %}{{ o }}
+{% endfor %}</textarea>
+							<button type="submit" style="align-self:flex-start; margin-top:0.4rem;">Save network access</button>
+						</form>
+					</div>
+				</details>
 				<details style="display:inline-block;">
 					<summary class="action-chip">Replace / update</summary>
 					<div class="action-chip-panel">

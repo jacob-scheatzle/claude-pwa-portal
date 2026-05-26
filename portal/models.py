@@ -32,6 +32,15 @@ class App(SQLModel, table=True):
     icon: Optional[str] = None  # relative path inside the app dir
     entry: str = "index.html"
     services: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    # External HTTPS origins this app's manifest declared it needs to reach
+    # (e.g. ["https://api.open-meteo.com"]). Refreshed on every upload /
+    # replace; the manifest is the source of truth for what was requested.
+    requested_origins: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    # The subset of ``requested_origins`` an admin has approved. Drives the
+    # ``connect-src`` directive in the per-app CSP. New uploads auto-approve
+    # everything the manifest declared (the admin uploaded it); revocations
+    # made through the admin UI persist across re-uploads of the same slug.
+    allowed_origins: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     enabled: bool = Field(default=True)
     uploaded_by: Optional[int] = Field(default=None, foreign_key="user.id")
     uploaded_at: datetime = Field(default_factory=_utcnow)

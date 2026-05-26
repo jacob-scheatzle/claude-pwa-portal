@@ -70,6 +70,9 @@ are identical.
   "icon": "icon.png",
   "entry": "index.html",
   "services": ["pdf", "email"],
+  "permissions": {
+    "network": ["https://api.open-meteo.com"]
+  },
   "min_portal_version": "0.1"
 }
 ```
@@ -83,9 +86,43 @@ are identical.
 | `icon` | no | relative path inside the bundle; recommended 192×192 PNG |
 | `entry` | no | defaults to `index.html`; must exist in the zip |
 | `services` | no | declarative list; allowed: `pdf`, `email`, `storage`; informational for now |
+| `permissions.network` | no | external HTTPS origins the app's `fetch()` calls need to reach — see "Network permissions" below |
 | `min_portal_version` | no | hint for compatibility |
 
 The slug becomes the URL: an app with slug `expense-tracker` is reachable at `/apps/expense-tracker/`.
+
+### Network permissions
+
+Child apps run under a strict Content-Security-Policy that only allows
+same-origin `fetch()` / `XMLHttpRequest` by default. If your app calls any
+external HTTP API (a weather service, a geocoder, a public dataset, etc.),
+you **must** declare each origin in `permissions.network` — the browser
+will block the request otherwise with a CSP violation, and the user will
+see a "Failed to fetch" / network error.
+
+Rules:
+
+- Each entry is an **HTTPS origin**: `https://host[:port]`. No path, no
+  query string, no wildcards.
+- Hostname must be a real DNS name; `localhost` is accepted in dev but
+  pointless in production.
+- Up to 12 entries per manifest. If you genuinely need more, you're
+  probably reaching for the wrong abstraction — front everything through
+  one upstream.
+- HTTP (plain) is rejected. The portal is HTTPS-only; mixed content would
+  fail at the browser anyway.
+
+On upload, every declared origin is auto-approved (the admin uploaded the
+bundle, which counts as approval). The admin can later revoke or extend
+the list per-app under `/admin/apps` → expand "Network (...)" on that
+app's row. Revocations made through the admin UI **persist across
+re-uploads of the same slug**, so an updated bundle can't silently
+re-grant network access an admin previously turned off.
+
+**Authoring rule**: every time you write a `fetch("https://...")` call
+into a child app, add the origin to `permissions.network`. The scaffold
+at `templates/basic/portal.json` ships with an empty list; populate it
+before packaging if the app calls anything external.
 
 ## Portal SDK — how apps call services
 

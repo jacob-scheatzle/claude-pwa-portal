@@ -5,6 +5,13 @@ the host matches ``*.apps.<SITE_URL>``, records the resolved app slug on
 ``request.state.app_slug``. Downstream route handlers branch on this state to
 serve child-app content (subdomain origin) versus portal content (root origin).
 
+``ChildAppCSPMiddleware`` runs on the response path. For requests that
+resolved to a child-app subdomain, it builds a per-app Content-Security-Policy
+from the matching ``App.allowed_origins`` row and sets the header on the
+response. Caddy intentionally does not set CSP for ``*.apps.<SITE_URL>``
+anymore; the portal owns the header because the allowed external origins
+vary per app.
+
 Why a middleware rather than per-route checks: FastAPI / Starlette does not
 support host-based route dispatch natively, and the ``request.state.app_slug``
 attribute then becomes available to every handler in the app without any
@@ -15,8 +22,9 @@ which subdomain the request arrived on.
 from __future__ import annotations
 
 import re
-from typing import Optional
+from typing import Iterable, Optional
 
+from sqlmodel import Session, select
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.types import ASGIApp
@@ -87,3 +95,86 @@ class HostDispatchMiddleware(BaseHTTPMiddleware):
         slug = resolve_app_slug_from_host(host, settings.site_url)
         request.state.app_slug = slug
         return await call_next(request)
+
+
+# CSP for child-app subdomains. Matches the structure of the legacy Caddy
+# header line that used to live in the ``*.apps.{$SITE_URL}`` block:
+#
+#   default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:
+#   connect-src 'self' <approved external origins...>
+#   frame-ancestors https://<SITE_URL>
+#   base-uri 'self'
+#   form-action 'self'
+#
+# The only piece that varies per app is ``connect-src``: same-origin XHR /
+# fetch always allowed; external HTTPS endpoints opt-in via the manifest's
+# ``permissions.network`` declaration and an admin's per-app approval.
+def build_child_app_csp(allowed_origins: Iterable[str], site_url: str) -> str:
+    """Render the per-app CSP header value for a child subdomain.
+
+    ``allowed_origins`` is expected to be a list of normalized HTTPS origins
+    (already validated by the manifest schema); any malformed entry is
+    skipped defensively rather than risk emitting an invalid CSP that the
+    browser would silently drop.
+    """
+    origins = ["'self'"]
+    for o in allowed_origins or []:
+        if isinstance(o, str) and o.startswith("https://"):
+            origins.append(o)
+    connect = " ".join(origins)
+    return (
+        "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; "
+        f"connect-src {connect}; "
+        f"frame-ancestors https://{site_url}; "
+        "base-uri 'self'; "
+        "form-action 'self'"
+    )
+
+
+class ChildAppCSPMiddleware(BaseHTTPMiddleware):
+    """Stamp a per-app Content-Security-Policy on child-subdomain responses.
+
+    Runs after ``HostDispatchMiddleware`` set ``request.state.app_slug``. If
+    that slug is present, looks up the App row and writes a CSP header whose
+    ``connect-src`` lists the admin-approved external origins for that app.
+    Same-origin requests (the portal SDK, the app's own assets) are always
+    allowed via ``'self'``. Requests to any other host (the portal shell at
+    the bare ``SITE_URL``, the health endpoint) pass through untouched —
+    Caddy still owns the portal-shell CSP.
+
+    DB access is best-effort. If the lookup fails (transient error, dropped
+    connection, etc.) we still emit a CSP with an empty external list, which
+    is the safer side to fall on — the app gets same-origin-only behavior
+    rather than no CSP at all.
+    """
+
+    def __init__(self, app: ASGIApp, *, engine):
+        super().__init__(app)
+        # Stash the engine so the middleware can open its own short-lived
+        # Session without depending on FastAPI's request-scoped get_db. We
+        # only need a single SELECT per child-app request.
+        self._engine = engine
+
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        slug = getattr(request.state, "app_slug", None)
+        if not slug:
+            return response
+        allowed: list[str] = []
+        try:
+            with Session(self._engine) as db:
+                # Local import to avoid pulling portal.models into the
+                # middleware module's import graph at startup (the same
+                # circular-import caution that already kept SLUG_RE
+                # duplicated in this file).
+                from portal.models import App
+
+                app_row = db.exec(select(App).where(App.slug == slug)).first()
+                if app_row is not None:
+                    allowed = list(app_row.allowed_origins or [])
+        except Exception:
+            allowed = []
+        response.headers["Content-Security-Policy"] = build_child_app_csp(
+            allowed, settings.site_url
+        )
+        return response

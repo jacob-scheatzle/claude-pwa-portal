@@ -16,9 +16,9 @@ from portal import api as api_module
 from portal import apps as apps_module
 from portal.access import accessible_app_ids_for
 from portal.config import settings
-from portal.db import get_db, init_db
+from portal.db import engine, get_db, init_db
 from portal.deps import current_user, require_user
-from portal.middleware import HostDispatchMiddleware
+from portal.middleware import ChildAppCSPMiddleware, HostDispatchMiddleware
 from portal.models import App, Setting, User
 from portal.security import (
     check_csrf,
@@ -80,6 +80,14 @@ app.add_middleware(
 # route handler runs. Per Starlette semantics, middleware added LATER runs
 # FIRST on the request path.
 app.add_middleware(HostDispatchMiddleware)
+# ChildAppCSP is added AFTER HostDispatch, making it the outermost layer:
+# on the request path it sees the bare request first and immediately calls
+# through; on the response path it runs last, by which point HostDispatch
+# has populated ``request.state.app_slug`` and the CSP can be stamped onto
+# the outgoing response. Per-app Content-Security-Policy lives in the
+# portal, not Caddy, because the allowed external ``connect-src`` origins
+# are per-app data sourced from ``App.allowed_origins``.
+app.add_middleware(ChildAppCSPMiddleware, engine=engine)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.include_router(apps_module.router)
 app.include_router(api_module.router)

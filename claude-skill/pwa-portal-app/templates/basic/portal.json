@@ -6,5 +6,8 @@
 	"icon": "icon.png",
 	"entry": "index.html",
 	"services": [],
+	"permissions": {
+		"network": []
+	},
 	"min_portal_version": "0.1.0"
 }

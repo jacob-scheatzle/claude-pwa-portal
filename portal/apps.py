@@ -49,6 +49,57 @@ router = APIRouter()
 SLUG_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 ALLOWED_SERVICES = {"pdf", "email", "storage"}
 
+# Validates an HTTPS origin: scheme://hostname[:port], no path / query /
+# fragment. Hostname segments follow standard DNS label rules; uppercase is
+# accepted in the manifest and normalized to lowercase before storage so
+# Caddy's lowercased Host matches at request time. We deliberately require
+# HTTPS — child apps loaded over HTTPS (the only mode the portal supports
+# in production) would generate mixed-content warnings if they fetched
+# plain HTTP anyway, and allowing ``http://`` would be a footgun.
+_ORIGIN_RE = re.compile(
+    r"^https://"
+    r"(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)"
+    r"(?:\.(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?))*"
+    r"(?::[0-9]{1,5})?$"
+)
+# Hard cap on how many origins a single manifest can declare. Protects the
+# CSP header from getting absurdly long and protects the admin UI from
+# becoming unreadable. Real apps need a handful.
+MAX_REQUESTED_ORIGINS = 12
+
+
+class PortalAppPermissions(BaseModel):
+    # Declarative list of external HTTPS origins the app's ``fetch()`` /
+    # ``XMLHttpRequest`` calls need to reach. The portal applies these to
+    # the ``connect-src`` directive of the per-app Content-Security-Policy.
+    # Same-origin requests (to the app's own subdomain or the SDK) are
+    # always allowed and don't need to be listed.
+    network: list[str] = Field(default_factory=list)
+
+    @field_validator("network")
+    @classmethod
+    def _origins_valid(cls, v: list[str]) -> list[str]:
+        if len(v) > MAX_REQUESTED_ORIGINS:
+            raise ValueError(
+                f"too many network origins ({len(v)} > {MAX_REQUESTED_ORIGINS})"
+            )
+        out: list[str] = []
+        seen: set[str] = set()
+        for raw in v:
+            if not isinstance(raw, str):
+                raise ValueError("network origins must be strings")
+            norm = raw.strip().lower().rstrip("/")
+            if not _ORIGIN_RE.match(norm):
+                raise ValueError(
+                    f"invalid origin '{raw}'; expected https://hostname[:port] "
+                    "with no path"
+                )
+            if norm in seen:
+                continue
+            seen.add(norm)
+            out.append(norm)
+        return out
+
 
 class PortalAppManifest(BaseModel):
     slug: str = Field(min_length=2, max_length=40)
@@ -58,6 +109,7 @@ class PortalAppManifest(BaseModel):
     icon: Optional[str] = None
     entry: str = "index.html"
     services: list[str] = Field(default_factory=list)
+    permissions: PortalAppPermissions = Field(default_factory=PortalAppPermissions)
     # Reserved for future portal/app compatibility checks; accepted but unused today.
     min_portal_version: Optional[str] = None
 
@@ -350,6 +402,7 @@ async def install_bundle(
                 shutil.rmtree(dest, ignore_errors=True)
                 raise
 
+            requested = list(manifest.permissions.network)
             app_row = App(
                 slug=manifest.slug,
                 name=manifest.name,
@@ -358,6 +411,13 @@ async def install_bundle(
                 icon=manifest.icon,
                 entry=manifest.entry,
                 services=manifest.services,
+                requested_origins=requested,
+                # Auto-approve everything the manifest declared on a fresh
+                # install. The admin already trusted the bundle enough to
+                # upload it; making them re-approve in a separate UI step
+                # would be friction for no security gain. Revocations remain
+                # one click away on the apps admin page.
+                allowed_origins=list(requested),
                 enabled=True,
                 uploaded_by=uploader.id,
             )
@@ -393,12 +453,25 @@ async def install_bundle(
             shutil.rmtree(staging, ignore_errors=True)
             raise
 
+        # On replace, preserve any origins the admin explicitly revoked
+        # (present in the previous requested list but absent from
+        # allowed_origins) so an in-place update of the same slug doesn't
+        # silently re-grant network access the admin deliberately turned off.
+        # Newly-declared origins are auto-approved on the same logic as
+        # fresh installs.
+        new_requested = list(manifest.permissions.network)
+        prev_requested = list(existing.requested_origins or [])
+        prev_allowed = set(existing.allowed_origins or [])
+        revoked = set(prev_requested) - prev_allowed
+        new_allowed = [o for o in new_requested if o not in revoked]
         existing.name = manifest.name
         existing.description = manifest.description
         existing.version = manifest.version
         existing.icon = manifest.icon
         existing.entry = manifest.entry
         existing.services = manifest.services
+        existing.requested_origins = new_requested
+        existing.allowed_origins = new_allowed
         existing.uploaded_by = uploader.id
         existing.uploaded_at = datetime.now(timezone.utc)
         db.add(existing)
@@ -494,6 +567,79 @@ async def api_apps_replace(
         "version": result.version,
         "replaced": True,
     }
+
+
+def _parse_extra_origins(raw: str) -> tuple[list[str], list[str]]:
+    """Split a free-text 'extras' textarea into (valid, invalid) origins.
+
+    Each non-blank line is one origin candidate. Validation reuses the same
+    regex the manifest validator applies — we never want the admin-added
+    list to diverge in format from the manifest-declared list.
+    """
+    valid: list[str] = []
+    invalid: list[str] = []
+    seen: set[str] = set()
+    for line in (raw or "").splitlines():
+        cand = line.strip().lower().rstrip("/")
+        if not cand:
+            continue
+        if not _ORIGIN_RE.match(cand):
+            invalid.append(line.strip())
+            continue
+        if cand in seen:
+            continue
+        seen.add(cand)
+        valid.append(cand)
+    return valid, invalid
+
+
+@router.post("/admin/apps/{slug}/network")
+def admin_apps_network_update(
+    slug: str,
+    request: Request,
+    db: DbDep,
+    admin: AdminDep,
+    csrf: str = Form(default="", alias="_csrf"),
+    allowed_requested: list[str] = Form(default_factory=list),
+    extras: str = Form(default=""),
+):
+    check_csrf(request, csrf)
+    app_row = db.exec(select(App).where(App.slug == slug)).first()
+    if app_row is None:
+        raise HTTPException(404)
+
+    # Sanitize: the checkbox set must be a subset of what the manifest
+    # actually requested. A malicious client posting an arbitrary value
+    # under ``allowed_requested`` would otherwise insert it into the
+    # allowed list bypassing the extras-format validation below.
+    requested = set(app_row.requested_origins or [])
+    checked = [o for o in allowed_requested if o in requested]
+
+    extra_valid, extra_invalid = _parse_extra_origins(extras)
+    if extra_invalid:
+        flash(
+            request,
+            "Some extra origins were invalid and were ignored: "
+            + ", ".join(extra_invalid[:5])
+            + (f" (+{len(extra_invalid) - 5} more)" if len(extra_invalid) > 5 else ""),
+        )
+
+    # Order: checked-requested first, then admin-added extras, both
+    # deduped while preserving order so the admin UI doesn't shuffle
+    # entries between page loads.
+    seen: set[str] = set()
+    new_allowed: list[str] = []
+    for o in checked + extra_valid:
+        if o in seen:
+            continue
+        seen.add(o)
+        new_allowed.append(o)
+
+    app_row.allowed_origins = new_allowed
+    db.add(app_row)
+    db.commit()
+    flash(request, f"Network access updated for {app_row.name}.")
+    return RedirectResponse("/admin/apps", status_code=303)
 
 
 @router.post("/admin/apps/{slug}/toggle")

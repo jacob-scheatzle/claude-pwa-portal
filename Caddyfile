@@ -71,13 +71,15 @@
 	}
 
 	header {
-		# Strict CSP for child apps. The ``unsafe-inline`` / ``unsafe-eval`` /
-		# ``data:`` / ``blob:`` allowances mirror the legacy /apps/* CSP — child
-		# apps regularly ship inline scripts/styles, data: images, etc. Real
-		# isolation now comes from the origin, not from CSP. ``frame-ancestors``
-		# restricts embedding to the portal shell so nobody else can iframe a
-		# child app and ride its session.
-		Content-Security-Policy "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; frame-ancestors https://{$SITE_URL}; base-uri 'self'; form-action 'self'"
+		# Per-app Content-Security-Policy is set by the portal itself, NOT
+		# here. The portal's ChildAppCSPMiddleware writes a CSP whose
+		# ``connect-src`` directive enumerates the external HTTPS origins
+		# the app's manifest declared and an admin approved — that
+		# information is per-app and lives in the database, so Caddy can't
+		# compute it statically. The middleware always includes
+		# ``frame-ancestors https://{$SITE_URL}`` so the iframe-only
+		# embedding rule is preserved. The rest of the security headers
+		# below are response-agnostic and stay in Caddy.
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
 		# Defense-in-depth headers mirrored from the portal-shell block.
 		# Deliberately NOT mirrored:
