@@ -159,7 +159,19 @@ CLAUDE.md                Codebase context loaded by Claude Code sessions
 
 ## License
 
-This project is intended to be open source. The repository does not yet ship a `LICENSE` file — add one before publishing (MIT and Apache-2.0 are common picks for projects in this niche).
+**[GNU Affero General Public License v3.0](LICENSE)** (AGPL-3.0). Full text in [`LICENSE`](LICENSE).
+
+In plain terms:
+
+- Forking, modifying, and self-hosting for your own business is fine.
+- If you modify the portal and **run it as a network service** that others can interact with (the obvious commercialization path here), AGPL-3.0 requires you to release **your full modified source** under the same AGPL terms to anyone who uses the service. This is the "Affero clause" — it closes the SaaS loophole the regular GPL leaves open.
+- No warranty. The license disclaims all liability.
+
+The practical effect: hobbyist forks and internal-business use are unaffected; anyone trying to turn this into a closed-source SaaS product would have to publish their work, which most companies refuse to do. If your use case requires a commercial license without the AGPL obligations, contact the author.
+
+## Contributing
+
+This is an early project. Issues and PRs welcome. By contributing, you agree your contributions are licensed under the same AGPL-3.0 terms. Skim the architectural notes above before proposing significant structural changes.
 
 ## Contributing
 
