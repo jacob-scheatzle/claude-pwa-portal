@@ -12,7 +12,7 @@ from typing import Optional
 
 from sqlmodel import Session, select
 
-from portal.models import User, UserSession
+from portal.models import AppSession, User, UserSession
 
 # Bump last_seen_at lazily: writing on every authenticated request would mean
 # a DB commit per request, which is wasteful for an audit-style timestamp.
@@ -85,6 +85,83 @@ def touch_session(db: Session, session: UserSession) -> None:
     Treats a naive last_seen_at as UTC (defensive — SQLite drops tzinfo on
     round-trip) so the comparison is meaningful.
     """
+    now = _utcnow()
+    last = session.last_seen_at
+    if last is not None and last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
+    if last is None or (now - last) > _LAST_SEEN_REFRESH:
+        session.last_seen_at = now
+        db.add(session)
+        db.commit()
+
+
+# ----- AppSession helpers -----
+#
+# AppSession is the per-(user, app-slug) cookie session minted on the app
+# subdomain after a launch-token exchange. Its lifetime is independent of
+# UserSession; cascade revocation happens explicitly when the user logs out
+# of the portal or rotates their password (see portal.main).
+
+
+def create_app_session(db: Session, user_id: int, slug: str) -> str:
+    """Insert a new AppSession row and return its opaque id (the cookie value)."""
+    sid = secrets.token_urlsafe(32)
+    row = AppSession(id=sid, user_id=user_id, slug=slug)
+    db.add(row)
+    db.commit()
+    return sid
+
+
+def get_active_app_session(
+    db: Session, session_id: Optional[str]
+) -> Optional[AppSession]:
+    """Return the row iff it exists, is not revoked, and is for some user."""
+    if not session_id:
+        return None
+    row = db.get(AppSession, session_id)
+    if row is None or row.revoked_at is not None:
+        return None
+    return row
+
+
+def revoke_app_session(db: Session, session_id: Optional[str]) -> None:
+    """Mark an app session row revoked. No-op if missing or already revoked."""
+    if not session_id:
+        return
+    row = db.get(AppSession, session_id)
+    if row is None or row.revoked_at is not None:
+        return
+    row.revoked_at = _utcnow()
+    db.add(row)
+    db.commit()
+
+
+def revoke_all_app_sessions_for_user(db: Session, user_id: int) -> int:
+    """Revoke every active AppSession for a user. Returns count revoked.
+
+    Called from logout and password-change handlers so signing out of the
+    portal (or rotating a compromised password) also tears down the user's
+    open child-app sessions.
+    """
+    rows = db.exec(
+        select(AppSession).where(
+            AppSession.user_id == user_id,
+            AppSession.revoked_at.is_(None),  # type: ignore[union-attr]
+        )
+    ).all()
+    now = _utcnow()
+    count = 0
+    for row in rows:
+        row.revoked_at = now
+        db.add(row)
+        count += 1
+    if count:
+        db.commit()
+    return count
+
+
+def touch_app_session(db: Session, session: AppSession) -> None:
+    """Bump AppSession.last_seen_at if older than _LAST_SEEN_REFRESH."""
     now = _utcnow()
     last = session.last_seen_at
     if last is not None and last.tzinfo is None:

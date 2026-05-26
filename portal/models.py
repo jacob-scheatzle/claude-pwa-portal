@@ -57,3 +57,29 @@ class UserSession(SQLModel, table=True):
     created_at: datetime = Field(default_factory=_utcnow)
     last_seen_at: datetime = Field(default_factory=_utcnow)
     revoked_at: Optional[datetime] = None
+
+
+class AppLaunchToken(SQLModel, table=True):
+    # Single-use, short-lived token minted on the portal origin and consumed
+    # on the app subdomain to bootstrap an AppSession. The token's ``slug`` is
+    # locked at mint time — the subdomain handler refuses to mint an
+    # AppSession unless the token's slug matches the host-derived slug.
+    token: str = Field(primary_key=True)
+    user_id: int = Field(foreign_key="user.id", index=True)
+    slug: str = Field(index=True)
+    created_at: datetime = Field(default_factory=_utcnow)
+    expires_at: datetime
+    consumed_at: Optional[datetime] = None
+
+
+class AppSession(SQLModel, table=True):
+    # Per-(user, app-slug) session minted by the exchange endpoint on the app
+    # subdomain. Lifetime is independent of UserSession; cascade revocation is
+    # explicit in logout / password-change handlers, so no parent FK linkage
+    # is stored (design spec option (b)).
+    id: str = Field(primary_key=True)
+    user_id: int = Field(foreign_key="user.id", index=True)
+    slug: str = Field(index=True)
+    created_at: datetime = Field(default_factory=_utcnow)
+    last_seen_at: datetime = Field(default_factory=_utcnow)
+    revoked_at: Optional[datetime] = None

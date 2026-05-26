@@ -2,7 +2,7 @@ import time
 from contextlib import asynccontextmanager
 from typing import Annotated, Optional
 
-from fastapi import Depends, FastAPI, Form, Request
+from fastapi import Depends, FastAPI, Form, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import EmailStr, TypeAdapter, ValidationError
@@ -15,6 +15,7 @@ from portal import apps as apps_module
 from portal.config import settings
 from portal.db import get_db, init_db
 from portal.deps import current_user, require_user
+from portal.middleware import HostDispatchMiddleware
 from portal.models import App, Setting, User
 from portal.security import (
     check_csrf,
@@ -22,7 +23,12 @@ from portal.security import (
     validate_password,
     verify_password,
 )
-from portal.sessions import create_session, revoke_all_for_user, revoke_session
+from portal.sessions import (
+    create_session,
+    revoke_all_app_sessions_for_user,
+    revoke_all_for_user,
+    revoke_session,
+)
 from portal.settings_store import get_setting, set_setting
 from portal.web import STATIC_DIR, flash, render
 
@@ -41,6 +47,11 @@ app.add_middleware(
     https_only=settings.cookies_secure,
     max_age=settings.session_max_age,
 )
+# HostDispatch goes after SessionMiddleware (so it executes first on each
+# request) and tags ``request.state.app_slug`` from the Host header before any
+# route handler runs. Per Starlette semantics, middleware added LATER runs
+# FIRST on the request path.
+app.add_middleware(HostDispatchMiddleware)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.include_router(apps_module.router)
 app.include_router(api_module.router)
@@ -117,6 +128,12 @@ def _clear_login_failures(key: tuple[str, str]) -> None:
 
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request, db: DbDep, user: UserDep):
+    # On an app subdomain, ``/`` is the child app's index.html, not the
+    # portal dashboard. Dispatch to the child-app serve path which handles
+    # the no-cookie redirect back to the portal launcher.
+    if getattr(request.state, "app_slug", None):
+        return apps_module.serve_subdomain_request(request, db, path="")
+
     if not admin_exists(db):
         return RedirectResponse("/setup", status_code=303)
     if user is None:
@@ -285,7 +302,14 @@ def logout(
     check_csrf(request, csrf)
     # Revoke the server-side row BEFORE clearing the cookie so a stolen
     # pre-logout cookie can't continue to authenticate.
-    revoke_session(db, request.session.get("session_id"))
+    sid = request.session.get("session_id")
+    # Resolve the user behind this session BEFORE revoking, so we can cascade
+    # the revocation to every open child-app session for the same user.
+    from portal.sessions import get_active_session
+    session_row = get_active_session(db, sid)
+    if session_row is not None:
+        revoke_all_app_sessions_for_user(db, session_row.user_id)
+    revoke_session(db, sid)
     request.session.clear()
     return RedirectResponse("/login", status_code=303)
 
@@ -324,10 +348,13 @@ def profile_change_password(
     db.add(user)
     db.commit()
     # Rotate the session after a successful password change: revoke every
-    # active session for this user (logging out other devices that may have
-    # been hijacked under the old password) and mint a fresh one for the
-    # current browser so the user stays signed in here.
+    # active portal session AND every open child-app session for this user
+    # (logging out other devices that may have been hijacked under the old
+    # password) and mint a fresh portal session for the current browser so
+    # the user stays signed in here. Child-app sessions can be re-minted by
+    # re-launching from the dashboard.
     revoke_all_for_user(db, user.id)
+    revoke_all_app_sessions_for_user(db, user.id)
     new_sid = create_session(db, user)
     request.session.clear()
     request.session["session_id"] = new_sid
@@ -338,3 +365,18 @@ def profile_change_password(
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+# ----- App subdomain catch-all -----
+#
+# Registered LAST so every other portal-origin route gets a chance to match
+# first. On the portal origin (``request.state.app_slug is None``) this hands
+# back a 404 — the route is effectively a no-op for portal-origin traffic.
+# On an app subdomain it serves the child app's static bundle out of
+# ``data/apps/<slug>/`` (or the shared SDK at ``/portal-sdk.js``).
+
+@app.get("/{full_path:path}", include_in_schema=False)
+def app_subdomain_catch_all(full_path: str, request: Request, db: DbDep):
+    if not getattr(request.state, "app_slug", None):
+        raise HTTPException(status_code=404)
+    return apps_module.serve_subdomain_request(request, db, path=full_path)

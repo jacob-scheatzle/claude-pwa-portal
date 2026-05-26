@@ -8,13 +8,14 @@ import mimetypes
 import re
 import time
 from collections import deque
+from datetime import datetime, timezone
 from email.message import EmailMessage
 from pathlib import Path
 from threading import Lock
 from typing import Annotated, Optional
 
 from fastapi import (
-    APIRouter, Depends, File, Header, HTTPException, Request, UploadFile,
+    APIRouter, Depends, File, Header, HTTPException, Request, Response, UploadFile,
 )
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, EmailStr, Field
@@ -23,8 +24,9 @@ from sqlmodel import Session, select
 from portal.apps import UploadError, install_bundle
 from portal.config import settings
 from portal.db import get_db
-from portal.deps import current_user_or_token
-from portal.models import App, User
+from portal.deps import APP_SESSION_COOKIE, current_user_or_token
+from portal.models import App, AppLaunchToken, User
+from portal.sessions import create_app_session
 from portal.settings_store import get_setting, smtp_config
 from portal.smtp import send_message
 
@@ -151,6 +153,87 @@ def get_csrf_token(request: Request, user: UserDep):
         raise HTTPException(400, "CSRF token only relevant for cookie auth")
     from portal.security import csrf_token as _csrf_token
     return {"csrf_token": _csrf_token(request)}
+
+
+# ----- /session/exchange (app subdomain) -----
+
+class SessionExchangeRequest(BaseModel):
+    token: str = Field(min_length=1, max_length=200)
+
+
+@router.post("/session/exchange")
+def session_exchange(
+    body: SessionExchangeRequest,
+    request: Request,
+    response: Response,
+    db: DbDep,
+):
+    """Trade a single-use launch token for an AppSession cookie.
+
+    Only meaningful on an app subdomain (the middleware sets
+    ``request.state.app_slug`` based on the Host header). Validation:
+
+    - the request must be on an app subdomain (otherwise 400)
+    - the token must exist, be unconsumed, unexpired, and bound to that
+      subdomain's slug (otherwise 401 with a uniform error message — we
+      deliberately don't distinguish "wrong slug" from "expired" so probing
+      tokens reveals as little as possible)
+    - the linked user must still exist (otherwise 401)
+
+    On success, marks the token consumed, mints an AppSession, sets the
+    ``app_session`` cookie scoped to the current subdomain, and returns
+    ``{"ok": true}``.
+    """
+    slug = getattr(request.state, "app_slug", None)
+    if not slug:
+        raise HTTPException(400, "Not on an app subdomain")
+
+    launch = db.get(AppLaunchToken, body.token)
+    now = datetime.now(timezone.utc)
+
+    def _bad():
+        # Uniform reject to avoid leaking which validation step failed.
+        raise HTTPException(401, "Invalid or expired launch token")
+
+    if launch is None or launch.consumed_at is not None:
+        _bad()
+    expires_at = launch.expires_at
+    if expires_at is not None and expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if expires_at is None or expires_at < now:
+        _bad()
+    if launch.slug != slug:
+        _bad()
+
+    user = db.get(User, launch.user_id)
+    if user is None:
+        _bad()
+
+    launch.consumed_at = now
+    db.add(launch)
+    db.commit()
+
+    sid = create_app_session(db, launch.user_id, slug)
+
+    # Cookie is scoped to the exact subdomain by ``Domain`` so it never leaks
+    # to other app subdomains or to the portal origin. ``SameSite=Lax`` is
+    # sufficient because the iframe load + subsequent fetches are same-site
+    # (same registrable domain as the portal) and the only state-changing
+    # path here (the POST itself) carries the launch token, which is
+    # single-use and time-bound.
+    host = request.headers.get("host", "")
+    cookie_domain = host.split(":", 1)[0] or f"{slug}.apps.{settings.site_url}"
+    response.set_cookie(
+        APP_SESSION_COOKIE,
+        sid,
+        httponly=True,
+        secure=settings.cookies_secure,
+        samesite="lax",
+        path="/",
+        domain=cookie_domain,
+        max_age=settings.session_max_age,
+    )
+    return {"ok": True}
 
 
 # ----- /pdf -----

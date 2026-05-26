@@ -9,7 +9,7 @@ import shutil
 import tempfile
 import zipfile
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -21,10 +21,22 @@ from sqlmodel import Session, select
 
 from portal.config import settings
 from portal.db import get_db
-from portal.deps import current_user, current_user_or_token, require_admin
-from portal.models import App, User
+from portal.deps import (
+    APP_SESSION_COOKIE,
+    current_app_session_user,
+    current_user,
+    current_user_or_token,
+    require_admin,
+    require_user,
+)
+from portal.models import App, AppLaunchToken, User
 from portal.security import check_csrf
-from portal.web import flash, render
+from portal.web import STATIC_DIR, flash, render
+
+# How long a launch token is honored. The token is single-use and is consumed
+# almost immediately on the subdomain handoff; 60 s leaves slack for slow
+# devices / browser load while keeping the replay window narrow.
+_LAUNCH_TOKEN_TTL = timedelta(seconds=60)
 
 router = APIRouter()
 
@@ -251,6 +263,10 @@ DbDep = Annotated[Session, Depends(get_db)]
 UserDep = Annotated[Optional[User], Depends(current_user)]
 TokenUserDep = Annotated[Optional[User], Depends(current_user_or_token)]
 AdminDep = Annotated[User, Depends(require_admin)]
+RequireUserDep = Annotated[User, Depends(require_user)]
+AppSessionUserDep = Annotated[
+    Optional[tuple[User, str]], Depends(current_app_session_user)
+]
 
 
 # ----- Admin routes -----
@@ -531,6 +547,57 @@ def app_root_redirect(slug: str):
     return RedirectResponse(f"/apps/{slug}/", status_code=308)
 
 
+@router.get("/apps/{slug}/launch")
+def app_launch(
+    slug: str,
+    request: Request,
+    db: DbDep,
+    user: RequireUserDep,
+):
+    """Mint a single-use launch token and redirect to the app subdomain.
+
+    Only reachable in the isolated-origin model. When
+    ``CHILD_APPS_SAME_ORIGIN`` is true (the current default), this endpoint
+    404s — child apps still live at ``/apps/<slug>/`` under the portal origin
+    and there's nothing to launch into.
+
+    The token's slug is bound at mint time. The exchange endpoint on the
+    subdomain refuses to mint an AppSession if its host-derived slug doesn't
+    match the token's, so the user can't forward a token for app A and have
+    it accepted on app B's subdomain.
+    """
+    if settings.child_apps_same_origin:
+        raise HTTPException(404)
+
+    app_row = db.exec(select(App).where(App.slug == slug)).first()
+    if app_row is None or not app_row.enabled:
+        raise HTTPException(404)
+
+    token = secrets.token_urlsafe(32)
+    now = datetime.now(timezone.utc)
+    db.add(
+        AppLaunchToken(
+            token=token,
+            user_id=user.id,
+            slug=slug,
+            created_at=now,
+            expires_at=now + _LAUNCH_TOKEN_TTL,
+        )
+    )
+    db.commit()
+
+    scheme = "https" if settings.cookies_secure else "http"
+    # Preserve the port the portal is reached on, so a dev hitting
+    # http://lvh.me:8000/apps/x/launch ends up on
+    # http://x.apps.lvh.me:8000/#token=... rather than the bare hostname.
+    host = request.headers.get("host", settings.site_url)
+    port = ""
+    if ":" in host and not host.startswith("["):
+        port = ":" + host.rsplit(":", 1)[1]
+    target = f"{scheme}://{slug}.apps.{settings.site_url}{port}/#token={token}"
+    return RedirectResponse(target, status_code=303)
+
+
 @router.get("/apps/{slug}/")
 def serve_app_index(slug: str, request: Request, db: DbDep, user: UserDep):
     return _serve_app_file(slug, db, user, path="")
@@ -570,3 +637,102 @@ def _serve_app_file(
     if not target.is_file():
         raise HTTPException(404)
     return FileResponse(target)
+
+
+# ----- App-subdomain serving (the new per-app origin) -----
+
+def _serve_app_subdomain_path(
+    request: Request, db: Session, slug: str, path: str
+) -> FileResponse | RedirectResponse:
+    """Serve a static file from ``data/apps/<slug>/<path>``.
+
+    Requires an active ``AppSession`` cookie for this subdomain (checked by
+    the caller via current_app_session_user). The bare ``portal-sdk.js`` is
+    served from the portal's static dir so child apps fetching it from their
+    own origin get the same code that the portal serves at root.
+    """
+    app_row = db.exec(select(App).where(App.slug == slug)).first()
+    if app_row is None or not app_row.enabled:
+        raise HTTPException(404)
+
+    # The SDK is shared across all child apps. Serve it from the portal's
+    # static dir on every subdomain so apps just do <script src="/portal-sdk.js">.
+    if path == "portal-sdk.js":
+        return FileResponse(
+            STATIC_DIR / "portal-sdk.js",
+            media_type="application/javascript",
+            headers={"Cache-Control": "no-cache"},
+        )
+
+    apps_root = _apps_root()
+    app_dir = (apps_root / slug).resolve()
+    try:
+        app_dir.relative_to(apps_root)
+    except ValueError:
+        raise HTTPException(404)
+
+    if path in ("", "/"):
+        rel = app_row.entry
+    else:
+        rel = path
+
+    target = (app_dir / rel).resolve()
+    try:
+        target.relative_to(app_dir)
+    except ValueError:
+        raise HTTPException(404)
+    if not target.is_file():
+        raise HTTPException(404)
+    return FileResponse(target)
+
+
+def _launch_redirect_response(request: Request, slug: str) -> RedirectResponse:
+    """Bounce a no-cookie subdomain hit back to the portal-origin launcher.
+
+    Preserves whatever port the request arrived on. In dev (uvicorn on 8000,
+    lvh.me) that's how the bounce can land back on the same port; in prod
+    (Caddy on 443 with cookies_secure=True) the port is implicit in the
+    scheme.
+    """
+    scheme = "https" if settings.cookies_secure else "http"
+    host = request.headers.get("host", settings.site_url)
+    port = ""
+    if ":" in host and not host.startswith("["):
+        port = ":" + host.rsplit(":", 1)[1]
+    target = f"{scheme}://{settings.site_url}{port}/apps/{slug}/launch"
+    return RedirectResponse(target, status_code=303)
+
+
+def serve_subdomain_request(
+    request: Request,
+    db: Session,
+    path: str,
+) -> FileResponse | RedirectResponse:
+    """Dispatch a subdomain GET ``/`` or ``/<path>`` request.
+
+    Used by the main app's catch-all (and by the explicit ``/`` handler when
+    a request arrived on an app subdomain). The slug comes from
+    ``request.state.app_slug`` (set by HostDispatchMiddleware); we never trust
+    a path-derived slug here. Without an AppSession cookie matching this
+    subdomain, we bounce back to the portal-origin launcher to mint one.
+    """
+    slug = getattr(request.state, "app_slug", None)
+    if not slug:
+        raise HTTPException(404)
+
+    # ``portal-sdk.js`` is served pre-auth: it's the bootstrap script that
+    # runs the launch-token exchange. Without this exception, the SDK could
+    # never load on the first hit because no AppSession exists yet.
+    if path != "portal-sdk.js":
+        sid = request.cookies.get(APP_SESSION_COOKIE)
+        from portal.sessions import get_active_app_session, touch_app_session
+        session_row = get_active_app_session(db, sid)
+        if session_row is None or session_row.slug != slug:
+            return _launch_redirect_response(request, slug)
+        # Refresh the session row but skip user existence checks here — that
+        # belongs to API endpoints that touch user data. Static-file serving
+        # only needs a valid AppSession.
+        touch_app_session(db, session_row)
+        request.state.auth_method = "app_session"
+
+    return _serve_app_subdomain_path(request, db, slug, path)

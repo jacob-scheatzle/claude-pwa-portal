@@ -18,6 +18,14 @@ class Settings(BaseSettings):
     cookies_secure: bool = False
     session_max_age: int = 60 * 60 * 24 * 14  # 14 days
 
+    # When True (the current default, preserving today's behavior), child apps
+    # are served same-origin with the portal at ``/apps/<slug>/``. When False,
+    # child apps are served from per-app subdomains at ``<slug>.apps.<SITE_URL>``
+    # with their own isolated AppSession cookie — see
+    # docs/per-app-origin-design.md. Requires a wildcard DNS A record at
+    # ``*.apps.<SITE_URL>`` pointing at this VPS when False.
+    child_apps_same_origin: Optional[bool] = True
+
     # SMTP (read here in step 5; admin UI will override in step 6)
     smtp_host: Optional[str] = None
     smtp_port: int = 587
