@@ -16,6 +16,19 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./data/portal.db"
     data_dir: str = "./data"
     cookies_secure: bool = False
+    # When True, the bundled Caddy serves plain HTTP only (no auto-HTTPS, no
+    # Let's Encrypt, no on-demand TLS). Two intended use cases:
+    #   1. A load balancer / reverse proxy in front of this stack terminates
+    #      TLS and forwards plain HTTP. The operator should keep
+    #      ``COOKIES_SECURE=true`` so session cookies stay Secure-flagged
+    #      (client → LB is still HTTPS; uvicorn honors X-Forwarded-Proto).
+    #   2. Local testing / strictly-internal deployments where TLS isn't
+    #      desired. Set ``COOKIES_SECURE=false`` so the browser actually
+    #      sends cookies over HTTP.
+    # This flag is read by the Caddy container's entrypoint; the portal
+    # process itself doesn't branch on it (all scheme decisions cascade
+    # through ``cookies_secure``).
+    http_only: bool = False
     session_max_age: int = 60 * 60 * 24 * 14  # 14 days
 
     # When True (the current default, preserving today's behavior), child apps

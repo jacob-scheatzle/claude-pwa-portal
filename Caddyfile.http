@@ -1,0 +1,66 @@
+# HTTP-only Caddyfile. Active when HTTP_ONLY=true in .env (the caddy
+# container's entrypoint picks this file over the default Caddyfile).
+#
+# Two intended deployment shapes:
+#
+#   1. Behind a load balancer / reverse proxy that terminates TLS. Caddy
+#      sees plain HTTP from the LB; the browser sees HTTPS at the LB. Keep
+#      COOKIES_SECURE=true; uvicorn honors X-Forwarded-Proto so cookies and
+#      launch-redirect URLs come out HTTPS at the browser.
+#
+#   2. Local testing or strictly-internal deployments where TLS isn't
+#      desired. Set COOKIES_SECURE=false so the browser sends cookies over
+#      HTTP, and the launch redirect uses ``http://`` scheme.
+#
+# What's intentionally different from the default Caddyfile:
+#   - The ``http://`` site-address prefix disables Caddy's automatic-HTTPS
+#     feature. No Let's Encrypt requests, no port 443 binding.
+#   - No ``on_demand_tls`` global block / ``tls { on_demand }`` site
+#     directive — there's no TLS to negotiate.
+#   - No ``Strict-Transport-Security`` header. HSTS over plain HTTP is
+#     invalid; behind an LB the LB itself should set HSTS.
+#   - ``frame-ancestors`` on the child-app CSP accepts both ``http://`` and
+#     ``https://`` flavors of SITE_URL so the iframe wrapper works whether
+#     the browser sees the portal at HTTP (local-testing) or HTTPS
+#     (behind-LB) — only one matches the real document URL at runtime.
+
+http://{$SITE_URL:localhost} {
+	reverse_proxy portal:8000
+
+	encode zstd gzip
+
+	header {
+		X-Frame-Options "DENY"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		Cross-Origin-Opener-Policy "same-origin"
+		# Portal-shell CSP. Same as the default Caddyfile minus HSTS.
+		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+	}
+
+	@apps path /apps/*
+	header @apps Content-Security-Policy "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+}
+
+# Per-app subdomains. Same routing as the default Caddyfile, just served
+# over plain HTTP. The portal's HostDispatchMiddleware still resolves
+# ``<slug>.apps.<SITE_URL>`` to a per-app origin, and AppSession cookies
+# stay scoped to the subdomain.
+http://*.apps.{$SITE_URL} {
+	reverse_proxy portal:8000
+
+	encode zstd gzip
+
+	header {
+		# Strict CSP for child apps. ``frame-ancestors`` lists both schemes
+		# so the iframe wrapper works under either deployment shape (only
+		# one matches the actual portal-origin URL the browser is on).
+		Content-Security-Policy "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; frame-ancestors http://{$SITE_URL} https://{$SITE_URL}; base-uri 'self'; form-action 'self'"
+		# Defense-in-depth headers (HSTS deliberately omitted — see header
+		# block above for the rationale).
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+	}
+}

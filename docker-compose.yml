@@ -22,6 +22,9 @@ services:
       SECRET_KEY: ${SECRET_KEY:?SECRET_KEY must be set in .env}
       DATABASE_URL: sqlite:////data/portal.db
       DATA_DIR: /data
+      COOKIES_SECURE: ${COOKIES_SECURE:-true}
+      HTTP_ONLY: ${HTTP_ONLY:-false}
+      CHILD_APPS_SAME_ORIGIN: ${CHILD_APPS_SAME_ORIGIN:-false}
     volumes:
       - ./data:/data
     expose:
@@ -35,9 +38,13 @@ services:
     image: ghcr.io/jacob-scheatzle/claude-pwa-portal-caddy:${PORTAL_IMAGE_TAG:-latest}
     ports:
       - "80:80"
+      # Port 443 is unused when HTTP_ONLY=true (Caddy never binds it). Safe
+      # to leave; comment out if something else on the host needs 443.
       - "443:443"
     environment:
       SITE_URL: ${SITE_URL:-localhost}
+      # Selects Caddyfile.http (plain HTTP, no auto-HTTPS) when true.
+      HTTP_ONLY: ${HTTP_ONLY:-false}
     volumes:
       - caddy_data:/data
       - caddy_config:/config

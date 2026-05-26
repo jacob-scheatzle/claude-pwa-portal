@@ -41,6 +41,8 @@ When you see `Application startup complete`, visit `https://<SITE_URL>/` and wal
 
 If you need wildcard DNS for per-app origin isolation (the default), see [section 2.6 below](#26-set-up-wildcard-dns-for-child-apps).
 
+If you're putting this behind a load balancer that terminates TLS, or you want to run plain HTTP for local testing, see [section 2.7: HTTP-only mode](#27-optional-http-only-mode).
+
 If you want to build from source instead (for development or local patches), skip the Quickstart and use the **Build from source** section after the troubleshooting block.
 
 ---
@@ -126,6 +128,41 @@ Most DNS providers support wildcards. If you're using sslip.io (`<ip>.sslip.io`)
 Caddy will fetch a Let's Encrypt cert for each subdomain on first access using HTTP-01 challenges; no DNS provider credentials needed. The portal protects against cert-issuance probing via an `/internal/cert-ask` endpoint that only approves real app slugs.
 
 If you'd rather skip this step, set `CHILD_APPS_SAME_ORIGIN=true` in `.env`. The portal will then serve apps at `<SITE_URL>/apps/<slug>/` (same origin) with a security warning in the admin UI.
+
+## 2.7. Optional: HTTP-only mode
+
+The default deployment terminates TLS in the bundled Caddy and gets Let's Encrypt certs automatically. If that doesn't fit, set `HTTP_ONLY=true` in `.env` to make Caddy serve plain HTTP instead. Two situations this is meant for:
+
+### Behind a load balancer that terminates TLS
+
+If you're putting this stack behind a cloud load balancer (AWS ALB, Cloudflare, nginx on a separate box, etc.) that already handles HTTPS, you don't want Caddy fighting it for port 443 or fetching its own certs. Set:
+
+```ini
+HTTP_ONLY=true
+COOKIES_SECURE=true   # client → LB is still HTTPS, so cookies stay Secure-flagged
+SITE_URL=portal.example.com   # the public hostname your users see at the LB
+```
+
+The LB should forward to the portal VPS on port 80 and set `X-Forwarded-Proto: https`. uvicorn already trusts that header (we set `--proxy-headers --forwarded-allow-ips=*` in the container CMD), so cookies, launch-redirect URLs, and CSP `frame-ancestors` all come out HTTPS at the browser.
+
+Port 443 in `docker-compose.yml` is harmless to leave (Caddy won't bind it in HTTP_ONLY mode) — comment it out if something else on the host needs that port.
+
+### Local testing without self-signed cert warnings
+
+For dev or strictly-internal use:
+
+```ini
+HTTP_ONLY=true
+COOKIES_SECURE=false   # browser will refuse Secure cookies over plain HTTP
+SITE_URL=localhost     # or lvh.me for per-app subdomain testing
+```
+
+The portal is then reachable at `http://localhost/` with no cert warnings.
+
+### What HTTP_ONLY actually changes
+
+- The bundled Caddy boots from `Caddyfile.http` instead of `Caddyfile`. It listens on port 80 only, never requests Let's Encrypt certs, and emits no HSTS header.
+- The portal process itself is unchanged. All scheme decisions (cookie `Secure` attribute, launch-redirect URL) cascade through `COOKIES_SECURE`, so the right combination depends on whether you're behind a TLS-terminating proxy.
 
 ## 3. Boot it
 

@@ -20,5 +20,8 @@ services:
       context: .
       dockerfile: Dockerfile.caddy
     volumes:
-      # Override the baked-in Caddyfile so devs see edits without rebuilding.
+      # Override the baked-in Caddyfiles + entrypoint so devs see edits
+      # without rebuilding the caddy image.
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./Caddyfile.http:/etc/caddy/Caddyfile.http:ro
+      - ./caddy-entrypoint.sh:/usr/local/bin/portal-caddy-entrypoint.sh:ro

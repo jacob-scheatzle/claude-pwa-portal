@@ -1,8 +1,13 @@
-# Thin layer over the official Caddy image that bakes the portal's Caddyfile
-# in. Lets production deployers run `docker compose up` without needing the
-# repo source on disk — the Caddyfile is just shipped as part of the image.
+# Thin layer over the official Caddy image that bakes the portal's
+# Caddyfiles in. Lets production deployers run `docker compose up` without
+# needing the repo source on disk — both Caddyfile variants are shipped as
+# part of the image. The entrypoint script picks one based on HTTP_ONLY.
 #
-# Developers iterating on Caddyfile use the dev compose override which
-# bind-mounts the local Caddyfile over this baked copy.
+# Developers iterating on either Caddyfile use the dev compose override
+# which bind-mounts the local files over these baked copies.
 FROM caddy:2
 COPY Caddyfile /etc/caddy/Caddyfile
+COPY Caddyfile.http /etc/caddy/Caddyfile.http
+COPY caddy-entrypoint.sh /usr/local/bin/portal-caddy-entrypoint.sh
+RUN chmod +x /usr/local/bin/portal-caddy-entrypoint.sh
+ENTRYPOINT ["/usr/local/bin/portal-caddy-entrypoint.sh"]
