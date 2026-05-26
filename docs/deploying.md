@@ -2,6 +2,49 @@
 
 This guide walks through deploying the portal on a small VPS. A box with **1 vCPU and 1–2 GB of RAM** is plenty for a single-business deployment with a handful of apps.
 
+## Quickstart (no source clone required)
+
+If you just want a running portal and don't need to modify the source:
+
+```bash
+# On the VPS, in a fresh directory:
+mkdir my-portal && cd my-portal
+
+# 1. Download the production compose file + env template
+curl -O https://raw.githubusercontent.com/jacob-scheatzle/claude-pwa-portal/main/docker-compose.yml
+curl -o .env https://raw.githubusercontent.com/jacob-scheatzle/claude-pwa-portal/main/.env.example
+
+# 2. Edit .env — set SITE_URL to your domain (or <ip>.sslip.io),
+#    paste a SECRET_KEY generated with:
+#      python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+nano .env
+chmod 600 .env
+
+# 3. Pre-create the data dir owned by the container's runtime uid
+mkdir -p data && sudo chown -R 1001:1001 data
+
+# 4. If the image is private (default while the repo is private),
+#    log in to GHCR once. Skip this step if the images are public.
+echo $GH_PAT | docker login ghcr.io -u <your-github-username> --password-stdin
+
+# 5. Pull and run
+docker compose pull
+docker compose up -d
+docker compose logs -f
+```
+
+When you see `Application startup complete`, visit `https://<SITE_URL>/` and walk through the first-run wizard.
+
+**To upgrade later:** `docker compose pull && docker compose up -d` from the same directory.
+
+**To pin a version** (recommended once you've tested an upgrade): add `PORTAL_IMAGE_TAG=v0.1.0` (or `sha-<short>`) to `.env`. Default is `latest`.
+
+If you need wildcard DNS for per-app origin isolation (the default), see [section 2.6 below](#26-set-up-wildcard-dns-for-child-apps).
+
+If you want to build from source instead (for development or local patches), skip the Quickstart and use the **Build from source** section after the troubleshooting block.
+
+---
+
 ## Prerequisites
 
 - A Linux VPS with SSH access (DigitalOcean, Hetzner, Vultr, etc.)
@@ -12,13 +55,19 @@ This guide walks through deploying the portal on a small VPS. A box with **1 vCP
   - Your **VPS public IP**, used as `<ip>.sslip.io` — sslip.io is a free wildcard DNS service that resolves any `<ip>.sslip.io` back to the IP, so Let's Encrypt can issue you a cert without a real domain
   - `localhost` — local dev only, HTTP
 
+## Build from source
+
+This path is for developers who want to modify the portal. Production deployers should use the **Quickstart** above.
+
 ## 1. Get the code
 
 ```bash
 ssh you@your-vps
-git clone https://github.com/<your-org>/ProgressiveWebAppPortal.git
-cd ProgressiveWebAppPortal
+git clone https://github.com/jacob-scheatzle/claude-pwa-portal.git
+cd claude-pwa-portal
 ```
+
+The cloned repo includes `docker-compose.override.yml`, which auto-merges with `docker-compose.yml` to make `docker compose up` build the portal image locally instead of pulling from GHCR. From here, the rest of the steps below apply the same way as for a from-source build.
 
 ## 2. Configure
 

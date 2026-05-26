@@ -27,19 +27,34 @@ The portal is designed so the apps inside it can be authored by someone who isn'
 
 ## Quick start
 
-Requires a host with **Docker** and **Docker Compose**.
+Requires a host with **Docker** and **Docker Compose**. The portal ships as two pre-built container images on GitHub Container Registry; you don't need to clone this repo to deploy.
 
 ```bash
-git clone https://github.com/<your-org>/ProgressiveWebAppPortal.git
-cd ProgressiveWebAppPortal
-cp .env.example .env
-# Edit .env: set SECRET_KEY (any long random string) and SITE_URL.
-docker compose up --build -d
+mkdir my-portal && cd my-portal
+
+# Grab the production compose file + env template
+curl -O https://raw.githubusercontent.com/jacob-scheatzle/claude-pwa-portal/main/docker-compose.yml
+curl -o .env https://raw.githubusercontent.com/jacob-scheatzle/claude-pwa-portal/main/.env.example
+
+# Edit .env: set SITE_URL and paste a SECRET_KEY
+# (generate with: python3 -c "import secrets; print(secrets.token_urlsafe(32))")
+nano .env
+chmod 600 .env
+
+# Pre-create the data dir owned by uid 1001 (the container's runtime user)
+mkdir -p data && sudo chown -R 1001:1001 data
+
+docker compose pull
+docker compose up -d
 ```
 
-Open `https://<your SITE_URL>/` (or `http://localhost` for local dev) and walk through the first-run wizard to create your admin account.
+Open `https://<your SITE_URL>/` and walk through the first-run wizard to create your admin account.
 
-See [docs/deploying.md](docs/deploying.md) for the full VPS guide (Caddy auto-HTTPS, domains vs sslip.io, SMTP setup, backups, troubleshooting).
+To upgrade later, run `docker compose pull && docker compose up -d` from the same directory.
+
+If you want to build from source (for development or local patches), `git clone` this repo and run `docker compose up --build -d` — the included `docker-compose.override.yml` auto-merges to build locally instead of pulling.
+
+See [docs/deploying.md](docs/deploying.md) for the full guide: wildcard DNS setup for per-app origin isolation, Caddy auto-HTTPS, domains vs sslip.io, SMTP, backups, hardening checklist, and troubleshooting.
 
 ## Building apps for it
 

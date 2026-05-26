@@ -1,0 +1,24 @@
+# Developer override — auto-loaded by `docker compose` when present alongside
+# docker-compose.yml. Replaces the GHCR image references with local builds
+# so devs can iterate without publishing.
+#
+# Production deployers don't have this file (they download only
+# docker-compose.yml from the raw GitHub URL) and so they get the
+# pulled-from-registry behavior.
+#
+# To force production mode locally even with this file present, use:
+#   docker compose -f docker-compose.yml up -d
+
+services:
+  portal:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+  caddy:
+    build:
+      context: .
+      dockerfile: Dockerfile.caddy
+    volumes:
+      # Override the baked-in Caddyfile so devs see edits without rebuilding.
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro

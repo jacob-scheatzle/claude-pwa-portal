@@ -1,0 +1,92 @@
+name: Build and publish container images
+
+# Publishes two images to GitHub Container Registry:
+#   ghcr.io/<owner>/claude-pwa-portal        — the FastAPI portal
+#   ghcr.io/<owner>/claude-pwa-portal-caddy  — Caddy with the Caddyfile baked in
+#
+# Tag scheme:
+#   - Push to main → `latest` + `sha-<short>` + `main`
+#   - Push of v*   → semver tag(s) + `latest` (on the default branch)
+#
+# Deployers reference `ghcr.io/<owner>/claude-pwa-portal:latest` from
+# docker-compose.yml; they can pin to a specific version via the
+# PORTAL_IMAGE_TAG env var.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:  # let us trigger manually if needed
+
+env:
+  REGISTRY: ghcr.io
+  PORTAL_IMAGE: ${{ github.repository_owner }}/claude-pwa-portal
+  CADDY_IMAGE: ${{ github.repository_owner }}/claude-pwa-portal-caddy
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Portal image metadata
+        id: portal_meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.PORTAL_IMAGE }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=tag
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build + push portal image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: ${{ steps.portal_meta.outputs.tags }}
+          labels: ${{ steps.portal_meta.outputs.labels }}
+          cache-from: type=gha,scope=portal
+          cache-to: type=gha,mode=max,scope=portal
+
+      - name: Caddy image metadata
+        id: caddy_meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.CADDY_IMAGE }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=tag
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build + push caddy image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile.caddy
+          push: true
+          tags: ${{ steps.caddy_meta.outputs.tags }}
+          labels: ${{ steps.caddy_meta.outputs.labels }}
+          cache-from: type=gha,scope=caddy
+          cache-to: type=gha,mode=max,scope=caddy

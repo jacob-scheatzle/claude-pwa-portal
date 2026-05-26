@@ -1,0 +1,8 @@
+# Thin layer over the official Caddy image that bakes the portal's Caddyfile
+# in. Lets production deployers run `docker compose up` without needing the
+# repo source on disk — the Caddyfile is just shipped as part of the image.
+#
+# Developers iterating on Caddyfile use the dev compose override which
+# bind-mounts the local Caddyfile over this baked copy.
+FROM caddy:2
+COPY Caddyfile /etc/caddy/Caddyfile
