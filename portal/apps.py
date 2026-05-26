@@ -19,6 +19,11 @@ from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, Field, ValidationError, field_validator
 from sqlmodel import Session, select
 
+from portal.access import (
+    delete_access_for_app,
+    grant_default_access_for_new_app,
+    user_can_access_app,
+)
 from portal.config import settings
 from portal.db import get_db
 from portal.deps import (
@@ -357,6 +362,11 @@ async def install_bundle(
                 uploaded_by=uploader.id,
             )
             db.add(app_row)
+            db.flush()  # so app_row.id is assigned before we FK to it below
+            # Auto-grant access for every existing non-admin user under the
+            # configured default-access policy. Replacements (below) deliberately
+            # don't touch existing grants — admins reshape access manually.
+            grant_default_access_for_new_app(db, app_row)
             db.commit()
             return InstallResult(
                 slug=app_row.slug,
@@ -530,6 +540,8 @@ def admin_apps_delete(
         shutil.rmtree(dest, ignore_errors=True)
 
     name = app_row.name
+    if app_row.id is not None:
+        delete_access_for_app(db, app_row.id)
     db.delete(app_row)
     db.commit()
     flash(request, f"Deleted {name}")
@@ -552,25 +564,22 @@ def serve_app_index(
 ):
     """Entry point for opening a child app from the portal origin.
 
-    Two modes:
+    Always renders the iframe-launcher template so the portal chrome
+    (back-to-Apps link, app name + version) is visible regardless of which
+    origin mode is in effect. What varies is the iframe ``src``:
 
-    - ``CHILD_APPS_SAME_ORIGIN`` truthy (legacy): serve the child app's
-      ``index.html`` directly out of the portal origin. The browser stays on
-      ``/apps/<slug>/`` and the app shares a cookie jar with the portal.
-    - ``CHILD_APPS_SAME_ORIGIN`` falsy (new default): mint a single-use
-      launch token and render the iframe wrapper template. The wrapper
-      embeds ``<slug>.apps.<SITE_URL>/#token=<token>`` inside an iframe
-      sandbox; the browser's address bar stays on the portal so an
-      installed PWA keeps its identity.
-
-    The token's slug is bound at mint time. The exchange endpoint on the
-    subdomain refuses to mint an AppSession if its host-derived slug doesn't
-    match the token's, so the user can't forward a token for app A and have
-    it accepted on app B's subdomain.
+    - ``CHILD_APPS_SAME_ORIGIN`` truthy (legacy): iframe loads the app's
+      entry file from the SAME origin at ``/apps/<slug>/<entry>``. The
+      portal's session cookie is shared with the iframe; there's no
+      browser-enforced isolation between the portal and the child app.
+      The launcher chrome is the only navigation affordance back to the
+      dashboard from inside the app.
+    - ``CHILD_APPS_SAME_ORIGIN`` falsy (default): mint a single-use launch
+      token and point the iframe at
+      ``<slug>.apps.<SITE_URL>/#token=<token>``. The token's slug is
+      bound at mint time; the subdomain's exchange endpoint refuses to
+      mint an AppSession unless the host-derived slug matches.
     """
-    if settings.child_apps_same_origin:
-        return _serve_app_file(slug, db, user, path="")
-
     if user is None:
         return RedirectResponse(f"/login?next=/apps/{slug}/", status_code=303)
 
@@ -578,28 +587,40 @@ def serve_app_index(
     if app_row is None or not app_row.enabled:
         raise HTTPException(404)
 
-    token = secrets.token_urlsafe(32)
-    now = datetime.now(timezone.utc)
-    db.add(
-        AppLaunchToken(
-            token=token,
-            user_id=user.id,
-            slug=slug,
-            created_at=now,
-            expires_at=now + _LAUNCH_TOKEN_TTL,
-        )
-    )
-    db.commit()
+    # Per-user access gate. Admins bypass; non-admins need a UserAppAccess
+    # row. 404 (not 403) so an attacker probing app slugs can't distinguish
+    # "exists but blocked" from "doesn't exist".
+    if not user_can_access_app(db, user, app_row):
+        raise HTTPException(404)
 
-    scheme = "https" if settings.cookies_secure else "http"
-    # Preserve the port the portal is reached on, so a dev hitting
-    # http://lvh.me:8000/apps/x/ ends up loading the iframe at
-    # http://x.apps.lvh.me:8000/#token=... rather than the bare hostname.
-    host = request.headers.get("host", settings.site_url)
-    port = ""
-    if ":" in host and not host.startswith("["):
-        port = ":" + host.rsplit(":", 1)[1]
-    iframe_src = f"{scheme}://{slug}.apps.{settings.site_url}{port}/#token={token}"
+    if settings.child_apps_same_origin:
+        # Iframe targets the app's entry file directly on the portal origin.
+        # Caddy's /apps/* CSP allows ``frame-ancestors 'self'`` so the
+        # launcher (also on /apps/<slug>/) can embed it.
+        iframe_src = f"/apps/{slug}/{app_row.entry}"
+    else:
+        token = secrets.token_urlsafe(32)
+        now = datetime.now(timezone.utc)
+        db.add(
+            AppLaunchToken(
+                token=token,
+                user_id=user.id,
+                slug=slug,
+                created_at=now,
+                expires_at=now + _LAUNCH_TOKEN_TTL,
+            )
+        )
+        db.commit()
+
+        scheme = "https" if settings.cookies_secure else "http"
+        # Preserve the port the portal is reached on, so a dev hitting
+        # http://lvh.me:8000/apps/x/ ends up loading the iframe at
+        # http://x.apps.lvh.me:8000/#token=... rather than the bare hostname.
+        host = request.headers.get("host", settings.site_url)
+        port = ""
+        if ":" in host and not host.startswith("["):
+            port = ":" + host.rsplit(":", 1)[1]
+        iframe_src = f"{scheme}://{slug}.apps.{settings.site_url}{port}/#token={token}"
     return render(
         request,
         "app_launcher.html",
@@ -641,6 +662,12 @@ def _serve_app_file(
         return RedirectResponse(f"/login?next=/apps/{slug}/", status_code=303)
     app_row = db.exec(select(App).where(App.slug == slug)).first()
     if app_row is None or not app_row.enabled:
+        raise HTTPException(404)
+
+    # Per-user access gate: a previously-granted user whose access was
+    # revoked while a tab was still open shouldn't be able to keep loading
+    # the bundle. 404 to avoid leaking the slug's existence.
+    if not user_can_access_app(db, user, app_row):
         raise HTTPException(404)
 
     apps_root = _apps_root()
@@ -756,9 +783,22 @@ def serve_subdomain_request(
         session_row = get_active_app_session(db, sid)
         if session_row is None or session_row.slug != slug:
             return _launch_redirect_response(request, slug)
-        # Refresh the session row but skip user existence checks here — that
-        # belongs to API endpoints that touch user data. Static-file serving
-        # only needs a valid AppSession.
+        # Re-check per-user access on every static-file hit so a revocation
+        # propagates immediately to live tabs without waiting for the
+        # AppSession to expire. The session-row lookup above already gave us
+        # the user_id; fetch the user + app once and gate. Admins still
+        # bypass.
+        user_row = db.get(User, session_row.user_id)
+        app_row = db.exec(select(App).where(App.slug == slug)).first()
+        if (
+            user_row is None
+            or app_row is None
+            or not app_row.enabled
+            or not user_can_access_app(db, user_row, app_row)
+        ):
+            # Bounce back to the launcher; on the portal origin, serve_app_index
+            # will either deny (404) or mint a fresh token if access was restored.
+            return _launch_redirect_response(request, slug)
         touch_app_session(db, session_row)
         request.state.auth_method = "app_session"
 

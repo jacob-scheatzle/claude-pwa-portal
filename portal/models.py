@@ -83,3 +83,19 @@ class AppSession(SQLModel, table=True):
     created_at: datetime = Field(default_factory=_utcnow)
     last_seen_at: datetime = Field(default_factory=_utcnow)
     revoked_at: Optional[datetime] = None
+
+
+class UserAppAccess(SQLModel, table=True):
+    # Per-user grant for a specific app. Presence of the row = user can launch
+    # the app from the dashboard / API; absence = denied. Admins bypass this
+    # check entirely (role == "admin" implies access to everything), so no
+    # rows are stored for admins.
+    #
+    # Rows are populated automatically when a user is created OR an app is
+    # uploaded, controlled by the ``default_user_app_access`` Setting key
+    # ("all" or "none"). The default-access setting is consulted at creation
+    # time only — flipping it later doesn't retroactively reshape existing
+    # grants. Admins reshape per-user/per-app from /admin/users/<id>/apps.
+    user_id: int = Field(foreign_key="user.id", primary_key=True)
+    app_id: int = Field(foreign_key="app.id", primary_key=True)
+    granted_at: datetime = Field(default_factory=_utcnow)

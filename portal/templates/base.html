@@ -124,6 +124,7 @@
 			position: sticky;
 			top: 0;
 			z-index: 10;
+			gap: 0.75rem;
 		}
 		.topbar .brand {
 			display: inline-flex;
@@ -134,6 +135,8 @@
 			letter-spacing: -0.01em;
 			color: var(--text);
 			text-decoration: none;
+			white-space: nowrap;
+			flex-shrink: 0;
 		}
 		.brand-mark {
 			display: inline-flex;
@@ -148,6 +151,7 @@
 			font-weight: 700;
 			letter-spacing: 0;
 			box-shadow: var(--shadow-sm);
+			flex-shrink: 0;
 		}
 		.topbar nav {
 			display: flex;
@@ -155,6 +159,115 @@
 			gap: 1rem;
 			flex-wrap: wrap;
 			row-gap: 0.5rem;
+			justify-content: flex-end;
+		}
+
+		/* Administrator disclosure menu — same markup at all widths.
+		   On desktop the panel floats below the summary; on mobile the
+		   summary just expands inline inside the drawer. */
+		.nav-menu { position: relative; }
+		.nav-menu > summary {
+			cursor: pointer;
+			user-select: none;
+			list-style: none;
+			display: inline-flex;
+			align-items: center;
+			gap: 0.3rem;
+		}
+		.nav-menu > summary::-webkit-details-marker { display: none; }
+		.nav-menu > summary::after {
+			content: "";
+			width: 0.4rem;
+			height: 0.4rem;
+			border-right: 1.5px solid currentColor;
+			border-bottom: 1.5px solid currentColor;
+			transform: rotate(45deg) translate(-1px, -1px);
+			transition: transform 0.15s ease;
+			opacity: 0.6;
+		}
+		.nav-menu[open] > summary::after {
+			transform: rotate(-135deg) translate(-1px, -1px);
+		}
+		.nav-menu-items {
+			display: flex;
+			flex-direction: column;
+			gap: 0.4rem;
+			min-width: 11rem;
+			padding: 0.65rem;
+			background: var(--surface);
+			border: 1px solid var(--border);
+			border-radius: var(--radius);
+			box-shadow: var(--shadow-md);
+			position: absolute;
+			right: 0;
+			top: calc(100% + 0.55rem);
+			z-index: 11;
+		}
+		.nav-menu-items .nav-link {
+			padding: 0.35rem 0.5rem;
+			border-radius: var(--radius-sm);
+		}
+		.nav-menu-items .nav-link:hover {
+			background: var(--accent-tint);
+			color: var(--accent);
+		}
+
+		/* Hamburger toggle — only visible on narrow viewports */
+		.nav-toggle {
+			display: none;
+			background: transparent;
+			color: var(--text);
+			border: 1px solid var(--border-strong);
+			padding: 0.4rem 0.55rem;
+			box-shadow: none;
+			line-height: 0;
+		}
+		.nav-toggle:hover { background: var(--surface-2); }
+		.nav-toggle svg { display: block; }
+
+		@media (max-width: 640px) {
+			.topbar { padding: 0.7rem 1rem; }
+			.brand-text { display: none; }
+			.nav-toggle { display: inline-flex; }
+			.topbar nav {
+				display: none;
+				position: absolute;
+				top: 100%;
+				right: 0.65rem;
+				left: 0.65rem;
+				flex-direction: column;
+				align-items: stretch;
+				gap: 0.25rem;
+				padding: 0.85rem;
+				background: var(--surface);
+				border: 1px solid var(--border);
+				border-radius: var(--radius);
+				box-shadow: var(--shadow-md);
+			}
+			.topbar nav.open { display: flex; }
+			.topbar nav .nav-link,
+			.topbar nav form,
+			.topbar nav .nav-menu {
+				width: 100%;
+			}
+			.topbar nav .nav-link {
+				padding: 0.55rem 0.65rem;
+				border-radius: var(--radius-sm);
+				font-size: 0.95rem;
+			}
+			.topbar nav .nav-link:hover { background: var(--accent-tint); }
+			/* Inline the admin items inside the mobile drawer instead of floating. */
+			.nav-menu-items {
+				position: static;
+				box-shadow: none;
+				border: 0;
+				padding: 0.25rem 0 0.25rem 0.85rem;
+				background: transparent;
+				min-width: 0;
+				margin-top: 0.25rem;
+			}
+			.nav-signout-email { display: none; }
+			.topbar nav .linkish { padding: 0.55rem 0.65rem; text-align: left; }
 		}
 
 		/* typography */
@@ -503,19 +616,39 @@
 	<div class="topbar">
 		<a href="/" class="brand">
 			<span class="brand-mark">P</span>
-			<span>PWA Portal</span>
+			<span class="brand-text">PWA Portal</span>
 		</a>
-		<nav>
+		<button type="button" class="nav-toggle" aria-label="Toggle navigation"
+			aria-controls="primary-nav" aria-expanded="false">
+			<svg width="20" height="20" viewBox="0 0 24 24" fill="none"
+				stroke="currentColor" stroke-width="2"
+				stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+				<line x1="4" y1="7" x2="20" y2="7"></line>
+				<line x1="4" y1="12" x2="20" y2="12"></line>
+				<line x1="4" y1="17" x2="20" y2="17"></line>
+			</svg>
+		</button>
+		<nav id="primary-nav">
+			<a href="/" class="nav-link">Apps</a>
 			{% if user.role == "admin" %}
-			<a href="/admin/apps" class="nav-link">Apps</a>
-			<a href="/admin/users" class="nav-link">Users</a>
-			<a href="/admin/settings" class="nav-link">Settings</a>
-			<a href="/admin/tokens" class="nav-link">Tokens</a>
+			<details class="nav-menu">
+				<summary class="nav-link">Administrator</summary>
+				<div class="nav-menu-items">
+					<a href="/admin/apps" class="nav-link">Apps</a>
+					<a href="/admin/users" class="nav-link">Users</a>
+					<a href="/admin/settings" class="nav-link">Settings</a>
+					<a href="/admin/tokens" class="nav-link">API tokens</a>
+					<a href="/admin/backup" class="nav-link">Backup</a>
+				</div>
+			</details>
 			{% endif %}
 			<a href="/profile" class="nav-link">Profile</a>
 			<form method="post" action="/logout" style="margin:0;">
 				<input type="hidden" name="_csrf" value="{{ csrf_token }}">
-				<button type="submit" class="linkish">Sign out ({{ user.email }})</button>
+				<button type="submit" class="linkish">
+					<span class="nav-signout-text">Sign out</span>
+					<span class="nav-signout-email">({{ user.email }})</span>
+				</button>
 			</form>
 		</nav>
 	</div>
@@ -538,6 +671,32 @@
 				navigator.serviceWorker.register("/sw.js").catch((e) => console.warn("SW register failed", e));
 			});
 		}
+
+		// Mobile hamburger toggle. The nav itself is positioned absolutely
+		// below the topbar at narrow widths; the .open class flips it visible.
+		(function () {
+			const toggle = document.querySelector(".nav-toggle");
+			const nav = document.getElementById("primary-nav");
+			if (!toggle || !nav) return;
+			toggle.addEventListener("click", function (e) {
+				e.stopPropagation();
+				const open = nav.classList.toggle("open");
+				toggle.setAttribute("aria-expanded", open ? "true" : "false");
+			});
+			// Tap outside / press Escape closes the drawer.
+			document.addEventListener("click", function (e) {
+				if (!nav.classList.contains("open")) return;
+				if (nav.contains(e.target) || toggle.contains(e.target)) return;
+				nav.classList.remove("open");
+				toggle.setAttribute("aria-expanded", "false");
+			});
+			document.addEventListener("keydown", function (e) {
+				if (e.key === "Escape" && nav.classList.contains("open")) {
+					nav.classList.remove("open");
+					toggle.setAttribute("aria-expanded", "false");
+				}
+			});
+		})();
 	</script>
 </body>
 </html>

@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Backup — Portal admin{% endblock %}
+{% block content %}
+<h1>Backup</h1>
+<p class="muted">One-click downloadable archive of everything in the portal's <code>data/</code> directory.</p>
+
+<section>
+	<h2 class="section-label">What's included</h2>
+	<ul style="line-height:1.8;">
+		<li><strong><code>portal.db</code></strong> — users, apps, settings, API tokens, sessions, per-user app access. A consistent SQLite online-backup snapshot (safe to take while the portal is live).</li>
+		<li><strong><code>apps/</code></strong> — every uploaded child-app bundle, extracted.</li>
+		<li><strong><code>storage/</code></strong> — per-app, per-user key/value storage from <code>portal.storage.*</code> calls.</li>
+	</ul>
+
+	<h2 class="section-label">What's <em>not</em> included</h2>
+	<ul style="line-height:1.8;">
+		<li>The <code>.env</code> file (lives outside the container; holds <code>SECRET_KEY</code>).</li>
+		<li>Caddy's TLS cert cache (regenerated on demand on first hit per subdomain).</li>
+	</ul>
+
+	<div class="warn-banner" style="margin-top:1.25rem;">
+		<strong>This archive contains secrets.</strong>
+		The SMTP password inside <code>portal.db</code> is Fernet-encrypted with a key derived from <code>SECRET_KEY</code>; you need <em>both</em> this tarball and the original <code>SECRET_KEY</code> to restore SMTP. Store the file somewhere only you can read.
+	</div>
+</section>
+
+<form method="post" action="/admin/backup/download" style="margin-top:1.5rem;">
+	<input type="hidden" name="_csrf" value="{{ csrf_token }}">
+	<button type="submit">Download backup</button>
+</form>
+
+<section style="margin-top:2.5rem;">
+	<h2 class="section-label">Restoring on a new host</h2>
+	<ol style="line-height:1.8;">
+		<li>Stand up the portal stack on the new host with the <em>same</em> <code>SECRET_KEY</code> as the source — otherwise the encrypted SMTP password row won't decrypt.</li>
+		<li>Stop the containers: <code>docker compose down</code></li>
+		<li>Extract the archive into the empty data directory, preserving permissions:
+			<pre>sudo rm -rf data/*
+sudo tar -xzf pwa-portal-backup-*.tar.gz -C data/
+sudo chown -R 1001:1001 data/</pre>
+		</li>
+		<li>Start the stack: <code>docker compose up -d</code></li>
+	</ol>
+</section>
+{% endblock %}

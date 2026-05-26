@@ -16,6 +16,20 @@
 
 <form method="post" action="/admin/settings" autocomplete="off">
 	<input type="hidden" name="_csrf" value="{{ csrf_token }}">
+
+	<fieldset>
+		<legend>App access defaults</legend>
+		<p class="hint">Controls how new users and newly-uploaded apps are wired together. Existing assignments are not changed when you flip this.</p>
+		<div>
+			<label for="default_user_app_access">Default access for new users / new apps</label>
+			<select name="default_user_app_access" id="default_user_app_access">
+				<option value="all" {% if default_user_app_access == "all" %}selected{% endif %}>Grant access to all apps (open default)</option>
+				<option value="none" {% if default_user_app_access == "none" %}selected{% endif %}>No access until explicitly granted (locked default)</option>
+			</select>
+			<div class="hint">Admins always have access to every app regardless of this setting. Manage individual users from <a href="/admin/users" class="nav-link">Users</a> → <em>Apps</em>.</div>
+		</div>
+	</fieldset>
+
 	<fieldset>
 		<legend>SMTP (outgoing email)</legend>
 		<p class="hint">DB values override <code>.env</code>. Leave any field blank to fall back to the env value.</p>

@@ -1,22 +1,36 @@
-"""Admin pages: settings, API tokens, staff user management."""
+"""Admin pages: settings, API tokens, staff user management, backups."""
 from __future__ import annotations
 
 import hashlib
 import secrets
+import shutil
+import sqlite3
+import tarfile
+import tempfile
 from datetime import datetime, timezone
 from email.message import EmailMessage
+from pathlib import Path
 from typing import Annotated, Optional
 
+import anyio
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import EmailStr, TypeAdapter, ValidationError
 from sqlalchemy import func
 from sqlmodel import Session, select
+from starlette.background import BackgroundTask
 
+from portal.access import (
+    delete_access_for_user,
+    get_default_access,
+    grant_default_access_for_new_user,
+    replace_user_app_access,
+    set_default_access,
+)
 from portal.config import settings
 from portal.db import get_db
 from portal.deps import require_admin
-from portal.models import ApiToken, User
+from portal.models import ApiToken, App, User, UserAppAccess
 from portal.security import check_csrf, hash_password, validate_password
 from portal.settings_store import set_secret, set_setting, smtp_config
 from portal.smtp import send_message
@@ -49,6 +63,7 @@ def settings_form(request: Request, db: DbDep, admin: AdminDep):
         smtp_password_set=bool(cfg["password"]),
         smtp_from=cfg["from_addr"] or "",
         smtp_use_tls=cfg["use_tls"],
+        default_user_app_access=get_default_access(db),
     )
 
 
@@ -63,6 +78,7 @@ def settings_save(
     smtp_password: Annotated[str, Form()] = "",
     smtp_from: Annotated[str, Form()] = "",
     smtp_use_tls: Annotated[Optional[str], Form()] = None,
+    default_user_app_access: Annotated[str, Form()] = "all",
     csrf: Annotated[str, Form(alias="_csrf")] = "",
 ):
     check_csrf(request, csrf)
@@ -74,6 +90,11 @@ def settings_save(
         set_secret(db, "smtp_password", smtp_password)
     set_setting(db, "smtp_from", smtp_from.strip())
     set_setting(db, "smtp_use_tls", "true" if smtp_use_tls == "on" else "false")
+    # The default-access toggle gates the auto-grant logic in user/app create.
+    # Existing access rows are untouched; flipping it only affects future
+    # creations, which keeps the change reversible.
+    if default_user_app_access in ("all", "none"):
+        set_default_access(db, default_user_app_access)
     db.commit()
     flash(request, "Settings saved.")
     return RedirectResponse("/admin/settings", status_code=303)
@@ -208,7 +229,11 @@ def users_create(
     if existing is not None:
         flash(request, f"User {validated_email} already exists.", level="error")
         return RedirectResponse("/admin/users", status_code=303)
-    db.add(User(email=validated_email, password_hash=hash_password(password), role=role))
+    new_user = User(email=validated_email, password_hash=hash_password(password), role=role)
+    db.add(new_user)
+    # Flush to assign new_user.id before staging the access rows that FK to it.
+    db.flush()
+    grant_default_access_for_new_user(db, new_user)
     db.commit()
     flash(request, f"Created {validated_email} ({role}).")
     return RedirectResponse("/admin/users", status_code=303)
@@ -277,7 +302,158 @@ def users_delete(
         flash(request, "Can't delete the last admin.", level="error")
         return RedirectResponse("/admin/users", status_code=303)
     email = target.email
+    # SQLite FKs are advisory here, so drop the access rows explicitly before
+    # the User row goes away to keep the table consistent.
+    if target.id is not None:
+        delete_access_for_user(db, target.id)
     db.delete(target)
     db.commit()
     flash(request, f"Deleted {email}.")
     return RedirectResponse("/admin/users", status_code=303)
+
+
+# ----- Per-user app access -----
+
+@router.get("/admin/users/{user_id}/apps")
+def users_apps_form(
+    request: Request, db: DbDep, admin: AdminDep, user_id: int
+):
+    target = db.get(User, user_id)
+    if target is None:
+        raise HTTPException(404)
+    all_apps = db.exec(select(App).order_by(App.name)).all()
+    granted_ids = set(
+        db.exec(
+            select(UserAppAccess.app_id).where(UserAppAccess.user_id == user_id)
+        ).all()
+    )
+    return render(
+        request, "admin_user_apps.html",
+        user=admin, target=target, apps=all_apps, granted_ids=granted_ids,
+    )
+
+
+@router.post("/admin/users/{user_id}/apps")
+async def users_apps_save(
+    request: Request, db: DbDep, admin: AdminDep, user_id: int,
+):
+    # The form submits as ``app_ids`` checkboxes; FastAPI's Form() can't
+    # easily collect a repeated field name without colliding with the
+    # ``csrf`` kw, so we parse the raw form ourselves.
+    form = await request.form()
+    csrf = form.get("_csrf", "")
+    check_csrf(request, csrf if isinstance(csrf, str) else "")
+    target = db.get(User, user_id)
+    if target is None:
+        raise HTTPException(404)
+    if target.role == "admin":
+        flash(request, "Admins have access to every app by role.", level="error")
+        return RedirectResponse(f"/admin/users/{user_id}/apps", status_code=303)
+    raw_ids = form.getlist("app_ids")
+    allowed: list[int] = []
+    for v in raw_ids:
+        try:
+            allowed.append(int(v))
+        except (TypeError, ValueError):
+            continue
+    replace_user_app_access(db, target, allowed)
+    db.commit()
+    flash(request, f"Updated app access for {target.email}.")
+    return RedirectResponse(f"/admin/users/{user_id}/apps", status_code=303)
+
+
+# ----- Backups -----
+#
+# One-click downloadable backup of the entire data directory:
+#
+#   - portal.db        — a sqlite3 online-backup snapshot (consistent even
+#                        if writes are in flight)
+#   - apps/            — extracted child-app bundles
+#   - storage/         — per-app, per-user key/value storage
+#
+# What's NOT included: the .env file (lives outside the container's data
+# dir; contains SECRET_KEY) and Caddy's auto-renewing certificate cache
+# (regenerable on demand). To fully restore on a new host the operator
+# needs both this tarball AND the SECRET_KEY from the original .env, since
+# the SMTP password row inside portal.db is Fernet-encrypted with a key
+# derived from SECRET_KEY.
+
+def _snapshot_sqlite(src: Path, dest: Path) -> None:
+    """Online backup of ``src`` to ``dest`` using SQLite's standard API.
+
+    ``sqlite3.Connection.backup()`` produces a consistent snapshot even
+    while the source DB is being written to — preferable to a raw file
+    copy, which would race the WAL.
+    """
+    src_conn = sqlite3.connect(str(src))
+    try:
+        dest_conn = sqlite3.connect(str(dest))
+        try:
+            src_conn.backup(dest_conn)
+        finally:
+            dest_conn.close()
+    finally:
+        src_conn.close()
+
+
+def _build_backup(data_dir: Path) -> tuple[Path, Path, str]:
+    """Build a gzipped tarball of the portal data directory.
+
+    Returns ``(backup_file_path, tmp_dir_to_cleanup, filename)``. The
+    caller is responsible for scheduling ``shutil.rmtree(tmp_dir)`` as a
+    background task once the response finishes streaming.
+    """
+    tmp_dir = Path(tempfile.mkdtemp(prefix="portal-backup-"))
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%SZ")
+    filename = f"pwa-portal-backup-{timestamp}.tar.gz"
+    backup_path = tmp_dir / filename
+    try:
+        db_snapshot = tmp_dir / "portal.db"
+        db_file = data_dir / "portal.db"
+        if db_file.exists():
+            _snapshot_sqlite(db_file, db_snapshot)
+        with tarfile.open(backup_path, "w:gz") as tar:
+            if db_snapshot.exists():
+                tar.add(db_snapshot, arcname="portal.db")
+            apps_dir = data_dir / "apps"
+            if apps_dir.exists() and apps_dir.is_dir():
+                tar.add(apps_dir, arcname="apps")
+            storage_dir = data_dir / "storage"
+            if storage_dir.exists() and storage_dir.is_dir():
+                tar.add(storage_dir, arcname="storage")
+        return backup_path, tmp_dir, filename
+    except BaseException:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise
+
+
+@router.get("/admin/backup")
+def backup_form(request: Request, db: DbDep, admin: AdminDep):
+    return render(
+        request, "admin_backup.html", user=admin, site_url=settings.site_url,
+    )
+
+
+@router.post("/admin/backup/download")
+async def backup_download(
+    request: Request,
+    db: DbDep,
+    admin: AdminDep,
+    csrf: Annotated[str, Form(alias="_csrf")] = "",
+):
+    check_csrf(request, csrf)
+    data_dir = Path(settings.data_dir).resolve()
+    # Run the tar/snapshot work on a worker thread so a large data dir
+    # doesn't block the event loop while the response is being prepared.
+    backup_path, tmp_dir, filename = await anyio.to_thread.run_sync(
+        _build_backup, data_dir
+    )
+    # The BackgroundTask runs AFTER the file is fully streamed to the client,
+    # then removes the entire scratch directory (including the tarball).
+    cleanup = BackgroundTask(shutil.rmtree, str(tmp_dir), ignore_errors=True)
+    return FileResponse(
+        backup_path,
+        filename=filename,
+        media_type="application/gzip",
+        background=cleanup,
+    )

@@ -39,8 +39,11 @@ http://{$SITE_URL:localhost} {
 		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
 	}
 
+	# ``frame-ancestors 'self'`` allows the portal's own launcher (also on
+	# /apps/<slug>/) to iframe the app entry in same-origin mode while still
+	# blocking external framing.
 	@apps path /apps/*
-	header @apps Content-Security-Policy "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+	header @apps Content-Security-Policy "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; frame-ancestors 'self'; base-uri 'self'; form-action 'self'"
 }
 
 # Per-app subdomains. Same routing as the default Caddyfile, just served

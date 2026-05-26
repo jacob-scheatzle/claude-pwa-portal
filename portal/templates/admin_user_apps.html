@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}{{ target.email }} — App access{% endblock %}
+{% block container_class %}wide{% endblock %}
+{% block content %}
+<p class="muted"><a href="/admin/users" class="nav-link">← Back to users</a></p>
+<h1>App access — {{ target.email }}</h1>
+{% if target.role == "admin" %}
+<div class="warn-banner">
+	<strong>{{ target.email }} is an admin.</strong>
+	Admins have implicit access to every app and bypass this list.
+	Change the role on the <a href="/admin/users">Users</a> page if you need
+	to scope this account.
+</div>
+{% else %}
+<p class="muted">Check the apps this user should be able to launch. Admins always see every app; this list only affects regular users.</p>
+
+{% if apps %}
+<form method="post" action="/admin/users/{{ target.id }}/apps" autocomplete="off">
+	<input type="hidden" name="_csrf" value="{{ csrf_token }}">
+	<fieldset>
+		<legend>Apps</legend>
+		{% for app in apps %}
+		<div style="display:flex; align-items:center; gap:0.6rem; padding:0.35rem 0; border-bottom:1px solid var(--border);">
+			<input type="checkbox" name="app_ids" id="app_{{ app.id }}" value="{{ app.id }}"
+				{% if app.id in granted_ids %}checked{% endif %}>
+			<label for="app_{{ app.id }}" style="margin:0; font-weight:600; flex:1;">
+				{{ app.name }}
+				{% if not app.enabled %}<span class="pill off" style="margin-left:0.4rem;">disabled</span>{% endif %}
+			</label>
+			<code style="color:var(--text-muted); font-size:0.8rem;">{{ app.slug }}</code>
+		</div>
+		{% endfor %}
+	</fieldset>
+	<div style="display:flex; gap:0.75rem; align-items:center; margin-top:1rem;">
+		<button type="submit">Save access</button>
+		<a href="/admin/users" class="nav-link">Cancel</a>
+	</div>
+</form>
+{% else %}
+<div class="empty">
+	<h2>No apps installed</h2>
+	<p>Upload an app from <a href="/admin/apps" class="nav-link">Apps</a> first.</p>
+</div>
+{% endif %}
+{% endif %}
+{% endblock %}

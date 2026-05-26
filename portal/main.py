@@ -14,6 +14,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from portal import admin as admin_module
 from portal import api as api_module
 from portal import apps as apps_module
+from portal.access import accessible_app_ids_for
 from portal.config import settings
 from portal.db import get_db, init_db
 from portal.deps import current_user, require_user
@@ -176,6 +177,11 @@ def index(request: Request, db: DbDep, user: UserDep):
     visible = db.exec(
         select(App).where(App.enabled == True).order_by(App.name)  # noqa: E712
     ).all()
+    # Filter to apps the user is allowed to launch. Admins see everything;
+    # for non-admins the helper consults the UserAppAccess m2m.
+    if user.role != "admin":
+        allowed_ids = accessible_app_ids_for(db, user)
+        visible = [a for a in visible if a.id in allowed_ids]
     return render(
         request,
         "dashboard.html",

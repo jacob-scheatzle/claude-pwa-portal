@@ -34,11 +34,15 @@
 
 	# Child apps shipped under /apps/<slug>/ (legacy same-origin mode) are written
 	# with Claude and rely on inline scripts/styles. 'unsafe-inline' +
-	# 'unsafe-eval' are intentional; frame-ancestors 'none' blocks a malicious
-	# child from iframing the portal shell. In the new per-app-origin mode the
-	# wildcard block below takes over CSP duties for child apps.
+	# 'unsafe-eval' are intentional. ``frame-ancestors 'self'`` lets the
+	# portal's own launcher iframe at /apps/<slug>/ embed the app entry
+	# (also same-origin) — required for the back-to-Apps chrome to work in
+	# same-origin mode. External framing is still blocked. In the per-app-
+	# origin (subdomain) mode the wildcard block below takes over CSP for the
+	# actual child-app content; this block then only governs the launcher
+	# wrapper page, which never frames external content.
 	@apps path /apps/*
-	header @apps Content-Security-Policy "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+	header @apps Content-Security-Policy "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; frame-ancestors 'self'; base-uri 'self'; form-action 'self'"
 }
 
 # Per-app subdomains. Each child app gets its own browser origin so the
