@@ -21,10 +21,10 @@
 	<tbody>
 		{% for app in apps %}
 		<tr>
-			<td><strong>{{ app.name }}</strong>{% if app.description %}<div class="hint">{{ app.description }}</div>{% endif %}</td>
-			<td><code>{{ app.slug }}</code></td>
-			<td>{{ app.version }}</td>
-			<td>
+			<td data-label="Name"><strong>{{ app.name }}</strong>{% if app.description %}<div class="hint">{{ app.description }}</div>{% endif %}</td>
+			<td data-label="Slug"><code>{{ app.slug }}</code></td>
+			<td data-label="Version">{{ app.version }}</td>
+			<td data-label="Status">
 				{% if app.enabled %}
 				<span class="pill on">enabled</span>
 				{% else %}
@@ -41,18 +41,18 @@
 				{% set allowed = app.allowed_origins or [] %}
 				{% set extras = [] %}
 				{% for o in allowed %}{% if o not in requested %}{% set _ = extras.append(o) %}{% endif %}{% endfor %}
-				<details style="display:inline-block;">
+				<details class="network-details">
 					<summary class="action-chip">Network ({{ allowed|length }})</summary>
-					<div class="action-chip-panel">
+					<div class="action-chip-panel network-panel">
 						<form method="post" action="/admin/apps/{{ app.slug }}/network">
 							<input type="hidden" name="_csrf" value="{{ csrf_token }}">
-							<div class="hint">External HTTPS origins this app can <code>fetch()</code>. Same-origin calls and the portal SDK are always allowed.</div>
+							<p class="hint network-panel-blurb">External HTTPS origins this app can <code>fetch()</code>. Same-origin calls and the portal SDK are always allowed.</p>
 							{% if requested %}
-								<div style="margin-top:0.5rem; font-weight:600; font-size:0.8rem;">Requested by app</div>
-								<ul style="list-style:none; padding:0; margin:0.3rem 0;">
+								<h4 class="network-panel-heading">Requested by app</h4>
+								<ul class="network-origin-list">
 									{% for o in requested %}
-									<li style="padding:0.15rem 0;">
-										<label style="font-weight:400; display:flex; align-items:center; gap:0.5rem;">
+									<li>
+										<label class="network-origin-row">
 											<input type="checkbox" name="allowed_requested" value="{{ o }}"
 												{% if o in allowed %}checked{% endif %}>
 											<code>{{ o }}</code>
@@ -61,12 +61,12 @@
 									{% endfor %}
 								</ul>
 							{% else %}
-								<div class="hint" style="margin-top:0.4rem;">The app's manifest did not request any external origins.</div>
+								<p class="hint">The app's manifest did not request any external origins.</p>
 							{% endif %}
-							<div style="margin-top:0.6rem; font-weight:600; font-size:0.8rem;">Admin-added (one per line, <code>https://host[:port]</code>)</div>
-							<textarea name="extras" rows="3" style="width:100%; font-family:var(--font-mono, monospace); font-size:0.85rem;">{% for o in extras %}{{ o }}
+							<h4 class="network-panel-heading">Admin-added <span class="network-panel-hint">(one per line, <code>https://host[:port]</code>)</span></h4>
+							<textarea name="extras" rows="3">{% for o in extras %}{{ o }}
 {% endfor %}</textarea>
-							<button type="submit" style="align-self:flex-start; margin-top:0.4rem;">Save network access</button>
+							<button type="submit" class="network-save">Save network access</button>
 						</form>
 					</div>
 				</details>

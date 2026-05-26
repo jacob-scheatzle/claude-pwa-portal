@@ -20,12 +20,19 @@
 		// unavailable (Safari private mode, sandbox restrictions) we
 		// silently fall back to prefers-color-scheme.
 		(function () {
+			var state = "system";
 			try {
 				var t = localStorage.getItem("portal-theme");
 				if (t === "dark" || t === "light") {
 					document.documentElement.setAttribute("data-theme", t);
+					state = t;
 				}
 			} catch (_) { /* no-op */ }
+			// ``data-theme-state`` is independent from ``data-theme``: it
+			// stores the *user choice* (system / light / dark), while
+			// ``data-theme`` only carries an explicit override and is absent
+			// in system mode. The topbar icon CSS keys off this attribute.
+			document.documentElement.setAttribute("data-theme-state", state);
 		})();
 	</script>
 	<style>
@@ -272,6 +279,42 @@
 		.nav-menu-items .nav-link:hover {
 			background: var(--accent-tint);
 			color: var(--accent);
+		}
+
+		/* Top-bar right-side cluster: theme toggle + hamburger. Sits as a
+		   single flex group so the two affordances line up vertically. */
+		.topbar-actions {
+			display: inline-flex;
+			align-items: center;
+			gap: 0.4rem;
+			flex-shrink: 0;
+		}
+
+		/* Theme cycle button. Renders only the icon corresponding to the
+		   currently-stored preference (none, light, or dark); the other two
+		   are hidden via the body[data-theme-state="..."] selectors below.
+		   Clicking advances state in the order system → light → dark → system. */
+		.theme-toggle {
+			background: transparent;
+			color: var(--text);
+			border: 1px solid var(--border-strong);
+			padding: 0.4rem 0.5rem;
+			box-shadow: none;
+			line-height: 0;
+			border-radius: var(--radius-sm);
+			cursor: pointer;
+		}
+		.theme-toggle:hover { background: var(--surface-2); }
+		.theme-toggle .theme-icon { display: none; }
+		/* The inline boot script in <head> sets data-theme-state on <html>
+		   to one of "system" / "light" / "dark" before first paint.
+		   Without JS the system-preference icon stays visible — same as
+		   the on-disk preference being absent. */
+		:root[data-theme-state="system"] .theme-toggle .icon-system,
+		:root:not([data-theme-state]) .theme-toggle .icon-system,
+		:root[data-theme-state="light"]  .theme-toggle .icon-light,
+		:root[data-theme-state="dark"]   .theme-toggle .icon-dark {
+			display: block;
 		}
 
 		/* Hamburger toggle — only visible on narrow viewports */
@@ -544,6 +587,122 @@
 		}
 		td.actions { white-space: nowrap; display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap; }
 
+		/* Mobile: convert ``table.apps`` rows into stacked cards so the
+		   admin pages stop requiring horizontal scrolling on a phone. The
+		   column headers are hidden (the cell content is self-describing
+		   for the use cases we have today); each <td> stacks vertically
+		   with a thin label-style hint on the side via the optional
+		   ``data-label`` attribute on the cell. */
+		@media (max-width: 640px) {
+			.container { padding: 1.5rem 1rem 2.5rem; }
+			.container.wide { padding: 1.5rem 1rem 2.5rem; }
+			table.apps {
+				display: block;
+				border-radius: var(--radius);
+				overflow: hidden;
+			}
+			table.apps thead { display: none; }
+			table.apps tbody, table.apps tr { display: block; width: 100%; }
+			table.apps tr {
+				padding: 0.85rem 1rem;
+				border-bottom: 1px solid var(--border);
+			}
+			table.apps tr:last-child { border-bottom: 0; }
+			table.apps td {
+				display: block;
+				padding: 0.2rem 0;
+				border-bottom: 0;
+				white-space: normal;
+				word-break: break-word;
+			}
+			table.apps td[data-label]::before {
+				content: attr(data-label) ":";
+				display: inline-block;
+				min-width: 4.5rem;
+				font-size: 0.7rem;
+				text-transform: uppercase;
+				letter-spacing: 0.06em;
+				color: var(--text-muted);
+				font-weight: 600;
+				margin-right: 0.5rem;
+			}
+			table.apps td.actions {
+				margin-top: 0.65rem;
+				white-space: normal;
+			}
+			/* The chip-panel popouts (network access, replace-bundle) need
+			   to fit the column width — the desktop 24rem cap leaves them
+			   clipped on a 360px-wide phone. */
+			.action-chip-panel {
+				max-width: 100%;
+				padding: 0.75rem 0.85rem;
+			}
+		}
+		/* Long URLs / origins inside the network-access chip panel should
+		   wrap rather than push the panel sideways. Applies at all widths;
+		   the desktop column is wide enough that a single typical origin
+		   still fits on one line. */
+		.action-chip-panel code { word-break: break-all; }
+		.action-chip-panel ul { list-style: none; padding: 0; margin: 0.35rem 0; }
+		.action-chip-panel ul li { padding: 0.2rem 0; }
+		.action-chip-panel textarea {
+			width: 100%;
+			min-height: 4rem;
+			font-family: var(--font-mono);
+			font-size: 0.85rem;
+		}
+
+		/* Network-access chip panel: structured sub-sections (intro blurb,
+		   "Requested by app" list with checkbox rows, "Admin-added"
+		   textarea, save button). Spacing is tight on desktop so the panel
+		   stays compact alongside other action chips; on mobile the panel
+		   widens to fill its parent row (see the @media block above) and
+		   the same rules continue to apply.*/
+		.network-details { display: inline-block; }
+		.network-panel { width: 22rem; max-width: 100%; }
+		.network-panel form { gap: 0.45rem; }
+		.network-panel .network-panel-blurb { margin: 0 0 0.25rem; }
+		.network-panel .network-panel-heading {
+			margin: 0.45rem 0 0.25rem;
+			font-size: 0.72rem;
+			font-weight: 700;
+			text-transform: uppercase;
+			letter-spacing: 0.06em;
+			color: var(--text-muted);
+		}
+		.network-panel .network-panel-heading code {
+			text-transform: none;
+			letter-spacing: 0;
+			font-size: 0.95em;
+		}
+		.network-panel .network-panel-hint {
+			font-weight: 500;
+			text-transform: none;
+			letter-spacing: 0;
+			color: var(--text-faint);
+		}
+		.network-origin-list { margin: 0 0 0.25rem; }
+		.network-origin-row {
+			display: flex;
+			align-items: center;
+			gap: 0.5rem;
+			font-weight: 400;
+			margin: 0;
+			min-width: 0;
+		}
+		.network-origin-row input[type="checkbox"] { flex-shrink: 0; }
+		.network-origin-row code {
+			background: var(--surface-2);
+			padding: 0.1rem 0.4rem;
+			border-radius: 0.25rem;
+			font-size: 0.82rem;
+			min-width: 0;
+		}
+		.network-panel .network-save { align-self: flex-start; margin-top: 0.25rem; }
+		@media (max-width: 640px) {
+			.network-details, .network-panel { width: 100%; }
+		}
+
 		/* Compact action affordances inside admin table rows. Renders as a
 		   small bordered pill — uniform across <a>, <button>, and
 		   <summary> elements so the Apps / Reset password / Replace /
@@ -733,16 +892,42 @@
 			<span class="brand-mark">P</span>
 			<span class="brand-text">PWA Portal</span>
 		</a>
-		<button type="button" class="nav-toggle" aria-label="Toggle navigation"
-			aria-controls="primary-nav" aria-expanded="false">
-			<svg width="20" height="20" viewBox="0 0 24 24" fill="none"
-				stroke="currentColor" stroke-width="2"
-				stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-				<line x1="4" y1="7" x2="20" y2="7"></line>
-				<line x1="4" y1="12" x2="20" y2="12"></line>
-				<line x1="4" y1="17" x2="20" y2="17"></line>
-			</svg>
-		</button>
+		<div class="topbar-actions">
+			<button type="button" class="theme-toggle" id="theme-toggle"
+				aria-label="Toggle color theme" title="Toggle color theme">
+				<!-- Sun (light) -->
+				<svg class="theme-icon icon-light" width="18" height="18" viewBox="0 0 24 24"
+					fill="none" stroke="currentColor" stroke-width="2"
+					stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+					<circle cx="12" cy="12" r="4"></circle>
+					<path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"></path>
+				</svg>
+				<!-- Moon (dark) -->
+				<svg class="theme-icon icon-dark" width="18" height="18" viewBox="0 0 24 24"
+					fill="none" stroke="currentColor" stroke-width="2"
+					stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+					<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+				</svg>
+				<!-- Half-fill (system / auto) -->
+				<svg class="theme-icon icon-system" width="18" height="18" viewBox="0 0 24 24"
+					fill="none" stroke="currentColor" stroke-width="2"
+					stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+					<circle cx="12" cy="12" r="9"></circle>
+					<path d="M12 3v18" fill="currentColor"></path>
+					<path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor" stroke="none"></path>
+				</svg>
+			</button>
+			<button type="button" class="nav-toggle" aria-label="Toggle navigation"
+				aria-controls="primary-nav" aria-expanded="false">
+				<svg width="20" height="20" viewBox="0 0 24 24" fill="none"
+					stroke="currentColor" stroke-width="2"
+					stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+					<line x1="4" y1="7" x2="20" y2="7"></line>
+					<line x1="4" y1="12" x2="20" y2="12"></line>
+					<line x1="4" y1="17" x2="20" y2="17"></line>
+				</svg>
+			</button>
+		</div>
 		<nav id="primary-nav">
 			<a href="/" class="nav-link">Apps</a>
 			{% if user.role == "admin" %}
@@ -786,6 +971,43 @@
 				navigator.serviceWorker.register("/sw.js").catch((e) => console.warn("SW register failed", e));
 			});
 		}
+
+		// Theme cycle: System → Light → Dark → System. Persists to
+		// localStorage["portal-theme"] (matching the boot script in <head>);
+		// the absence of that key represents "System". data-theme on <html>
+		// drives the actual color tokens, data-theme-state drives the
+		// topbar icon visibility.
+		(function () {
+			const btn = document.getElementById("theme-toggle");
+			if (!btn) return;
+			const ORDER = ["system", "light", "dark"];
+			function current() {
+				return document.documentElement.getAttribute("data-theme-state") || "system";
+			}
+			function apply(state) {
+				try {
+					if (state === "system") {
+						localStorage.removeItem("portal-theme");
+						document.documentElement.removeAttribute("data-theme");
+					} else {
+						localStorage.setItem("portal-theme", state);
+						document.documentElement.setAttribute("data-theme", state);
+					}
+				} catch (_) { /* localStorage blocked — change is session-only */ }
+				document.documentElement.setAttribute("data-theme-state", state);
+				btn.setAttribute(
+					"title",
+					"Theme: " + state[0].toUpperCase() + state.slice(1) +
+						" (click to cycle)"
+				);
+			}
+			btn.addEventListener("click", function () {
+				const idx = ORDER.indexOf(current());
+				apply(ORDER[(idx + 1) % ORDER.length]);
+			});
+			// Initial tooltip — the icon already reflects state via CSS.
+			apply(current());
+		})();
 
 		// Mobile hamburger toggle. The nav itself is positioned absolutely
 		// below the topbar at narrow widths; the .open class flips it visible.
