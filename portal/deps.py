@@ -46,13 +46,45 @@ def current_user_or_token(
     db: Annotated[Session, Depends(get_db)],
     authorization: Annotated[Optional[str], Header()] = None,
 ) -> Optional[User]:
-    """Accept either a session cookie or `Authorization: Bearer <token>`.
+    """Accept any of: app-subdomain AppSession cookie, portal UserSession
+    cookie, or ``Authorization: Bearer <token>``.
 
-    Sets ``request.state.auth_method`` to ``"token"`` when the bearer header
-    resolved to a valid ApiToken, or ``"cookie"`` when the session cookie
-    authenticated the request. An invalid bearer that falls through to cookie
-    auth produces ``"cookie"`` — callers MUST NOT trust the raw header.
+    Sets ``request.state.auth_method`` to one of:
+
+    - ``"app_session"`` — request arrived on ``<slug>.apps.<SITE_URL>`` and
+      carried a valid ``app_session`` cookie matching that slug. The portal's
+      own ``session_id`` cookie isn't sent on this origin, so the UserSession
+      path can't fire here.
+    - ``"token"`` — ``Authorization: Bearer …`` resolved to a known ApiToken.
+    - ``"cookie"`` — the portal-origin UserSession cookie authenticated.
+
+    An invalid bearer that falls through to cookie auth produces ``"cookie"``
+    — callers MUST NOT trust the raw header.
+
+    Auth-method precedence:
+
+    1. On an app subdomain (``request.state.app_slug`` set by
+       ``HostDispatchMiddleware``), the AppSession cookie is authoritative.
+       If absent or wrong-slug, we return ``None`` without falling back to
+       UserSession — the portal cookie isn't even sent here, and silently
+       falling back to bearer auth could mask a misconfigured client.
+    2. Else, bearer header (token clients).
+    3. Else, portal UserSession cookie.
     """
+    # 1. App-subdomain context — AppSession cookie is the only valid auth.
+    app_slug = getattr(request.state, "app_slug", None)
+    if app_slug:
+        sid = request.cookies.get(APP_SESSION_COOKIE)
+        app_session = get_active_app_session(db, sid)
+        if app_session is not None and app_session.slug == app_slug:
+            user = db.get(User, app_session.user_id)
+            if user is not None:
+                touch_app_session(db, app_session)
+                request.state.auth_method = "app_session"
+                return user
+        return None
+
+    # 2. Bearer token (portal-origin programmatic clients).
     if authorization and authorization.lower().startswith("bearer "):
         raw = authorization[7:].strip()
         if raw:
@@ -76,6 +108,8 @@ def current_user_or_token(
             # back-compat, but DO NOT set auth_method="token" — the bearer
             # was bogus, so any "I'm a token client" privileges (e.g. naming
             # an arbitrary app via X-Portal-App) must not apply.
+
+    # 3. Portal-origin UserSession cookie.
     session_id = request.session.get("session_id")
     session_row = get_active_session(db, session_id)
     if session_row is None:

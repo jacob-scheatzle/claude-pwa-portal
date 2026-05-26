@@ -54,18 +54,25 @@ def _require_admin(user: Optional[User]) -> User:
 
 
 def _require_csrf_for_cookie(request: Request, x_csrf: Optional[str]) -> None:
-    """Skip for bearer tokens; require X-CSRF-Token for cookie sessions.
+    """Skip for bearer tokens; require X-CSRF-Token for any cookie session.
 
-    Cookie-auth callers are subject to CSRF because a malicious cross-origin
-    page can ride the browser's session cookie. Bearer-token callers
-    (the Claude skill, server-to-server) carry the token explicitly and so
-    are not subject to CSRF — they skip this check entirely.
+    Two cookie-session flavors are covered:
 
-    Note: this is defense-in-depth on top of SameSite=Lax. It does NOT
-    protect against a malicious same-origin child app at /apps/evil/,
-    which can read the CSRF token via /api/v1/csrf-token just like any
-    other same-origin script. The structural fix for that is separate
-    origins per child app.
+    - ``cookie`` — the portal's own ``UserSession`` cookie (portal origin).
+    - ``app_session`` — the per-app ``AppSession`` cookie (subdomain origin).
+
+    Both are HttpOnly, ``SameSite=Lax``, and rideable by the browser without
+    user intent. Bearer-token callers (the Claude skill, server-to-server)
+    carry the token explicitly and so are not subject to CSRF — they skip
+    this check entirely.
+
+    Defense-in-depth note: this layer sits on top of ``SameSite=Lax`` and the
+    cross-origin boundary. Even though a malicious page on another origin
+    can't fetch the CSRF token (they can't read responses from the portal /
+    app subdomain), requiring the token still defends against subtle
+    bypasses (e.g. a misconfigured CORS policy in the future). On the
+    subdomain, the SDK fetches ``/api/v1/csrf-token`` same-origin and sends
+    ``X-CSRF-Token`` automatically — the gate is transparent to app authors.
     """
     auth_method = getattr(request.state, "auth_method", None)
     if auth_method == "token":
@@ -96,11 +103,20 @@ def _resolve_app_slug(
 ) -> App:
     """Pick the authoritative app slug for a storage request.
 
-    Bearer-token clients (the Claude skill, CI, etc.) may name any app via
-    ``X-Portal-App``. Browser/cookie clients can't be trusted with that
-    header — a malicious child app at ``/apps/evil/`` could set it to
-    ``finance-app`` and read another app's namespace. For cookie auth we
-    extract the slug from the Origin/Referer URL path instead.
+    Precedence (most-trusted first):
+
+    1. **App subdomain (Host-derived).** When ``request.state.app_slug`` is set
+       by ``HostDispatchMiddleware``, the slug came from the browser-set Host
+       header on ``<slug>.apps.<SITE_URL>`` and the AppSession cookie was
+       already verified to be scoped to that same slug. No client header or
+       Referer can override this.
+    2. **Bearer-token clients.** A valid ``Authorization: Bearer …`` (the
+       Claude skill, CI, server-to-server) names the target app via
+       ``X-Portal-App``. Token clients are out-of-band: they have legitimate
+       reason to act on any slug their user has access to.
+    3. **Legacy portal-origin cookie auth.** When child apps run same-origin
+       (``CHILD_APPS_SAME_ORIGIN=true``), the slug is derived from the
+       Origin/Referer URL path — same as before Phase D.
 
     The decision is driven by ``request.state.auth_method`` (set by
     ``current_user_or_token``), NOT by the raw Authorization header. That
@@ -108,6 +124,15 @@ def _resolve_app_slug(
     string — when the token is invalid the dep falls back to cookie auth, and
     we must apply the cookie-side Referer check in that case.
     """
+    # 1. Host-derived slug from the app subdomain wins outright. The auth
+    # method here is "app_session" (the matching AppSession cookie was
+    # already validated by current_user_or_token before we got here), so the
+    # slug from the Host header is doubly checked: by the middleware, and
+    # implicitly by the cookie-row's slug match.
+    host_slug = getattr(request.state, "app_slug", None)
+    if host_slug:
+        return _require_app(db, host_slug)
+
     auth_method = getattr(request.state, "auth_method", None)
     if auth_method == "token":
         slug = x_portal_app  # token clients can name any app
@@ -144,12 +169,19 @@ def user_me(user: UserDep):
 def get_csrf_token(request: Request, user: UserDep):
     """Return the current cookie session's CSRF token.
 
-    Cookie auth required. Bearer-token clients don't need a CSRF token
-    (they're not subject to CSRF) — they get a 400 if they call this.
+    Cookie auth required — either the portal's ``UserSession`` cookie
+    (``auth_method == "cookie"``) or an app-subdomain ``AppSession`` cookie
+    (``auth_method == "app_session"``). Each origin has its own independent
+    Starlette session cookie, so the CSRF token returned is scoped to the
+    caller's origin and only valid for state-changing calls back to the
+    same origin.
+
+    Bearer-token clients don't need a CSRF token (they're not subject to
+    CSRF) — they get a 400 if they call this.
     """
     _require_user(user)
     auth_method = getattr(request.state, "auth_method", None)
-    if auth_method != "cookie":
+    if auth_method not in ("cookie", "app_session"):
         raise HTTPException(400, "CSRF token only relevant for cookie auth")
     from portal.security import csrf_token as _csrf_token
     return {"csrf_token": _csrf_token(request)}

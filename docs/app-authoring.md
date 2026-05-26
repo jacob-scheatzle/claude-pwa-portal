@@ -9,9 +9,26 @@ This guide focuses on the manual path. For the Claude path, see [`claude-skill/p
 
 ## What an app is
 
-An app is a folder of HTML/CSS/JS plus a `portal.json` manifest, zipped and uploaded. The portal extracts it to `data/apps/<slug>/` and serves it at `/apps/<slug>/`.
+An app is a folder of HTML/CSS/JS plus a `portal.json` manifest, zipped and uploaded. The portal extracts it to `data/apps/<slug>/` and serves it.
 
-Apps run inside the portal's origin, so the JavaScript SDK at `/portal-sdk.js` works automatically — no auth wiring needed.
+### Where the app runs
+
+By default, each app runs on its **own subdomain**: `<slug>.apps.<SITE_URL>`,
+loaded inside an iframe wrapper on the portal. This puts each app on a
+distinct browser origin so the same-origin policy isolates apps from each
+other and from the portal shell.
+
+This is transparent to your code. The SDK at `/portal-sdk.js` is served
+same-origin from the subdomain and handles the cross-origin handshake
+(a single-use launch token in the URL fragment is exchanged for an
+HttpOnly `app_session` cookie) automatically on page load. Just include
+`<script src="/portal-sdk.js"></script>` like before — every SDK method
+keeps working.
+
+A legacy same-origin mode is available via `CHILD_APPS_SAME_ORIGIN=true`
+for self-hosters who can't configure wildcard DNS, in which case the app
+runs at `<SITE_URL>/apps/<slug>/`. The SDK and your app's code don't
+change between the two modes.
 
 ## Minimum app
 

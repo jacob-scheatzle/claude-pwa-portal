@@ -41,7 +41,23 @@ Every app is a folder containing:
 - App's own CSS/JS/icons/images
 - Optional `icon.png` (referenced from `portal.json.icon`)
 
-When uploaded, the portal extracts to `data/apps/<slug>/` and serves at `/apps/<slug>/`.
+When uploaded, the portal extracts to `data/apps/<slug>/` and serves the app.
+
+### Where the app runs
+
+By default each app runs on its own subdomain — `<slug>.apps.<SITE_URL>` —
+inside an iframe wrapper on the portal. This isolates apps from each other
+and from the portal via the browser's same-origin policy. **The change is
+transparent to you as an app author**: the SDK at `/portal-sdk.js` handles
+cross-origin authentication automatically via a single-use launch token,
+and the existing `<script src="/portal-sdk.js"></script>` HTML pattern keeps
+working because the SDK is served same-origin from the subdomain at
+`<slug>.apps.<SITE_URL>/portal-sdk.js`.
+
+Self-hosters who can't set up wildcard DNS can opt into a legacy
+same-origin mode (`CHILD_APPS_SAME_ORIGIN=true`), in which case the app
+runs at `<SITE_URL>/apps/<slug>/`. Either way, the SDK and your app's code
+are identical.
 
 ## `portal.json` schema
 
