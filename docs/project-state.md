@@ -110,14 +110,12 @@ rotate across the login boundary.
 
 ## What's still genuinely open
 
-1. **LICENSE file.** Repo is public-ish (private GitHub for now) without
-   one. MIT or Apache-2.0 are the conventional picks. README already has
-   a placeholder note.
-2. **First real-VPS deploy.** Everything works locally on this Mac under
-   docker compose. The image build + Caddy auto-TLS on a real domain
-   hasn't been exercised. Likely to surface: pango/Caddy/Caddyfile
-   interactions you can't see without HTTPS + a real DNS name.
-3. **First schema-change ship.** Now that Alembic is in, the next
+1. **First real-VPS deploy.** Everything works locally under
+   `docker compose`, but the image build + Caddy auto-TLS against a real
+   domain hasn't been exercised. Most likely friction surfaces: Pango /
+   Caddy / Caddyfile interactions you can't see without HTTPS + a real
+   DNS name, and the per-app-subdomain wildcard DNS path.
+2. **First schema-change ship.** Now that Alembic is in, the next
    time you add a column to a model, the workflow is
    `alembic revision --autogenerate -m "..."` then commit + deploy.
    `portal/db.py:init_db()` runs `upgrade head` on container boot.
@@ -237,7 +235,7 @@ the new default is what you want.
 
 - **Migration footgun:** `alembic revision --autogenerate` emits `sqlmodel.sql.sqltypes.AutoString` references but doesn't add `import sqlmodel`. The `alembic/script.py.mako` template was patched to auto-include it, so this is handled — but if you ever regenerate the mako template (e.g., upgrading Alembic and accepting the new default), re-apply the patch.
 
-- **Existing dev DB on this Mac:** `data/portal.db` has an admin user from earlier setup (you'll know the email + password from the session). It's stamped at Alembic revision `7d3122820cf2`. Don't delete it unless you want to re-run the first-run wizard. On a fresh checkout (different machine), there is no DB — the wizard will run.
+- **`data/portal.db` lifecycle:** the SQLite DB persists across container restarts (bind-mounted from `./data/`). On a fresh checkout, no DB exists and the first-run wizard creates the initial admin. On an upgrade, Alembic stamps a pre-Alembic DB or runs migrations to head — see `portal/db.py:init_db()`. The DB lives outside the image (intentional; data survives `docker compose down`).
 
 - **The Claude skill ships in the repo at `claude-skill/pwa-portal-app/`** — `install.sh` symlinks it into `~/.claude/skills/`. From any device with this repo cloned, running `bash claude-skill/pwa-portal-app/install.sh` plus `configure.py` reactivates the skill.
 
