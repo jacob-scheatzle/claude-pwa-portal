@@ -2,58 +2,144 @@
 <html lang="en">
 <head>
 	<meta charset="utf-8">
-	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 	<title>REPLACE ME</title>
 	<script src="/portal-sdk.js"></script>
 	<style>
-		:root { color-scheme: light dark; --accent: #075985; }
+		/* PWA Portal — shared design tokens.
+		   Keep these in sync with the portal shell so child apps inherit a
+		   consistent look. Colors track @media (prefers-color-scheme). */
+		:root {
+			color-scheme: light dark;
+			--bg: #fafaf9;
+			--surface: #ffffff;
+			--surface-2: #f5f5f4;
+			--border: #e7e5e4;
+			--border-strong: #d6d3d1;
+			--text: #1c1917;
+			--text-muted: #57534e;
+			--text-faint: #78716c;
+			--accent: #059669;
+			--accent-hover: #047857;
+			--accent-fg: #ffffff;
+			--accent-tint: #ecfdf5;
+			--accent-soft: rgba(5, 150, 105, 0.12);
+			--danger: #b91c1c;
+			--success: #15803d;
+			--radius-sm: 0.4rem;
+			--radius: 0.55rem;
+			--shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.05), 0 1px 1px rgba(15, 23, 42, 0.025);
+			--shadow: 0 2px 4px rgba(15, 23, 42, 0.06), 0 1px 2px rgba(15, 23, 42, 0.04);
+			--font-sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI",
+				Roboto, "Helvetica Neue", Arial, sans-serif;
+			--font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+		}
+		@media (prefers-color-scheme: dark) {
+			:root {
+				--bg: #0c0a09;
+				--surface: #1c1917;
+				--surface-2: #292524;
+				--border: #292524;
+				--border-strong: #44403c;
+				--text: #fafaf9;
+				--text-muted: #a8a29e;
+				--text-faint: #78716c;
+				--accent: #10b981;
+				--accent-hover: #34d399;
+				--accent-fg: #0c0a09;
+				--accent-tint: #064e3b;
+				--accent-soft: rgba(16, 185, 129, 0.18);
+				--danger: #f87171;
+				--success: #4ade80;
+			}
+		}
+
 		* { box-sizing: border-box; }
 		body {
-			font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-			max-width: 32rem;
-			margin: 2rem auto;
-			padding: 0 1.25rem;
+			font-family: var(--font-sans);
+			background: var(--bg);
+			color: var(--text);
+			margin: 0;
 			line-height: 1.55;
+			-webkit-font-smoothing: antialiased;
 		}
-		h1 { margin: 0 0 0.5rem; font-size: 1.6rem; }
-		form { display: flex; flex-direction: column; gap: 0.75rem; }
-		label { font-weight: 600; font-size: 0.85rem; }
+		.shell {
+			max-width: 36rem;
+			margin: 0 auto;
+			padding: 2rem 1.5rem 4rem;
+		}
+		h1 {
+			margin: 0 0 0.5rem;
+			font-size: 1.6rem;
+			font-weight: 700;
+			letter-spacing: -0.025em;
+		}
+		.muted { color: var(--text-muted); font-size: 0.9rem; }
+		label { font-weight: 600; font-size: 0.85rem; display: block; margin-bottom: 0.3rem; }
 		input, textarea, select {
 			width: 100%;
-			padding: 0.6rem 0.75rem;
-			border: 1px solid rgba(127,127,127,0.4);
-			border-radius: 0.375rem;
-			background: transparent;
-			color: inherit;
-			font-size: 1rem;
+			padding: 0.65rem 0.85rem;
+			border: 1px solid var(--border-strong);
+			border-radius: var(--radius-sm);
+			background: var(--surface);
+			color: var(--text);
+			font-size: 0.95rem;
+			font-family: inherit;
+			transition: border-color 0.12s ease, box-shadow 0.12s ease;
+		}
+		input:focus, textarea:focus, select:focus {
+			outline: 0;
+			border-color: var(--accent);
+			box-shadow: 0 0 0 3px var(--accent-soft);
 		}
 		button {
-			padding: 0.65rem 1rem;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			gap: 0.4rem;
+			padding: 0.6rem 1.05rem;
 			border: 0;
-			border-radius: 0.375rem;
+			border-radius: var(--radius-sm);
 			background: var(--accent);
-			color: white;
+			color: var(--accent-fg);
 			font-weight: 600;
+			font-size: 0.925rem;
+			font-family: inherit;
 			cursor: pointer;
+			box-shadow: var(--shadow-sm);
+			transition: background 0.12s ease, box-shadow 0.12s ease, transform 0.06s ease;
 		}
-		.status { font-size: 0.9rem; opacity: 0.8; min-height: 1.2em; }
+		button:hover { background: var(--accent-hover); box-shadow: var(--shadow); }
+		button:active { transform: translateY(1px); box-shadow: none; }
+		button.secondary {
+			background: var(--surface);
+			color: var(--accent);
+			border: 1px solid var(--border-strong);
+			box-shadow: none;
+		}
+		button.secondary:hover { background: var(--accent-tint); border-color: var(--accent); }
+		.status { font-size: 0.9rem; color: var(--text-muted); min-height: 1.2em; }
 	</style>
 </head>
 <body>
-	<h1 id="title">REPLACE ME</h1>
-	<p id="hello" class="status">Loading…</p>
+	<main class="shell">
+		<h1 id="title">REPLACE ME</h1>
+		<p id="hello" class="status">Loading…</p>
 
-	<!-- Replace the body below with your app's UI -->
+		<!-- Replace the body below with your app's UI. -->
 
-	<script>
-		(async () => {
-			try {
-				const me = await portal.user.current();
-				document.getElementById("hello").textContent = `Signed in as ${me.email}.`;
-			} catch (err) {
-				document.getElementById("hello").textContent = "Couldn't reach the portal: " + err.message;
-			}
-		})();
-	</script>
+		<script>
+			(async () => {
+				try {
+					const me = await portal.user.current();
+					document.getElementById("hello").textContent =
+						`Signed in as ${me.email}.`;
+				} catch (err) {
+					document.getElementById("hello").textContent =
+						"Couldn't reach the portal: " + err.message;
+				}
+			})();
+		</script>
+	</main>
 </body>
 </html>

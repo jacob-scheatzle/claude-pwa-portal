@@ -178,7 +178,70 @@ Keys allow `A-Z a-z 0-9 . _ -` and `/` (forward slash acts as folder separator).
 - **No external CSS frameworks** unless the user specifically asks. Lean styling is fine.
 - **Persistent data goes through `portal.storage`.** Never hit external APIs for user data without asking.
 - **Be defensive about user input** — validate emails, numbers, etc. before sending to the portal API.
-- **Match the portal's quiet aesthetic** when in doubt: system font stack, accent color around `#075985`, generous spacing.
+- **Match the portal's visual style.** The portal has a stone-neutral / emerald-accent design system; the basic scaffold at `templates/basic/index.html` already includes the design tokens (CSS variables). When generating new HTML for a child app, **start from the scaffold's `<style>` block** and use the tokens below — apps then look consistent with the portal chrome and adapt to light/dark automatically.
+
+## Visual style — design tokens
+
+Child apps should embed these CSS variables at the top of their `<style>` block. Light + dark are both defined; the browser picks based on `prefers-color-scheme`.
+
+```css
+:root {
+  color-scheme: light dark;
+  --bg: #fafaf9;
+  --surface: #ffffff;
+  --surface-2: #f5f5f4;
+  --border: #e7e5e4;
+  --border-strong: #d6d3d1;
+  --text: #1c1917;
+  --text-muted: #57534e;
+  --text-faint: #78716c;
+  --accent: #059669;          /* emerald — primary actions, links */
+  --accent-hover: #047857;
+  --accent-fg: #ffffff;
+  --accent-tint: #ecfdf5;
+  --accent-soft: rgba(5, 150, 105, 0.12);
+  --danger: #b91c1c;
+  --success: #15803d;
+  --radius-sm: 0.4rem;
+  --radius: 0.55rem;
+  --shadow-sm: 0 1px 2px rgba(15,23,42,0.05), 0 1px 1px rgba(15,23,42,0.025);
+  --shadow: 0 2px 4px rgba(15,23,42,0.06), 0 1px 2px rgba(15,23,42,0.04);
+  --font-sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI",
+    Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0c0a09;
+    --surface: #1c1917;
+    --surface-2: #292524;
+    --border: #292524;
+    --border-strong: #44403c;
+    --text: #fafaf9;
+    --text-muted: #a8a29e;
+    --accent: #10b981;
+    --accent-hover: #34d399;
+    --accent-fg: #0c0a09;
+    --accent-tint: #064e3b;
+    --accent-soft: rgba(16, 185, 129, 0.18);
+    --danger: #f87171;
+    --success: #4ade80;
+  }
+}
+```
+
+**Usage conventions:**
+- `body { font-family: var(--font-sans); background: var(--bg); color: var(--text); }`
+- Wrap page content in `<main class="shell">` with `max-width: 36rem` for forms / 60rem for wide layouts; padding `2rem 1.5rem 4rem`.
+- Buttons use `background: var(--accent)`, `color: var(--accent-fg)`, `border-radius: var(--radius-sm)`, `box-shadow: var(--shadow-sm)`, hover → `--accent-hover`.
+- Secondary buttons: `background: var(--surface)`, `color: var(--accent)`, `border: 1px solid var(--border-strong)`.
+- Inputs: `background: var(--surface)`, `border: 1px solid var(--border-strong)`, focus → `border-color: var(--accent)` + `box-shadow: 0 0 0 3px var(--accent-soft)`.
+- Headings: `font-weight: 700`, `letter-spacing: -0.025em` for h1.
+- Cards / panels: `background: var(--surface)`, `border: 1px solid var(--border)`, `border-radius: var(--radius)`, optional `box-shadow: var(--shadow-sm)`.
+- Pills / badges: `padding: 0.15rem 0.625rem`, `border-radius: 9999px`, `font-size: 0.7rem`, `font-weight: 600`. Use `--success-tint` / `--success` for "good", `--danger-tint` / `--danger` for "bad", `--accent-tint` / `--accent` for neutral-emphasized.
+- Status messages: small text in `--text-muted`; errors in `--danger`; success in `--success`.
+
+If an app needs a one-off color (chart legend, brand callout), invent a CSS variable scoped to that element rather than dropping a hex literal mid-template — keeps the palette legible.
 
 ## Minimal example: hello user
 
@@ -191,16 +254,33 @@ Keys allow `A-Z a-z 0-9 . _ -` and `/` (forward slash acts as folder separator).
   <title>Hello</title>
   <script src="/portal-sdk.js"></script>
   <style>
-    body { font-family: -apple-system, "Segoe UI", sans-serif; max-width: 32rem; margin: 2rem auto; padding: 0 1rem; }
+    /* (Paste the full :root token block from "Visual style" above) */
+    :root {
+      color-scheme: light dark;
+      --bg: #fafaf9; --surface: #ffffff; --border: #e7e5e4;
+      --text: #1c1917; --text-muted: #57534e;
+      --accent: #059669; --accent-fg: #ffffff;
+      --radius-sm: 0.4rem;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg: #0c0a09; --surface: #1c1917; --border: #292524; --text: #fafaf9; --text-muted: #a8a29e; --accent: #10b981; --accent-fg: #0c0a09; }
+    }
+    * { box-sizing: border-box; }
+    body { font-family: var(--font-sans); background: var(--bg); color: var(--text); margin: 0; }
+    .shell { max-width: 32rem; margin: 0 auto; padding: 2rem 1.5rem; }
+    h1 { font-weight: 700; letter-spacing: -0.025em; }
   </style>
 </head>
 <body>
-  <h1 id="greeting">Loading…</h1>
-  <script>
-    portal.user.current().then(me => {
-      document.getElementById("greeting").textContent = `Hi, ${me.email}`;
-    });
-  </script>
+  <main class="shell">
+    <h1 id="greeting">Loading…</h1>
+    <script>
+      portal.user.current().then(me => {
+        document.getElementById("greeting").textContent = `Hi, ${me.email}`;
+      });
+    </script>
+  </main>
 </body>
 </html>
 ```
