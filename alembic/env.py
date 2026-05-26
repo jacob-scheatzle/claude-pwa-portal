@@ -27,8 +27,16 @@ config.set_main_option("sqlalchemy.url", settings.database_url)
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
+#
+# ``disable_existing_loggers=False`` is critical: ``fileConfig`` defaults to
+# True, which would mark every logger not declared in alembic.ini as
+# disabled — including uvicorn's "uvicorn", "uvicorn.error", and
+# "uvicorn.access". Because ``init_db()`` runs Alembic on every portal
+# boot, leaving the default in place silently swallows "Application
+# startup complete" and every per-request access log line, plus any
+# portal-side warning that uses one of the uvicorn loggers as its sink.
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # Target metadata for 'autogenerate' support.
 target_metadata = SQLModel.metadata

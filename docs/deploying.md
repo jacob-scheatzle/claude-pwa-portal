@@ -164,6 +164,16 @@ The portal is then reachable at `http://localhost/` with no cert warnings.
 - The bundled Caddy boots from `Caddyfile.http` instead of `Caddyfile`. It listens on port 80 only, never requests Let's Encrypt certs, and emits no HSTS header.
 - The portal process itself is unchanged. All scheme decisions (cookie `Secure` attribute, launch-redirect URL) cascade through `COOKIES_SECURE`, so the right combination depends on whether you're behind a TLS-terminating proxy.
 
+### Common gotchas in HTTP-only mode
+
+Three failure modes that almost every first-time deployer hits at least one of:
+
+- **`SITE_URL=localhost` (the default) but you're hitting a real IP/hostname.** Caddy's site address block is keyed on `{$SITE_URL}` — if the request's `Host` header doesn't match, the request lands in Caddy's default empty site and the browser sees a blank response with no access log entry. **Fix:** set `SITE_URL` to the exact host you're typing in the browser (the EC2 public IP, an `<ip>.sslip.io` form, or a real domain), then `docker compose up -d` to recreate the containers with the new env.
+
+- **`COOKIES_SECURE=true` (the .env.example default) with `HTTP_ONLY=true` and *no* TLS-terminating proxy.** The portal sets the `Secure` flag on every session cookie and renders the per-app iframe URL as `https://...` — but Caddy is only on port 80, so the iframe is blank and login looks broken on the next request. **Tell:** the portal dashboard loads fine on first visit, then any action that depends on the session or any app you click into shows nothing. **Fix:** set `COOKIES_SECURE=false` in `.env` and recreate (`docker compose up -d`). The portal also logs a warning at startup when this combo is set — check `docker compose logs portal` for `HTTP_ONLY=true with COOKIES_SECURE=true: ...`.
+
+- **No wildcard DNS for `*.apps.<SITE_URL>` (subdomain mode).** Per-app subdomains need to resolve to the same IP. With a bare-IP `SITE_URL` or a real domain without a `*.apps.<domain>` A record, the iframe blanks on `ERR_NAME_NOT_RESOLVED`. **Fix:** use `SITE_URL=<ip>.sslip.io` — sslip.io's wildcard covers `*.<ip>.sslip.io` for free — or set up the wildcard A record yourself. As a workaround for an internal test box, `CHILD_APPS_SAME_ORIGIN=true` keeps apps on the portal origin and skips the DNS requirement entirely (you'll see a security-warning banner in the admin UI).
+
 ## 3. Boot it
 
 ```bash

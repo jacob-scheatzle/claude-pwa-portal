@@ -1,3 +1,4 @@
+import logging
 import re
 import time
 from contextlib import asynccontextmanager
@@ -34,9 +35,34 @@ from portal.settings_store import get_setting, set_setting
 from portal.web import STATIC_DIR, flash, render
 
 
+# uvicorn's "error" logger handles operational/startup output and has a stderr
+# handler attached by default. Using it ensures startup advisories show up in
+# `docker compose logs portal` without us having to bolt on a root-logger
+# handler ourselves. (Python's root logger is unconfigured under uvicorn's
+# default dictConfig, so a custom logger name silently no-ops.)
+logger = logging.getLogger("uvicorn.error")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    # Surface configuration footguns at startup. The combination below is
+    # legitimate when a TLS-terminating proxy sits in front (the LB tells
+    # uvicorn the scheme via X-Forwarded-Proto), but on a direct-to-Caddy
+    # HTTP deployment it leaves Secure-flagged cookies that the browser
+    # refuses to send — login appears to work but the next request looks
+    # unauthenticated and the per-app iframe URL is generated with
+    # ``https://`` and fails to load. Cheap to log; saves a debugging
+    # session for whoever sets HTTP_ONLY=true without flipping
+    # COOKIES_SECURE.
+    if settings.http_only and settings.cookies_secure:
+        logger.warning(
+            "HTTP_ONLY=true with COOKIES_SECURE=true: assuming a "
+            "TLS-terminating proxy sits in front of this stack. If browsers "
+            "reach the portal directly over plain HTTP, Secure-flagged "
+            "cookies will not be sent and per-app iframes will fail to "
+            "load. Set COOKIES_SECURE=false if there is no proxy doing TLS."
+        )
     yield
 
 
