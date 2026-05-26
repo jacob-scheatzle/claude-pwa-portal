@@ -32,20 +32,25 @@
 			<td>{{ u.created_at.strftime("%Y-%m-%d") }}</td>
 			<td class="actions">
 				{% if u.role != "admin" %}
-				<a class="linkish" href="/admin/users/{{ u.id }}/apps">Apps…</a>
+				<a class="action-chip" href="/admin/users/{{ u.id }}/apps">App access</a>
 				{% endif %}
 				<details>
-					<summary class="linkish">Reset password</summary>
-					<form method="post" action="/admin/users/{{ u.id }}/reset-password" style="margin-top:0.5rem; display:flex; gap:0.5rem;">
-						<input type="hidden" name="_csrf" value="{{ csrf_token }}">
-						<input type="password" name="password" required minlength="8" placeholder="New password" autocomplete="new-password">
-						<button type="submit">Set</button>
-					</form>
+					<summary class="action-chip">Reset password</summary>
+					<div class="action-chip-panel">
+						<form method="post" action="/admin/users/{{ u.id }}/reset-password" style="display:flex; gap:0.5rem; align-items:flex-end;">
+							<input type="hidden" name="_csrf" value="{{ csrf_token }}">
+							<div style="flex:1;">
+								<label for="reset_pw_{{ u.id }}" style="margin-bottom:0.25rem;">New password</label>
+								<input type="password" id="reset_pw_{{ u.id }}" name="password" required minlength="8" placeholder="At least 8 characters" autocomplete="new-password">
+							</div>
+							<button type="submit">Set</button>
+						</form>
+					</div>
 				</details>
 				{% if u.id != user.id %}
 				<form method="post" action="/admin/users/{{ u.id }}/delete" style="display:inline;" onsubmit="return confirm('Delete {{ u.email }}?');">
 					<input type="hidden" name="_csrf" value="{{ csrf_token }}">
-					<button class="linkish danger" type="submit">Delete</button>
+					<button class="action-chip danger" type="submit">Delete</button>
 				</form>
 				{% endif %}
 			</td>

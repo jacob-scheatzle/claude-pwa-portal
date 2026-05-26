@@ -15,7 +15,14 @@
 
 	encode zstd gzip
 
-	header {
+	# Portal-shell headers — scoped to NON-/apps/* paths only. The
+	# ``not path /apps/*`` matcher is critical: without it, the matcher-less
+	# header block gets compiled to run AFTER the @apps matcher block,
+	# clobbering the apps-specific CSP and putting an XFO DENY on the iframe
+	# target. Scoping both header blocks with matchers means they never
+	# overlap on a given request.
+	@portal_shell not path /apps/*
+	header @portal_shell {
 		# HSTS is only emitted over HTTPS by Caddy automatically.
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
 		X-Frame-Options "DENY"
@@ -23,26 +30,28 @@
 		Referrer-Policy "strict-origin-when-cross-origin"
 		Permissions-Policy "camera=(), microphone=(), geolocation=()"
 		Cross-Origin-Opener-Policy "same-origin"
-		# Portal-shell CSP. Stricter than the child-app CSP below: no 'unsafe-eval',
-		# no blob:, no data: in default-src. 'unsafe-inline' is required because
-		# base.html ships an inline <script> for service-worker registration and
-		# templates use inline <style>. frame-ancestors 'none' blocks a malicious
-		# child app from iframing the shell. The @apps matcher below overwrites
-		# this header for /apps/* (Caddy `header` directives set/replace by default).
+		# Portal-shell CSP. Stricter than the child-app CSP below: no
+		# 'unsafe-eval', no blob:, no data: in default-src. 'unsafe-inline'
+		# is required because base.html ships an inline <script> for
+		# service-worker registration and templates use inline <style>.
+		# frame-ancestors 'none' blocks any page from iframing the shell.
 		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
 	}
 
-	# Child apps shipped under /apps/<slug>/ (legacy same-origin mode) are written
-	# with Claude and rely on inline scripts/styles. 'unsafe-inline' +
-	# 'unsafe-eval' are intentional. ``frame-ancestors 'self'`` lets the
-	# portal's own launcher iframe at /apps/<slug>/ embed the app entry
-	# (also same-origin) — required for the back-to-Apps chrome to work in
-	# same-origin mode. External framing is still blocked. In the per-app-
-	# origin (subdomain) mode the wildcard block below takes over CSP for the
-	# actual child-app content; this block then only governs the launcher
-	# wrapper page, which never frames external content.
+	# /apps/* paths get a separate header set: the launcher wrapper at
+	# /apps/<slug>/ AND the iframe target at /apps/<slug>/<entry> both need
+	# ``frame-ancestors 'self'`` (so the launcher can embed the entry) and
+	# no XFO at all (Safari treats XFO DENY as authoritative even when CSP
+	# frame-ancestors would allow framing, producing a "refused to connect"
+	# iframe error). External framing is still blocked by frame-ancestors.
 	@apps path /apps/*
-	header @apps Content-Security-Policy "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; frame-ancestors 'self'; base-uri 'self'; form-action 'self'"
+	header @apps {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		Content-Security-Policy "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; frame-ancestors 'self'; base-uri 'self'; form-action 'self'"
+	}
 }
 
 # Per-app subdomains. Each child app gets its own browser origin so the

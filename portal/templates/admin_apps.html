@@ -32,26 +32,27 @@
 				{% endif %}
 			</td>
 			<td class="actions">
-				<a class="nav-link" href="/apps/{{ app.slug }}/" target="_blank">Open</a>
+				<a class="action-chip" href="/apps/{{ app.slug }}/" target="_blank">Open</a>
 				<form method="post" action="/admin/apps/{{ app.slug }}/toggle" style="display:inline;">
 					<input type="hidden" name="_csrf" value="{{ csrf_token }}">
-					<button class="linkish" type="submit">{{ 'Disable' if app.enabled else 'Enable' }}</button>
+					<button class="action-chip" type="submit">{{ 'Disable' if app.enabled else 'Enable' }}</button>
 				</form>
 				<details style="display:inline-block;">
-					<summary class="linkish" style="display:inline-block;">Replace</summary>
-					<form method="post" action="/admin/apps/{{ app.slug }}/replace"
-						enctype="multipart/form-data"
-						style="margin-top:0.6rem; display:flex; flex-direction:column; gap:0.5rem; max-width:22rem;">
-						<input type="hidden" name="_csrf" value="{{ csrf_token }}">
-						<input type="file" name="bundle" accept=".zip" required>
-						<div class="hint">Uploads a new <code>.zip</code> in-place. Per-user storage under <code>data/storage/{{ app.slug }}/</code> and the app's slug are preserved; manifest <code>slug</code> must match <code>{{ app.slug }}</code>.</div>
-						<button type="submit" style="align-self:flex-start;">Replace bundle</button>
-					</form>
+					<summary class="action-chip">Replace / update</summary>
+					<div class="action-chip-panel">
+						<form method="post" action="/admin/apps/{{ app.slug }}/replace"
+							enctype="multipart/form-data">
+							<input type="hidden" name="_csrf" value="{{ csrf_token }}">
+							<input type="file" name="bundle" accept=".zip" required>
+							<div class="hint">Uploads a new <code>.zip</code> in-place. Per-user storage under <code>data/storage/{{ app.slug }}/</code> and the app's slug are preserved; manifest <code>slug</code> must match <code>{{ app.slug }}</code>.</div>
+							<button type="submit" style="align-self:flex-start;">Upload new bundle</button>
+						</form>
+					</div>
 				</details>
 				<form method="post" action="/admin/apps/{{ app.slug }}/delete" style="display:inline;"
 					onsubmit="return confirm('Delete {{ app.name }}? This removes the app and its files on disk.');">
 					<input type="hidden" name="_csrf" value="{{ csrf_token }}">
-					<button class="linkish danger" type="submit">Delete</button>
+					<button class="action-chip danger" type="submit">Delete</button>
 				</form>
 			</td>
 		</tr>

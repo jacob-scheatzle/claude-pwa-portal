@@ -29,7 +29,12 @@ http://{$SITE_URL:localhost} {
 
 	encode zstd gzip
 
-	header {
+	# Portal-shell headers — scoped to NON-/apps/* paths only. See the
+	# default Caddyfile for the matcher-ordering rationale; without this
+	# matcher, the matcher-less header block runs AFTER the @apps block
+	# and clobbers the apps CSP / re-adds XFO DENY on the iframe target.
+	@portal_shell not path /apps/*
+	header @portal_shell {
 		X-Frame-Options "DENY"
 		X-Content-Type-Options "nosniff"
 		Referrer-Policy "strict-origin-when-cross-origin"
@@ -39,11 +44,17 @@ http://{$SITE_URL:localhost} {
 		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
 	}
 
-	# ``frame-ancestors 'self'`` allows the portal's own launcher (also on
-	# /apps/<slug>/) to iframe the app entry in same-origin mode while still
-	# blocking external framing.
+	# /apps/* paths: ``frame-ancestors 'self'`` lets the portal's launcher
+	# (also on /apps/<slug>/) embed the app entry; no XFO at all because
+	# Safari treats XFO DENY as authoritative even when CSP frame-ancestors
+	# would allow framing, producing a "refused to connect" iframe error.
 	@apps path /apps/*
-	header @apps Content-Security-Policy "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; frame-ancestors 'self'; base-uri 'self'; form-action 'self'"
+	header @apps {
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		Content-Security-Policy "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; frame-ancestors 'self'; base-uri 'self'; form-action 'self'"
+	}
 }
 
 # Per-app subdomains. Same routing as the default Caddyfile, just served

@@ -10,8 +10,16 @@
 	<dd style="margin:0;">{{ user.role }}</dd>
 </dl>
 
+<h2 style="font-size:1.15rem; margin-top:2rem;">Appearance</h2>
+<p class="hint" style="margin-top:-0.25rem; margin-bottom:0.85rem;">Saved on this device only. "System" follows your phone or browser's light/dark setting.</p>
+<div id="theme-picker" style="display:flex; gap:0.4rem; flex-wrap:wrap;">
+	<button type="button" class="action-chip" data-theme-set="light">Light</button>
+	<button type="button" class="action-chip" data-theme-set="dark">Dark</button>
+	<button type="button" class="action-chip" data-theme-set="">System</button>
+</div>
+
 {% if errors %}
-<div class="error"><ul>{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul></div>
+<div class="error" style="margin-top:2rem;"><ul>{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul></div>
 {% endif %}
 
 <h2 style="font-size:1.15rem; margin-top:2rem;">Change password</h2>
@@ -32,4 +40,42 @@
 	</div>
 	<button type="submit">Update password</button>
 </form>
+
+<script>
+	// Theme picker. Persists to localStorage with key "portal-theme" — the
+	// inline boot script in base.html reads it on every page load to apply
+	// the choice before paint. "" (System) means "no override, follow
+	// prefers-color-scheme".
+	(function () {
+		const picker = document.getElementById("theme-picker");
+		if (!picker) return;
+		const buttons = picker.querySelectorAll("[data-theme-set]");
+		function current() {
+			try { return localStorage.getItem("portal-theme") || ""; }
+			catch (_) { return ""; }
+		}
+		function refresh() {
+			const c = current();
+			buttons.forEach(function (b) {
+				b.classList.toggle("active", b.getAttribute("data-theme-set") === c);
+			});
+		}
+		buttons.forEach(function (b) {
+			b.addEventListener("click", function () {
+				const v = b.getAttribute("data-theme-set");
+				try {
+					if (v) {
+						localStorage.setItem("portal-theme", v);
+						document.documentElement.setAttribute("data-theme", v);
+					} else {
+						localStorage.removeItem("portal-theme");
+						document.documentElement.removeAttribute("data-theme");
+					}
+				} catch (_) { /* localStorage blocked — change is then session-only */ }
+				refresh();
+			});
+		});
+		refresh();
+	})();
+</script>
 {% endblock %}
