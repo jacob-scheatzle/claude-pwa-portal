@@ -50,6 +50,17 @@ def init_db() -> None:
     else:
         command.upgrade(cfg, "head")
 
+    # Opportunistic maintenance: clear out launch tokens older than a day so
+    # the table doesn't grow without bound. Wrapped in a broad try so a
+    # transient DB hiccup during this cleanup can never block app startup.
+    try:
+        from portal.sessions import purge_expired_launch_tokens
+
+        with Session(engine) as db:
+            purge_expired_launch_tokens(db)
+    except Exception:
+        pass
+
 
 def get_db():
     with Session(engine) as session:

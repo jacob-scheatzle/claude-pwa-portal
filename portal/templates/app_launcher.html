@@ -43,6 +43,17 @@
 	<strong>{{ app.name }}</strong>
 	<span class="muted">{{ app.version }}</span>
 </div>
+{#
+  The iframe's `sandbox` attribute below is belt-and-braces, not the security
+  boundary. The real isolation is the per-app subdomain (different origin from
+  the portal, enforced by the browser's same-origin policy). `allow-same-origin`
+  IS required so the child app can use cookies, IndexedDB, etc. within its own
+  origin — and `allow-scripts` is obviously required for any non-trivial app.
+  Combined, those two effectively disable the sandbox in the "block scripts"
+  sense, which is the desired behavior here.
+
+  Intentionally NOT included: `allow-top-navigation`, `allow-popups-to-escape-sandbox`.
+#}
 <iframe
 	class="app-frame"
 	src="{{ iframe_src }}"

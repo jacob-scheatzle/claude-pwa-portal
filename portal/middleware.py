@@ -14,6 +14,7 @@ which subdomain the request arrived on.
 
 from __future__ import annotations
 
+import re
 from typing import Optional
 
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -21,6 +22,16 @@ from starlette.requests import Request
 from starlette.types import ASGIApp
 
 from portal.config import settings
+
+
+# Kebab-case slug matcher: lowercase alphanumerics with internal single
+# hyphens. Duplicated from ``portal.apps.SLUG_RE`` (the manifest validator's
+# copy is the authority) rather than imported to avoid a circular import —
+# ``portal.apps`` already imports a fair amount of the portal at startup and
+# pulling middleware into its dependency graph is asking for trouble. This
+# is defense-in-depth: any slug a request could legitimately resolve has
+# already cleared the canonical regex at install time.
+_SLUG_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 
 
 def _strip_port(host: str) -> str:
@@ -50,10 +61,15 @@ def resolve_app_slug_from_host(host: str, site_url: str) -> Optional[str]:
     if not host.endswith(base):
         return None
     slug = host[: -len(base)]
-    if not slug or "." in slug:
-        # No slug, or a deeper subdomain like ``a.b.apps.example.com`` — not
-        # one of ours. The slug itself can't contain a dot (kebab-case only,
-        # enforced at manifest validation), so this rejection is safe.
+    if not _SLUG_RE.match(slug):
+        # Empty slug, deeper subdomain like ``a.b.apps.example.com``, or any
+        # malformed character — punctuation (``<script>``), leading/trailing
+        # hyphens, double hyphens, etc. Uppercase letters in the Host header
+        # are normalized to lowercase first (DNS is case-insensitive, so
+        # rejecting them would be wrong). Manifest validation enforces the
+        # same regex at install time, so any legitimate app's slug clears
+        # this check — anything else is bogus input and should not propagate
+        # to handlers as ``request.state.app_slug``.
         return None
     return slug
 

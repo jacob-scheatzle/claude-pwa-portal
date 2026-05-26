@@ -18,7 +18,7 @@ from portal.db import get_db
 from portal.deps import require_admin
 from portal.models import ApiToken, User
 from portal.security import check_csrf, hash_password, validate_password
-from portal.settings_store import get_setting, set_secret, set_setting, smtp_config
+from portal.settings_store import set_secret, set_setting, smtp_config
 from portal.smtp import send_message
 from portal.web import flash, render
 
@@ -35,11 +35,14 @@ email_adapter = TypeAdapter(EmailStr)
 @router.get("/admin/settings")
 def settings_form(request: Request, db: DbDep, admin: AdminDep):
     cfg = smtp_config(db)
-    site_url = get_setting(db, "site_url", settings.site_url) or settings.site_url
+    # site_url is environment-only: Caddy reads SITE_URL at startup for the
+    # wildcard subdomain config, so a DB-side change would silently diverge
+    # from the routing layer. Surface the env value read-only and let admins
+    # know it requires a restart.
     return render(
         request, "admin_settings.html",
         user=admin,
-        site_url=site_url,
+        site_url=settings.site_url,
         smtp_host=cfg["host"] or "",
         smtp_port=str(cfg["port"] or 587),
         smtp_username=cfg["username"] or "",
@@ -54,7 +57,6 @@ def settings_save(
     request: Request,
     db: DbDep,
     admin: AdminDep,
-    site_url: Annotated[str, Form()],
     smtp_host: Annotated[str, Form()] = "",
     smtp_port: Annotated[str, Form()] = "",
     smtp_username: Annotated[str, Form()] = "",
@@ -64,7 +66,7 @@ def settings_save(
     csrf: Annotated[str, Form(alias="_csrf")] = "",
 ):
     check_csrf(request, csrf)
-    set_setting(db, "site_url", site_url.strip())
+    # site_url is intentionally NOT writable here — see settings_form above.
     set_setting(db, "smtp_host", smtp_host.strip())
     set_setting(db, "smtp_port", smtp_port.strip())
     set_setting(db, "smtp_username", smtp_username.strip())

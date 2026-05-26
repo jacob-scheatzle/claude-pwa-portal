@@ -19,6 +19,7 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, EmailStr, Field
+from sqlalchemy import update
 from sqlmodel import Session, select
 
 from portal.apps import UploadError, install_bundle
@@ -194,6 +195,14 @@ def get_csrf_token(request: Request, user: UserDep):
 # regex metacharacters (a dotted hostname always does — ``.`` matches any
 # char if unescaped). The slug character class matches the slug rules
 # enforced by ``portal.apps``: lowercase letters, digits, and hyphens.
+#
+# IMPORTANT: ``settings.site_url`` is the env-loaded value (config.py
+# Pydantic Settings). This is intentional — Caddy reads ``SITE_URL`` from
+# the same env at container startup to build its site blocks, so the
+# portal's routing must match Caddy's. Letting an admin override site_url
+# at runtime via a DB Setting would create a split-brain where Caddy
+# accepts certs for one hostname and the portal validates against another.
+# If site_url ever needs to change, restart the stack with new env.
 _CERT_ASK_RE = re.compile(
     rf"^([a-z0-9-]+)\.apps\.{re.escape(settings.site_url.lower())}$"
 )
@@ -284,14 +293,34 @@ def session_exchange(
     if not slug:
         raise HTTPException(400, "Not on an app subdomain")
 
-    launch = db.get(AppLaunchToken, body.token)
     now = datetime.now(timezone.utc)
 
     def _bad():
         # Uniform reject to avoid leaking which validation step failed.
         raise HTTPException(401, "Invalid or expired launch token")
 
-    if launch is None or launch.consumed_at is not None:
+    # Atomic claim: mark the row consumed in a single UPDATE conditioned on
+    # ``consumed_at IS NULL``. SQL guarantees only one concurrent request
+    # gets ``rowcount == 1``; any racing duplicate sees ``rowcount == 0`` and
+    # is rejected. Doing the check-then-write in Python would let two
+    # threads both pass the ``consumed_at is None`` check before either
+    # commits, double-spending a single-use token.
+    result = db.exec(
+        update(AppLaunchToken)
+        .where(AppLaunchToken.token == body.token)
+        .where(AppLaunchToken.consumed_at.is_(None))
+        .values(consumed_at=now)
+    )
+    db.commit()
+    if result.rowcount != 1:
+        _bad()
+
+    # We now own the claim — read back the row to validate the remaining
+    # fields (slug match, expiry, user existence). Even if these checks
+    # fail, the token is already consumed, which is fine: a single-use
+    # token that fails validation is just spent without minting a session.
+    launch = db.get(AppLaunchToken, body.token)
+    if launch is None:
         _bad()
     expires_at = launch.expires_at
     if expires_at is not None and expires_at.tzinfo is None:
@@ -305,20 +334,17 @@ def session_exchange(
     if user is None:
         _bad()
 
-    launch.consumed_at = now
-    db.add(launch)
-    db.commit()
-
     sid = create_app_session(db, launch.user_id, slug)
 
-    # Cookie is scoped to the exact subdomain by ``Domain`` so it never leaks
-    # to other app subdomains or to the portal origin. ``SameSite=Lax`` is
-    # sufficient because the iframe load + subsequent fetches are same-site
-    # (same registrable domain as the portal) and the only state-changing
-    # path here (the POST itself) carries the launch token, which is
-    # single-use and time-bound.
-    host = request.headers.get("host", "")
-    cookie_domain = host.split(":", 1)[0] or f"{slug}.apps.{settings.site_url}"
+    # Host-only cookie: omit ``Domain`` so the browser scopes the cookie to
+    # the exact subdomain the response came from (e.g. ``foo.apps.example
+    # .com``). With ``Domain`` set, the cookie is ALSO sent to deeper
+    # subdomains like ``x.foo.apps.example.com`` — strictly looser than what
+    # we want and a needless attack surface. ``SameSite=Lax`` is sufficient
+    # because the iframe load + subsequent fetches are same-site (same
+    # registrable domain as the portal) and the only state-changing path
+    # here (the POST itself) carries the launch token, which is single-use
+    # and time-bound.
     response.set_cookie(
         APP_SESSION_COOKIE,
         sid,
@@ -326,7 +352,6 @@ def session_exchange(
         secure=settings.cookies_secure,
         samesite="lax",
         path="/",
-        domain=cookie_domain,
         max_age=settings.session_max_age,
     )
     return {"ok": True}

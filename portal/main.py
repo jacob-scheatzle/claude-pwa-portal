@@ -1,3 +1,4 @@
+import re
 import time
 from contextlib import asynccontextmanager
 from typing import Annotated, Optional
@@ -74,8 +75,16 @@ def admin_exists(db: Session) -> bool:
     return db.exec(select(User).where(User.role == "admin")).first() is not None
 
 
+# Whitelist for the post-login ``?next=`` URL: a relative path made of
+# URL-safe characters. The earlier (``startswith("/") and not "//")``) check
+# accepted ``/\evil.com`` — browsers normalize ``\`` to ``/``, turning that
+# into a protocol-relative redirect to evil.com mid-login. Forbidding the
+# backslash (and every other byte outside the allowlist) closes that.
+_SAFE_NEXT_RE = re.compile(r"^/(?:[A-Za-z0-9._~/?&=#%+\-]*)?$")
+
+
 def _safe_next(value: str) -> str:
-    return value if value.startswith("/") and not value.startswith("//") else "/"
+    return value if _SAFE_NEXT_RE.match(value) and not value.startswith("//") else "/"
 
 
 # ----- Login rate limit (per-process, lost on restart) -----

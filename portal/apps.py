@@ -23,7 +23,6 @@ from portal.config import settings
 from portal.db import get_db
 from portal.deps import (
     APP_SESSION_COOKIE,
-    current_app_session_user,
     current_user,
     current_user_or_token,
     require_admin,
@@ -264,9 +263,6 @@ UserDep = Annotated[Optional[User], Depends(current_user)]
 TokenUserDep = Annotated[Optional[User], Depends(current_user_or_token)]
 AdminDep = Annotated[User, Depends(require_admin)]
 RequireUserDep = Annotated[User, Depends(require_user)]
-AppSessionUserDep = Annotated[
-    Optional[tuple[User, str]], Depends(current_app_session_user)
-]
 
 
 # ----- Admin routes -----
@@ -559,9 +555,8 @@ def serve_app_index(
     Two modes:
 
     - ``CHILD_APPS_SAME_ORIGIN`` truthy (legacy): serve the child app's
-      ``index.html`` directly out of the portal origin, exactly as before
-      Phase A. The browser stays on ``/apps/<slug>/`` and the app shares
-      a cookie jar with the portal.
+      ``index.html`` directly out of the portal origin. The browser stays on
+      ``/apps/<slug>/`` and the app shares a cookie jar with the portal.
     - ``CHILD_APPS_SAME_ORIGIN`` falsy (new default): mint a single-use
       launch token and render the iframe wrapper template. The wrapper
       embeds ``<slug>.apps.<SITE_URL>/#token=<token>`` inside an iframe
@@ -618,6 +613,24 @@ def serve_app_index(
 def serve_app_file(
     slug: str, path: str, request: Request, db: DbDep, user: UserDep
 ):
+    # In per-app-origin mode, the portal origin must NEVER serve a child app's
+    # static files directly — doing so defeats the isolation by handing the
+    # bundle back same-origin with the portal. A typed URL or stale bookmark
+    # to /apps/<slug>/<path> is redirected to the subdomain, where the
+    # no-cookie path will bounce the browser to /apps/<slug>/ to mint a launch
+    # token. Token isn't included here; the subdomain handler handles that.
+    if not settings.child_apps_same_origin:
+        scheme = "https" if settings.cookies_secure else "http"
+        host = request.headers.get("host", settings.site_url)
+        port = ""
+        if ":" in host and not host.startswith("["):
+            port = ":" + host.rsplit(":", 1)[1]
+        query = request.url.query
+        suffix = f"?{query}" if query else ""
+        target = (
+            f"{scheme}://{slug}.apps.{settings.site_url}{port}/{path}{suffix}"
+        )
+        return RedirectResponse(target, status_code=308)
     return _serve_app_file(slug, db, user, path=path)
 
 
@@ -700,9 +713,8 @@ def _serve_app_subdomain_path(
 def _launch_redirect_response(request: Request, slug: str) -> RedirectResponse:
     """Bounce a no-cookie subdomain hit back to the portal-origin launcher.
 
-    Phase C: the launcher lives at ``/apps/<slug>/`` (the iframe wrapper page
-    mints the launch token directly). The interim ``/apps/<slug>/launch``
-    endpoint that Phase A added has been folded in and removed.
+    The launcher at ``/apps/<slug>/`` is the iframe wrapper page that mints a
+    fresh launch token and reloads the subdomain with it in the fragment.
 
     Preserves whatever port the request arrived on. In dev (uvicorn on 8000,
     lvh.me) that's how the bounce can land back on the same port; in prod

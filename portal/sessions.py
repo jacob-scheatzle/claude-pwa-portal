@@ -10,9 +10,10 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+from sqlalchemy import delete
 from sqlmodel import Session, select
 
-from portal.models import AppSession, User, UserSession
+from portal.models import AppLaunchToken, AppSession, User, UserSession
 
 # Bump last_seen_at lazily: writing on every authenticated request would mean
 # a DB commit per request, which is wasteful for an audit-style timestamp.
@@ -170,3 +171,25 @@ def touch_app_session(db: Session, session: AppSession) -> None:
         session.last_seen_at = now
         db.add(session)
         db.commit()
+
+
+# ----- AppLaunchToken maintenance -----
+
+
+def purge_expired_launch_tokens(db: Session, max_age_hours: int = 24) -> int:
+    """Delete AppLaunchToken rows older than ``max_age_hours``.
+
+    Tokens live for 60 s and are marked ``consumed_at`` once exchanged on the
+    subdomain, but the rows themselves are never deleted in the hot path. The
+    table would otherwise grow indefinitely. ``created_at`` is the right cutoff
+    because it covers both expired-not-consumed AND consumed tokens uniformly.
+
+    Called opportunistically from ``init_db`` at startup; runs once per process
+    boot so we don't need a cron. Returns the number of rows deleted.
+    """
+    cutoff = _utcnow() - timedelta(hours=max_age_hours)
+    result = db.exec(
+        delete(AppLaunchToken).where(AppLaunchToken.created_at < cutoff)
+    )
+    db.commit()
+    return result.rowcount

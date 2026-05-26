@@ -66,5 +66,16 @@
 		# child app and ride its session.
 		Content-Security-Policy "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; frame-ancestors https://{$SITE_URL}; base-uri 'self'; form-action 'self'"
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		# Defense-in-depth headers mirrored from the portal-shell block.
+		# Deliberately NOT mirrored:
+		#   - X-Frame-Options DENY: child apps MUST be frameable from the portal
+		#     origin (the iframe wrapper). frame-ancestors in the CSP above already
+		#     restricts who can frame us; XFO DENY would conflict.
+		#   - Cross-Origin-Opener-Policy same-origin: child apps inside an iframe
+		#     inherit COOP from the embedder; forcing same-origin here could break
+		#     popups apps spawn for downloads / OAuth flows.
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
 	}
 }

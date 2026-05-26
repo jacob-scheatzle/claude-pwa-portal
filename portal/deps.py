@@ -129,37 +129,3 @@ def require_admin(user: Annotated[User, Depends(require_user)]) -> User:
     if user.role != "admin":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
     return user
-
-
-def current_app_session_user(
-    request: Request,
-    db: Annotated[Session, Depends(get_db)],
-) -> Optional[tuple[User, str]]:
-    """Resolve the user behind an ``app_session`` cookie on an app subdomain.
-
-    Returns ``(user, slug)`` when the request:
-
-    1. arrived on an app subdomain (``request.state.app_slug`` set by the
-       HostDispatchMiddleware), and
-    2. carries a valid, unrevoked ``app_session`` cookie whose ``slug`` matches
-       the subdomain (defense in depth — the cookie is already
-       ``Domain``-scoped, but rebinding the slug at every read keeps a stale
-       cookie from another app from being honored if DNS or proxies misbehave).
-
-    Returns ``None`` otherwise. Sets ``request.state.auth_method = "app_session"``
-    when authentication succeeds so storage / API code can recognize this auth
-    mode separately from the portal's ``cookie`` and bearer ``token`` paths.
-    """
-    slug = getattr(request.state, "app_slug", None)
-    if not slug:
-        return None
-    sid = request.cookies.get(APP_SESSION_COOKIE)
-    session_row = get_active_app_session(db, sid)
-    if session_row is None or session_row.slug != slug:
-        return None
-    user = db.get(User, session_row.user_id)
-    if user is None:
-        return None
-    touch_app_session(db, session_row)
-    request.state.auth_method = "app_session"
-    return user, slug

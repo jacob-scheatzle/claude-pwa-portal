@@ -3,17 +3,19 @@
 {% block content %}
 <h1>Settings</h1>
 
+<section>
+	<h2>Portal</h2>
+	<dl>
+		<dt>Site URL</dt>
+		<dd>
+			<code>{{ site_url }}</code>
+			<div class="hint">Set via the <code>SITE_URL</code> environment variable; restart required to change. Caddy reads this at startup for wildcard subdomain routing.</div>
+		</dd>
+	</dl>
+</section>
+
 <form method="post" action="/admin/settings" autocomplete="off">
 	<input type="hidden" name="_csrf" value="{{ csrf_token }}">
-	<fieldset>
-		<legend>Portal</legend>
-		<div>
-			<label for="site_url">Site URL</label>
-			<input type="text" name="site_url" id="site_url" value="{{ site_url }}" required>
-			<div class="hint">Used in links and surfaced to the Claude skill. Caddy/DNS changes still need a redeploy.</div>
-		</div>
-	</fieldset>
-
 	<fieldset>
 		<legend>SMTP (outgoing email)</legend>
 		<p class="hint">DB values override <code>.env</code>. Leave any field blank to fall back to the env value.</p>
