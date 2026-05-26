@@ -41,6 +41,14 @@ from portal.config import settings
 # already cleared the canonical regex at install time.
 _SLUG_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 
+# Matches a portal-origin ``/apps/<slug>/<anything>`` request path. The slug
+# rule is the same as ``_SLUG_RE`` so any path that resolves to a real app
+# at install-time will resolve here too. Used to apply per-app CSP in
+# same-origin mode (where the child app is served at /apps/<slug>/<entry>
+# rather than a dedicated subdomain) and to the portal-origin launcher
+# wrapper in subdomain mode (also at /apps/<slug>/).
+_APPS_PATH_RE = re.compile(r"^/apps/([a-z0-9]+(?:-[a-z0-9]+)*)(?:/|$)")
+
 
 def _strip_port(host: str) -> str:
     """Drop the ``:port`` suffix from a Host header value.
@@ -109,13 +117,20 @@ class HostDispatchMiddleware(BaseHTTPMiddleware):
 # The only piece that varies per app is ``connect-src``: same-origin XHR /
 # fetch always allowed; external HTTPS endpoints opt-in via the manifest's
 # ``permissions.network`` declaration and an admin's per-app approval.
-def build_child_app_csp(allowed_origins: Iterable[str], site_url: str) -> str:
-    """Render the per-app CSP header value for a child subdomain.
+def build_child_app_csp(
+    allowed_origins: Iterable[str],
+    *,
+    frame_ancestors: str,
+) -> str:
+    """Render the per-app CSP header value.
 
-    ``allowed_origins`` is expected to be a list of normalized HTTPS origins
-    (already validated by the manifest schema); any malformed entry is
-    skipped defensively rather than risk emitting an invalid CSP that the
-    browser would silently drop.
+    ``allowed_origins`` is a list of normalized HTTPS origins (already
+    validated by the manifest schema); malformed entries are skipped
+    defensively rather than risk emitting an invalid CSP that the browser
+    would silently drop. ``frame_ancestors`` is rendered verbatim — caller
+    supplies either ``'self'`` (portal-origin launcher / same-origin app)
+    or one or more ``https://...`` / ``http://...`` origins (subdomain app
+    embedded by the portal shell).
     """
     origins = ["'self'"]
     for o in allowed_origins or []:
@@ -125,10 +140,24 @@ def build_child_app_csp(allowed_origins: Iterable[str], site_url: str) -> str:
     return (
         "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; "
         f"connect-src {connect}; "
-        f"frame-ancestors https://{site_url}; "
+        f"frame-ancestors {frame_ancestors}; "
         "base-uri 'self'; "
         "form-action 'self'"
     )
+
+
+def _subdomain_frame_ancestors(site_url: str, http_only: bool) -> str:
+    """frame-ancestors value for a child-app subdomain response.
+
+    Under HTTP_ONLY the portal might be reached as http:// (local testing)
+    or https:// (behind a TLS-terminating LB) — only one matches the real
+    document URL at runtime, but listing both keeps the iframe wrapper
+    working under either deployment shape. Under TLS-front Caddy (the
+    default), only https:// applies.
+    """
+    if http_only:
+        return f"http://{site_url} https://{site_url}"
+    return f"https://{site_url}"
 
 
 class ChildAppCSPMiddleware(BaseHTTPMiddleware):
@@ -158,8 +187,26 @@ class ChildAppCSPMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         response = await call_next(request)
         slug = getattr(request.state, "app_slug", None)
+        # Two CSP contexts where per-app rules apply:
+        #
+        #  1. ``app_slug`` set by HostDispatchMiddleware — request arrived on
+        #     ``<slug>.apps.<SITE_URL>``. The portal shell at the bare
+        #     SITE_URL iframes this response, so ``frame-ancestors`` lists
+        #     the portal origin.
+        #
+        #  2. ``/apps/<slug>/...`` on the portal origin — covers the
+        #     launcher wrapper in both modes, AND the actual child app
+        #     bundle in same-origin mode (``CHILD_APPS_SAME_ORIGIN=true``).
+        #     The launcher embeds the entry file (or the subdomain iframe)
+        #     same-origin, so ``frame-ancestors 'self'`` is the right rule.
+        on_subdomain = bool(slug)
+        if not on_subdomain:
+            m = _APPS_PATH_RE.match(request.url.path)
+            if m:
+                slug = m.group(1)
         if not slug:
             return response
+
         allowed: list[str] = []
         try:
             with Session(self._engine) as db:
@@ -174,7 +221,14 @@ class ChildAppCSPMiddleware(BaseHTTPMiddleware):
                     allowed = list(app_row.allowed_origins or [])
         except Exception:
             allowed = []
+
+        if on_subdomain:
+            frame_ancestors = _subdomain_frame_ancestors(
+                settings.site_url, bool(settings.http_only)
+            )
+        else:
+            frame_ancestors = "'self'"
         response.headers["Content-Security-Policy"] = build_child_app_csp(
-            allowed, settings.site_url
+            allowed, frame_ancestors=frame_ancestors
         )
         return response

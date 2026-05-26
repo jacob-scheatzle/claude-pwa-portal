@@ -44,16 +44,17 @@ http://{$SITE_URL:localhost} {
 		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
 	}
 
-	# /apps/* paths: ``frame-ancestors 'self'`` lets the portal's launcher
-	# (also on /apps/<slug>/) embed the app entry; no XFO at all because
-	# Safari treats XFO DENY as authoritative even when CSP frame-ancestors
-	# would allow framing, producing a "refused to connect" iframe error.
+	# /apps/* paths: the portal's ChildAppCSPMiddleware stamps the CSP
+	# header (it derives per-app ``connect-src`` from
+	# ``App.allowed_origins``, which Caddy can't see). The other defense-
+	# in-depth headers stay here. No XFO at all because Safari treats XFO
+	# DENY as authoritative even when CSP frame-ancestors would allow
+	# framing, producing a "refused to connect" iframe error.
 	@apps path /apps/*
 	header @apps {
 		X-Content-Type-Options "nosniff"
 		Referrer-Policy "strict-origin-when-cross-origin"
 		Permissions-Policy "camera=(), microphone=(), geolocation=()"
-		Content-Security-Policy "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; frame-ancestors 'self'; base-uri 'self'; form-action 'self'"
 	}
 }
 
@@ -67,12 +68,14 @@ http://*.apps.{$SITE_URL} {
 	encode zstd gzip
 
 	header {
-		# Strict CSP for child apps. ``frame-ancestors`` lists both schemes
-		# so the iframe wrapper works under either deployment shape (only
-		# one matches the actual portal-origin URL the browser is on).
-		Content-Security-Policy "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; frame-ancestors http://{$SITE_URL} https://{$SITE_URL}; base-uri 'self'; form-action 'self'"
-		# Defense-in-depth headers (HSTS deliberately omitted — see header
-		# block above for the rationale).
+		# Per-app Content-Security-Policy is set by the portal's
+		# ChildAppCSPMiddleware (it derives per-app ``connect-src`` from
+		# ``App.allowed_origins`` and accepts both http:// and https://
+		# ``frame-ancestors`` schemes under HTTP_ONLY so the iframe
+		# wrapper works whether the browser sees the portal at HTTP
+		# (local-testing) or HTTPS (behind-LB)). Defense-in-depth
+		# headers below stay in Caddy. HSTS deliberately omitted — see
+		# header block above for the rationale.
 		X-Content-Type-Options "nosniff"
 		Referrer-Policy "strict-origin-when-cross-origin"
 		Permissions-Policy "camera=(), microphone=(), geolocation=()"

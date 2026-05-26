@@ -39,18 +39,21 @@
 	}
 
 	# /apps/* paths get a separate header set: the launcher wrapper at
-	# /apps/<slug>/ AND the iframe target at /apps/<slug>/<entry> both need
-	# ``frame-ancestors 'self'`` (so the launcher can embed the entry) and
-	# no XFO at all (Safari treats XFO DENY as authoritative even when CSP
-	# frame-ancestors would allow framing, producing a "refused to connect"
-	# iframe error). External framing is still blocked by frame-ancestors.
+	# /apps/<slug>/ AND (in same-origin mode) the iframe target at
+	# /apps/<slug>/<entry> both need ``frame-ancestors 'self'`` (so the
+	# launcher can embed the entry) and no XFO at all (Safari treats XFO
+	# DENY as authoritative even when CSP frame-ancestors would allow
+	# framing, producing a "refused to connect" iframe error). The CSP
+	# header itself is stamped by the portal's ChildAppCSPMiddleware,
+	# which derives per-app ``connect-src`` from ``App.allowed_origins``
+	# — it can't live here because Caddy doesn't see the database. The
+	# other defense-in-depth headers stay in Caddy.
 	@apps path /apps/*
 	header @apps {
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
 		X-Content-Type-Options "nosniff"
 		Referrer-Policy "strict-origin-when-cross-origin"
 		Permissions-Policy "camera=(), microphone=(), geolocation=()"
-		Content-Security-Policy "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; frame-ancestors 'self'; base-uri 'self'; form-action 'self'"
 	}
 }
 
