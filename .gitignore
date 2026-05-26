@@ -10,6 +10,9 @@ data/
 *.db
 *.db-journal
 
+# Build artifacts (released as GitHub release assets, not committed)
+pwa-portal-app.zip
+
 .DS_Store
 .idea/
 .vscode/

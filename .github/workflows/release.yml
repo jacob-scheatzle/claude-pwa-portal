@@ -27,7 +27,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write   # write needed so the bundle-skill step can create the GitHub release on v* tags
       packages: write
     steps:
       - name: Checkout
@@ -90,3 +90,23 @@ jobs:
           labels: ${{ steps.caddy_meta.outputs.labels }}
           cache-from: type=gha,scope=caddy
           cache-to: type=gha,mode=max,scope=caddy
+
+      # On a v* tag push, bundle the Claude skill as a release asset so
+      # users can download it directly from the GitHub Releases page
+      # instead of cloning + zipping. Mirrors the README's claude.ai
+      # install path.
+      - name: Build Claude skill zip
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          cd claude-skill/pwa-portal-app
+          zip -r "${GITHUB_WORKSPACE}/pwa-portal-app.zip" . \
+            -x install.sh -x "*.DS_Store" -x "__pycache__/*"
+          ls -lh "${GITHUB_WORKSPACE}/pwa-portal-app.zip"
+
+      - name: Create release with skill bundled
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: pwa-portal-app.zip
+          generate_release_notes: true
+          fail_on_unmatched_files: true

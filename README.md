@@ -88,11 +88,12 @@ You can also upload the skill to [claude.ai](https://claude.ai) and use it from 
 
 If that fits your workflow:
 
-1. **Package the skill as a zip** (excluding the install script, which only matters for Claude Code):
+1. **Download the pre-built skill zip** from the latest release:
    ```bash
-   cd claude-skill/pwa-portal-app
-   zip -r ../pwa-portal-app.zip . -x install.sh -x "*.DS_Store" -x "__pycache__/*"
+   curl -fL -o pwa-portal-app.zip \
+     https://github.com/jacob-scheatzle/claude-pwa-portal/releases/latest/download/pwa-portal-app.zip
    ```
+   (If you've cloned the repo, you can also build it locally: `cd claude-skill/pwa-portal-app && zip -r ../pwa-portal-app.zip . -x install.sh -x "*.DS_Store" -x "__pycache__/*"`.)
 2. **Upload to claude.ai:** in the claude.ai web app, open **Settings → Features → Skills → +** → **Upload a skill** → select `pwa-portal-app.zip`.
 3. **Use it:** in any chat, prompt Claude to build something for the portal — the skill name (`pwa-portal-app`) primes Claude to follow the conventions in `SKILL.md`. Claude will give you the file contents and the terminal commands; you paste them.
 
