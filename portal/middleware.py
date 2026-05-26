@@ -22,6 +22,7 @@ which subdomain the request arrived on.
 from __future__ import annotations
 
 import re
+import secrets
 from typing import Iterable, Optional
 
 from sqlmodel import Session, select
@@ -121,6 +122,8 @@ def build_child_app_csp(
     allowed_origins: Iterable[str],
     *,
     frame_ancestors: str,
+    strict: bool = False,
+    nonce: Optional[str] = None,
 ) -> str:
     """Render the per-app CSP header value.
 
@@ -131,12 +134,41 @@ def build_child_app_csp(
     supplies either ``'self'`` (portal-origin launcher / same-origin app)
     or one or more ``https://...`` / ``http://...`` origins (subdomain app
     embedded by the portal shell).
+
+    ``strict=True`` drops ``'unsafe-inline'`` / ``'unsafe-eval'`` and emits
+    ``script-src``/``style-src`` with the given nonce (required when strict).
+    Apps opt into this via the manifest's ``permissions.csp_strict``; the
+    portal substitutes ``{{NONCE}}`` placeholders in served HTML so
+    legitimate inline scripts/styles can carry the matching attribute.
     """
     origins = ["'self'"]
     for o in allowed_origins or []:
         if isinstance(o, str) and o.startswith("https://"):
             origins.append(o)
     connect = " ".join(origins)
+
+    if strict:
+        if not nonce:
+            raise ValueError("strict CSP requires a nonce")
+        # 'strict-dynamic' isn't included on purpose: we want apps to whitelist
+        # their resources explicitly. data:/blob: stay allowed for images and
+        # SDK-generated downloads (PDF blobs, etc.).
+        script_src = f"'self' 'nonce-{nonce}'"
+        style_src = f"'self' 'nonce-{nonce}'"
+        img_src = "'self' data: blob:"
+        return (
+            "default-src 'self'; "
+            f"script-src {script_src}; "
+            f"style-src {style_src}; "
+            f"img-src {img_src}; "
+            "font-src 'self' data:; "
+            f"connect-src {connect}; "
+            f"frame-ancestors {frame_ancestors}; "
+            "base-uri 'self'; "
+            "form-action 'self'; "
+            "object-src 'none'"
+        )
+
     return (
         "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; "
         f"connect-src {connect}; "
@@ -185,8 +217,6 @@ class ChildAppCSPMiddleware(BaseHTTPMiddleware):
         self._engine = engine
 
     async def dispatch(self, request: Request, call_next):
-        response = await call_next(request)
-        slug = getattr(request.state, "app_slug", None)
         # Two CSP contexts where per-app rules apply:
         #
         #  1. ``app_slug`` set by HostDispatchMiddleware — request arrived on
@@ -199,28 +229,51 @@ class ChildAppCSPMiddleware(BaseHTTPMiddleware):
         #     bundle in same-origin mode (``CHILD_APPS_SAME_ORIGIN=true``).
         #     The launcher embeds the entry file (or the subdomain iframe)
         #     same-origin, so ``frame-ancestors 'self'`` is the right rule.
+        slug = getattr(request.state, "app_slug", None)
         on_subdomain = bool(slug)
         if not on_subdomain:
             m = _APPS_PATH_RE.match(request.url.path)
             if m:
                 slug = m.group(1)
+
+        # Pre-resolve the App row on the request path so file handlers can
+        # read ``request.state.csp_nonce`` to substitute ``{{NONCE}}`` in
+        # HTML before the response goes out. Strict CSP only applies on the
+        # subdomain — the portal-origin launcher carries its own inline
+        # scripts (base.html theme toggle, etc.) and would break under
+        # strict mode. Same-origin mode keeps the permissive CSP for the
+        # same reason.
+        allowed: list[str] = []
+        csp_strict = False
+        nonce: Optional[str] = None
+        if slug:
+            try:
+                with Session(self._engine) as db:
+                    from portal.models import App
+
+                    app_row = db.exec(select(App).where(App.slug == slug)).first()
+                    if app_row is not None:
+                        allowed = list(app_row.allowed_origins or [])
+                        if on_subdomain and bool(getattr(app_row, "csp_strict", False)):
+                            csp_strict = True
+            except Exception:
+                # DB hiccup — fall back to the legacy permissive CSP rather
+                # than block the response. Apps stay functional; the worst
+                # case is one request without strict CSP.
+                allowed = []
+                csp_strict = False
+
+        if csp_strict:
+            # token_urlsafe yields URL-safe base64; the CSP spec accepts any
+            # base64 character set in the nonce-source. 16 bytes (~22 chars)
+            # is well above the 128-bit-entropy bar.
+            nonce = secrets.token_urlsafe(16)
+            request.state.csp_nonce = nonce
+
+        response = await call_next(request)
+
         if not slug:
             return response
-
-        allowed: list[str] = []
-        try:
-            with Session(self._engine) as db:
-                # Local import to avoid pulling portal.models into the
-                # middleware module's import graph at startup (the same
-                # circular-import caution that already kept SLUG_RE
-                # duplicated in this file).
-                from portal.models import App
-
-                app_row = db.exec(select(App).where(App.slug == slug)).first()
-                if app_row is not None:
-                    allowed = list(app_row.allowed_origins or [])
-        except Exception:
-            allowed = []
 
         if on_subdomain:
             frame_ancestors = _subdomain_frame_ancestors(
@@ -229,6 +282,9 @@ class ChildAppCSPMiddleware(BaseHTTPMiddleware):
         else:
             frame_ancestors = "'self'"
         response.headers["Content-Security-Policy"] = build_child_app_csp(
-            allowed, frame_ancestors=frame_ancestors
+            allowed,
+            frame_ancestors=frame_ancestors,
+            strict=csp_strict,
+            nonce=nonce,
         )
         return response

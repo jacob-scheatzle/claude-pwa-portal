@@ -1,0 +1,146 @@
+{% extends "base.html" %}
+{% block title %}Health — Portal admin{% endblock %}
+{% block container_class %}wide{% endblock %}
+{% block content %}
+<h1>Health</h1>
+<p class="hint">Operational snapshot — refresh for live numbers.</p>
+
+<h2 class="section-label">Database</h2>
+<table class="apps">
+	<tbody>
+		<tr>
+			<td data-label="Path"><strong>Path</strong></td>
+			<td data-label=""><code>{{ db_path }}</code></td>
+		</tr>
+		<tr>
+			<td data-label="Size"><strong>Total size</strong></td>
+			<td data-label="">{{ db_size_human }} <span class="hint">(includes -wal and -shm sidecar files)</span></td>
+		</tr>
+	</tbody>
+</table>
+
+<h2 class="section-label">Per-app storage</h2>
+{% if storage_rows %}
+<table class="apps">
+	<thead>
+		<tr>
+			<th>App</th>
+			<th>Slug</th>
+			<th>Status</th>
+			<th>Used</th>
+		</tr>
+	</thead>
+	<tbody>
+		{% for row in storage_rows %}
+		<tr>
+			<td data-label="App"><strong>{{ row.name }}</strong></td>
+			<td data-label="Slug"><code>{{ row.slug }}</code></td>
+			<td data-label="Status">
+				{% if row.enabled %}
+				<span class="pill on">enabled</span>
+				{% else %}
+				<span class="pill off">{{ 'orphaned' if row.name == '(orphaned)' else 'disabled' }}</span>
+				{% endif %}
+			</td>
+			<td data-label="Used">{{ row.human }}</td>
+		</tr>
+		{% endfor %}
+		<tr>
+			<td data-label=""><strong>Total</strong></td>
+			<td data-label=""></td>
+			<td data-label=""></td>
+			<td data-label="Total"><strong>{{ total_storage_human }}</strong></td>
+		</tr>
+	</tbody>
+</table>
+{% else %}
+<div class="empty"><p>No app storage written yet.</p></div>
+{% endif %}
+
+<h2 class="section-label">SMTP last test</h2>
+<table class="apps">
+	<tbody>
+		<tr>
+			<td data-label="When"><strong>When</strong></td>
+			<td data-label="">{% if smtp_last.at %}<code>{{ smtp_last.at }}</code>{% else %}<span class="muted">never run</span>{% endif %}</td>
+		</tr>
+		<tr>
+			<td data-label="Status"><strong>Status</strong></td>
+			<td data-label="">
+				{% if smtp_last.status == "ok" %}
+				<span class="pill on">ok</span>
+				{% elif smtp_last.status == "failed" %}
+				<span class="pill off">failed</span>
+				{% if smtp_last.error %}<div class="hint" style="margin-top:0.4rem;">{{ smtp_last.error }}</div>{% endif %}
+				{% else %}
+				<span class="muted">—</span>
+				{% endif %}
+			</td>
+		</tr>
+		<tr>
+			<td data-label=""></td>
+			<td data-label=""><a class="nav-link" href="/admin/settings">Run a test →</a></td>
+		</tr>
+	</tbody>
+</table>
+
+<h2 class="section-label">Recent login attempts ({{ recent_logins|length }})</h2>
+{% if recent_logins %}
+<table class="apps">
+	<thead>
+		<tr>
+			<th>When</th>
+			<th>Email</th>
+			<th>IP</th>
+			<th>Result</th>
+		</tr>
+	</thead>
+	<tbody>
+		{% for hit in recent_logins %}
+		<tr>
+			<td data-label="When"><code>{{ hit.at.strftime('%Y-%m-%d %H:%M:%S') }}Z</code></td>
+			<td data-label="Email">{{ hit.email or '—' }}</td>
+			<td data-label="IP"><code>{{ hit.ip or 'unknown' }}</code></td>
+			<td data-label="Result">
+				{% if hit.success %}
+				<span class="pill on">ok</span>
+				{% else %}
+				<span class="pill off">{{ hit.reason or 'failed' }}</span>
+				{% endif %}
+			</td>
+		</tr>
+		{% endfor %}
+	</tbody>
+</table>
+{% else %}
+<div class="empty"><p>No login attempts logged yet.</p></div>
+{% endif %}
+
+<h2 class="section-label">Recent email sends ({{ recent_emails|length }})</h2>
+{% if recent_emails %}
+<table class="apps">
+	<thead>
+		<tr>
+			<th>When</th>
+			<th>From app</th>
+			<th>To</th>
+			<th>Subject</th>
+		</tr>
+	</thead>
+	<tbody>
+		{% for hit in recent_emails %}
+		<tr>
+			<td data-label="When"><code>{{ hit.at.strftime('%Y-%m-%d %H:%M:%S') }}Z</code></td>
+			<td data-label="From app">{% if hit.app_slug %}<code>{{ hit.app_slug }}</code>{% else %}<span class="muted">—</span>{% endif %}</td>
+			<td data-label="To">
+				{{ hit.recipient }}{% if hit.recipient_count > 1 %} <span class="hint">+{{ hit.recipient_count - 1 }} more</span>{% endif %}
+			</td>
+			<td data-label="Subject">{{ hit.subject or '(no subject)' }}</td>
+		</tr>
+		{% endfor %}
+	</tbody>
+</table>
+{% else %}
+<div class="empty"><p>No email sends logged yet.</p></div>
+{% endif %}
+{% endblock %}

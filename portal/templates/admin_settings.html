@@ -14,8 +14,46 @@
 	</dl>
 </section>
 
-<form method="post" action="/admin/settings" autocomplete="off">
+<form method="post" action="/admin/settings" autocomplete="off" enctype="multipart/form-data">
 	<input type="hidden" name="_csrf" value="{{ csrf_token }}">
+
+	<fieldset>
+		<legend>Branding</legend>
+		<p class="hint">Shown in the topbar, login page, and (opt-in) PDF headers.</p>
+		<div>
+			<label for="branding_business_name">Business name</label>
+			<input type="text" name="branding_business_name" id="branding_business_name"
+				value="{{ branding_business_name }}" maxlength="60"
+				placeholder="e.g. Acme Plumbing">
+		</div>
+		<div style="display:grid; grid-template-columns:1fr 1fr; gap:0.75rem; align-items:end;">
+			<div>
+				<label for="branding_accent_color">Accent color</label>
+				<input type="color" name="branding_accent_color" id="branding_accent_color"
+					value="{{ branding_accent_color }}"
+					style="height:2.4rem; padding:0.2rem; cursor:pointer;">
+				<div class="hint">Defaults to <code>{{ default_accent_color }}</code> when cleared. Drives buttons, links, and the PDF header bar.</div>
+			</div>
+			<div>
+				<label for="branding_logo">Logo (PNG / JPEG / SVG / WebP, ≤ {{ max_logo_kb }} KB)</label>
+				<input type="file" name="branding_logo" id="branding_logo"
+					accept="image/png,image/jpeg,image/svg+xml,image/webp">
+				{% if branding_logo_url %}
+				<div class="hint" style="display:flex; align-items:center; gap:0.75rem; margin-top:0.5rem;">
+					<img src="{{ branding_logo_url }}" alt="current logo"
+						style="height:2.4rem; max-width:6rem; object-fit:contain;
+							background:var(--surface-2); border:1px solid var(--border);
+							border-radius:var(--radius-sm); padding:0.2rem;">
+					<label style="font-weight:500; margin:0;">
+						<input type="checkbox" name="branding_logo_clear"> Remove existing logo
+					</label>
+				</div>
+				{% else %}
+				<div class="hint">No logo set — the topbar shows the first letter of your business name on an accent tile.</div>
+				{% endif %}
+			</div>
+		</div>
+	</fieldset>
 
 	<fieldset>
 		<legend>App access defaults</legend>

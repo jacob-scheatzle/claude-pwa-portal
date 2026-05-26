@@ -37,6 +37,32 @@
 					<input type="hidden" name="_csrf" value="{{ csrf_token }}">
 					<button class="action-chip" type="submit">{{ 'Disable' if app.enabled else 'Enable' }}</button>
 				</form>
+				{% set declared_services = app.services or [] %}
+				{% set allowed_services = app.allowed_services or [] %}
+				{% if declared_services %}
+				<details style="display:inline-block;">
+					<summary class="action-chip">Services ({{ allowed_services|length }}/{{ declared_services|length }})</summary>
+					<div class="action-chip-panel">
+						<form method="post" action="/admin/apps/{{ app.slug }}/services">
+							<input type="hidden" name="_csrf" value="{{ csrf_token }}">
+							<p class="hint" style="margin:0 0 0.5rem;">Which portal services this app may call. Revoking <code>email</code> means <code>portal.email.send()</code> 403s; <code>storage</code> blocks reads + writes; <code>pdf</code> blocks PDF generation.</p>
+							<ul class="network-origin-list">
+								{% for svc in declared_services %}
+								<li>
+									<label class="network-origin-row">
+										<input type="checkbox" name="allowed_services" value="{{ svc }}"
+											{% if svc in allowed_services %}checked{% endif %}>
+										<code>{{ svc }}</code>
+									</label>
+								</li>
+								{% endfor %}
+							</ul>
+							<p class="hint" style="margin:0.25rem 0;">To grant a service this app didn't declare, the developer must add it to the manifest's <code>services</code> array and re-upload.</p>
+							<button type="submit" class="network-save">Save services</button>
+						</form>
+					</div>
+				</details>
+				{% endif %}
 				{% set requested = app.requested_origins or [] %}
 				{% set allowed = app.allowed_origins or [] %}
 				{% set extras = [] %}

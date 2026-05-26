@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}Share links — Portal admin{% endblock %}
+{% block container_class %}wide{% endblock %}
+{% block content %}
+<h1>Share links</h1>
+<p class="hint">Public, tokenized URLs created by apps via <code>portal.share.create()</code>. Anyone with the URL can view the linked resource until expiry, view-cap, or revoke.</p>
+
+{% if items %}
+<table class="apps">
+	<thead>
+		<tr>
+			<th>App</th>
+			<th>Kind</th>
+			<th>Filename</th>
+			<th>Created by</th>
+			<th>Created</th>
+			<th>Expires</th>
+			<th>Views</th>
+			<th>State</th>
+			<th></th>
+		</tr>
+	</thead>
+	<tbody>
+		{% for item in items %}
+		<tr>
+			<td data-label="App">{% if item.app_slug %}<code>{{ item.app_slug }}</code>{% else %}<span class="muted">—</span>{% endif %} <span class="hint">{{ item.app_name }}</span></td>
+			<td data-label="Kind"><code>{{ item.row.kind }}</code></td>
+			<td data-label="Filename">{{ item.row.filename or '—' }}</td>
+			<td data-label="Created by">{{ item.creator }}</td>
+			<td data-label="Created"><code>{{ item.row.created_at.strftime('%Y-%m-%d %H:%M') }}Z</code></td>
+			<td data-label="Expires"><code>{{ item.row.expires_at.strftime('%Y-%m-%d %H:%M') }}Z</code></td>
+			<td data-label="Views">
+				{{ item.row.view_count }}{% if item.row.max_views %} / {{ item.row.max_views }}{% endif %}
+			</td>
+			<td data-label="State">
+				{% if item.state == "active" %}
+				<span class="pill on">active</span>
+				{% elif item.state == "revoked" %}
+				<span class="pill off">revoked</span>
+				{% elif item.state == "expired" %}
+				<span class="pill off">expired</span>
+				{% else %}
+				<span class="pill off">exhausted</span>
+				{% endif %}
+			</td>
+			<td class="actions">
+				<a class="action-chip" href="/s/{{ item.row.token }}" target="_blank">Open</a>
+				{% if item.state == "active" %}
+				<form method="post" action="/admin/shares/{{ item.row.id }}/revoke" style="display:inline;">
+					<input type="hidden" name="_csrf" value="{{ csrf_token }}">
+					<button class="action-chip danger" type="submit">Revoke</button>
+				</form>
+				{% endif %}
+				<form method="post" action="/admin/shares/{{ item.row.id }}/delete" style="display:inline;"
+					onsubmit="return confirm('Delete this share link permanently?');">
+					<input type="hidden" name="_csrf" value="{{ csrf_token }}">
+					<button class="action-chip danger" type="submit">Delete</button>
+				</form>
+			</td>
+		</tr>
+		{% endfor %}
+	</tbody>
+</table>
+{% else %}
+<div class="empty">
+	<h2>No share links yet</h2>
+	<p>Apps create shares by calling <code>portal.share.create({ kind: "storage", key: "..." })</code> or <code>portal.share.create({ kind: "pdf", html: "..." })</code> from JavaScript.</p>
+</div>
+{% endif %}
+{% endblock %}

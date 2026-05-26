@@ -197,6 +197,11 @@
 					body: JSON.stringify({
 						html: opts.html || "",
 						filename: opts.filename || "document.pdf",
+						// When true, the portal prepends a branding header
+						// (business name + logo + accent border) to the
+						// rendered PDF. Opt-in so apps that fit content
+						// precisely aren't reflowed.
+						branded: opts.branded === true,
 					}),
 				});
 				return res.blob();
@@ -226,6 +231,47 @@
 						text: opts.text,
 						html: opts.html,
 					}),
+				});
+				return res.json();
+			},
+		},
+
+		share: {
+			// Create a public, tokenized share URL anyone can open without
+			// signing in. Two kinds:
+			//
+			//   await portal.share.create({
+			//     kind: "storage",
+			//     key: "receipts/123.pdf",   // must already exist in storage
+			//     filename: "receipt.pdf",   // shown to the recipient on download
+			//     ttlSeconds: 7 * 24 * 3600, // 7d default; capped at 90d
+			//     maxViews: 0,               // 0 = unlimited
+			//   });
+			//
+			//   await portal.share.create({
+			//     kind: "pdf",
+			//     html: "<html>...</html>",
+			//     filename: "quote.pdf",
+			//     ttlSeconds: 30 * 24 * 3600,
+			//   });
+			//
+			// Returns { token, url, expires_at, kind, max_views }. The
+			// portal admin can revoke or delete the link at any time
+			// from /admin/shares.
+			async create(opts) {
+				opts = opts || {};
+				var body = {
+					kind: opts.kind || "storage",
+					key: opts.key,
+					html: opts.html,
+					filename: opts.filename,
+					ttl_seconds: opts.ttlSeconds,
+					max_views: opts.maxViews,
+				};
+				var res = await call("/share/create", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify(body),
 				});
 				return res.json();
 			},

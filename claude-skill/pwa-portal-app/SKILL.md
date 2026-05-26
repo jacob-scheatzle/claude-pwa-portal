@@ -85,11 +85,37 @@ are identical.
 | `description` | no | up to 200 chars |
 | `icon` | no | relative path inside the bundle; recommended 192×192 PNG |
 | `entry` | no | defaults to `index.html`; must exist in the zip |
-| `services` | no | declarative list; allowed: `pdf`, `email`, `storage`; informational for now |
+| `services` | **yes if calling** | declarative list of portal services the app will use; allowed: `pdf`, `email`, `storage`. Enforced server-side — see "Services" below |
 | `permissions.network` | no | external HTTPS origins the app's `fetch()` calls need to reach — see "Network permissions" below |
+| `permissions.csp_strict` | no | when `true`, opt into a strict CSP that drops `'unsafe-inline'`/`'unsafe-eval'` — see "Strict CSP" below |
 | `min_portal_version` | no | hint for compatibility |
 
 The slug becomes the URL: an app with slug `expense-tracker` is reachable at `/apps/expense-tracker/`.
+
+### Services
+
+`services` is the list of portal services your app calls. The portal
+enforces this server-side: if your app calls `portal.email.send()` without
+`"email"` in `services`, the call returns 403 and the SDK throws.
+
+Declare every service you use:
+
+```json
+{ "services": ["pdf", "email", "storage"] }
+```
+
+On upload, every declared service is auto-approved (the admin uploaded the
+bundle). The admin can later revoke any service per-app under `/admin/apps`
+→ expand "Services (.../...)" on that app's row. Revocations persist
+across re-uploads of the same slug — an updated bundle can't silently
+re-enable a service an admin turned off.
+
+**Back-compat**: an app that declares NO `services` at all is treated as
+legacy and not gated. The moment you add even one entry, the gate
+activates and only the declared + admin-approved subset is callable.
+
+**Authoring rule**: list every service your `index.html` touches. If you
+add a `portal.pdf` call later, bump the manifest first.
 
 ### Network permissions
 
@@ -124,6 +150,51 @@ into a child app, add the origin to `permissions.network`. The scaffold
 at `templates/basic/portal.json` ships with an empty list; populate it
 before packaging if the app calls anything external.
 
+### Strict CSP (opt-in)
+
+By default the portal allows `'unsafe-inline'` and `'unsafe-eval'` so
+existing apps that ship inline `<script>` blocks keep working. Apps that
+want a stronger guarantee can opt into a strict Content-Security-Policy:
+
+```json
+{
+  "permissions": {
+    "csp_strict": true
+  }
+}
+```
+
+Under strict CSP, every inline `<script>` and `<style>` must carry a
+`nonce` attribute that matches the per-response nonce the portal injects.
+Use the literal token `{{NONCE}}` in your HTML — the portal substitutes
+the real value at serve time:
+
+```html
+<script nonce="{{NONCE}}">
+  // legitimate inline init
+</script>
+<style nonce="{{NONCE}}">
+  body { background: #fafaf9; }
+</style>
+```
+
+Rules:
+
+- Only the **app subdomain** mode honors `csp_strict`. Under
+  `CHILD_APPS_SAME_ORIGIN=true` the portal launcher and child app share an
+  origin; the launcher needs its own inline scripts so the flag is
+  silently ignored. If you ship apps for self-hosters who may run in
+  same-origin mode, design HTML that works under both CSPs.
+- `eval()`, `new Function()`, and string-arg `setTimeout` are blocked.
+  Prefer external `.js` files for non-trivial logic; the nonce is for
+  small init blocks, not whole apps.
+- Imported stylesheets (`<link rel="stylesheet">`) and scripts
+  (`<script src="...">`) work without nonces — they're same-origin.
+
+**When to enable it**: customer-facing apps where you want a hard
+guarantee an HTML-injection bug can't pivot to script execution. Skip it
+for internal tools where the friction outweighs the benefit.
+
 ## Portal SDK — how apps call services
 
 In your app's HTML, include the SDK before your own scripts:
@@ -150,9 +221,21 @@ await portal.pdf.download({
 
 // Or get a Blob to attach/upload/render yourself:
 const blob = await portal.pdf.render({ html: "...", filename: "..." });
+
+// Opt-in: prepend the portal's branding header (business name + logo + accent
+// border). Pulls from /admin/settings → Branding. Pass branded: true on any
+// PDF where the document represents the business — quotes, invoices,
+// receipts, statements:
+await portal.pdf.download({
+  html: "<html><body><h1>Quote</h1>...</body></html>",
+  filename: "quote.pdf",
+  branded: true,
+});
 ```
 
 The HTML you pass is rendered server-side. You can include `<style>` blocks and inline CSS. External resources (images, fonts) are blocked by a strict URL fetcher and must be embedded as `data:` URIs.
+
+**When to set `branded: true`**: customer-facing documents (quotes, invoices, receipts, statements, work orders). Skip it for internal-only reports where the extra header would just waste space.
 
 ### Email
 ```js
@@ -183,6 +266,43 @@ await portal.storage.delete("notes/today.json");
 ```
 
 Keys allow `A-Z a-z 0-9 . _ -` and `/` (forward slash acts as folder separator). 10MB per object, 100MB total per namespace.
+
+### Share links (public, tokenized URLs)
+
+For sending a document to a customer who isn't a portal user — quotes,
+invoices, signed contracts, anything where "make them sign up" would be
+friction:
+
+```js
+// Kind 1: share something already in storage.
+const shareA = await portal.share.create({
+  kind: "storage",
+  key: "receipts/123.pdf",       // must exist in this user's storage
+  filename: "receipt.pdf",       // shown on download
+  ttlSeconds: 7 * 24 * 3600,     // 7 days default; 90d cap
+  maxViews: 0,                   // 0 = unlimited; cap at 10000
+});
+// → { token, url: "https://<site>/s/<token>", expires_at, kind, max_views }
+
+// Kind 2: render a fresh PDF at share-create time.
+const shareB = await portal.share.create({
+  kind: "pdf",
+  html: "<html><body><h1>Quote #42</h1>...</body></html>",
+  filename: "quote-42.pdf",
+  ttlSeconds: 30 * 24 * 3600,
+  maxViews: 3,
+});
+```
+
+Hand `shareA.url` to your user — email it, paste it into Messages, etc.
+Anyone with the link can open it until it expires, hits its view cap, or
+the admin revokes from `/admin/shares`.
+
+Storage shares stream the file live, so editing the stored object
+updates what recipients see. PDF shares are rendered once and frozen.
+
+Requires the corresponding service in your manifest's `services`
+(`storage` for kind=storage, `pdf` for kind=pdf).
 
 ## Build workflow
 

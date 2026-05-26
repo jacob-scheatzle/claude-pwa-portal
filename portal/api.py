@@ -96,6 +96,70 @@ def _require_app(db: Session, slug: Optional[str]) -> App:
 _REFERER_APP_RE = re.compile(r"^https?://[^/]+/apps/([^/]+)/")
 
 
+def _maybe_resolve_app(
+    request: Request,
+    user: User,
+    x_portal_app: Optional[str],
+    db: Session,
+) -> Optional[App]:
+    """Best-effort App resolution for service-gating on non-storage endpoints.
+
+    Returns the App row when a request arrives in an app context (subdomain,
+    portal-origin /apps/<slug>/ Referer, or bearer-token with X-Portal-App).
+    Returns ``None`` when no app context is detectable — for example a token
+    client calling ``/api/v1/pdf/render`` directly without an X-Portal-App
+    header. Callers use the None return to mean "no app to gate against,
+    allow."
+
+    Storage explicitly requires an app context; for that, callers use
+    ``_resolve_app_slug`` (below), which raises 400 on no-context.
+    """
+    host_slug = getattr(request.state, "app_slug", None)
+    if host_slug:
+        return _require_app(db, host_slug)
+
+    auth_method = getattr(request.state, "auth_method", None)
+    if auth_method == "token":
+        if not x_portal_app:
+            return None  # programmatic call without a named app
+        return _require_app(db, x_portal_app)
+
+    if auth_method in ("cookie", "app_session"):
+        ref = request.headers.get("referer", "") or request.headers.get("origin", "")
+        m = _REFERER_APP_RE.match(ref)
+        if not m:
+            return None
+        return _require_app(db, m.group(1))
+
+    return None
+
+
+def _require_service(app_row: Optional[App], service: str) -> None:
+    """403 if ``service`` isn't in this app's admin-approved list.
+
+    Back-compat: an app whose manifest declared NO services at all gets a
+    pass — pre-feature apps and apps that never opted in keep working. The
+    moment an app declares ``services: [...]`` in its manifest, only the
+    declared + admin-approved subset is callable; the admin can revoke
+    individual services from /admin/apps.
+
+    ``app_row`` may be None — a token client without X-Portal-App, for
+    instance. In that case there's no app to gate against, so we allow.
+    """
+    if app_row is None:
+        return
+    declared = set(app_row.services or [])
+    if not declared:
+        return  # legacy / undeclared — no gate
+    allowed = set(app_row.allowed_services or [])
+    if service not in allowed:
+        raise HTTPException(
+            403,
+            f"App '{app_row.slug}' is not authorized to use the '{service}' "
+            f"service. Ask an admin to enable it under /admin/apps.",
+        )
+
+
 def _resolve_app_slug(
     request: Request,
     user: User,
@@ -362,6 +426,12 @@ def session_exchange(
 class PdfRequest(BaseModel):
     html: str = Field(min_length=1)
     filename: str = "document.pdf"
+    # When True, the portal injects a branding header (business name + logo
+    # + accent border) into the rendered PDF before running WeasyPrint. The
+    # injection is a string splice — see ``portal.branding.inject_pdf_header``
+    # — so the app's HTML is otherwise untouched. Opt-in so existing apps
+    # that fit content precisely aren't reflowed by the new header.
+    branded: bool = False
 
 
 def _no_external_fetcher(url, timeout=10, ssl_context=None):
@@ -384,10 +454,13 @@ def pdf_render(
     req: PdfRequest,
     request: Request,
     user: UserDep,
+    db: DbDep,
+    x_portal_app: AppHeader = None,
     x_csrf: Annotated[Optional[str], Header(alias="X-CSRF-Token")] = None,
 ):
-    _require_user(user)
+    me = _require_user(user)
     _require_csrf_for_cookie(request, x_csrf)
+    _require_service(_maybe_resolve_app(request, me, x_portal_app, db), "pdf")
     try:
         from weasyprint import HTML  # lazy: avoid hard import at startup
     except ImportError:
@@ -395,9 +468,28 @@ def pdf_render(
     except OSError as e:
         raise HTTPException(503, f"PDF service unavailable: {e}")
 
+    html_to_render = req.html
+    if req.branded:
+        # Read branding fresh (cheap) so an admin's just-saved logo / accent
+        # is reflected in the very next PDF.
+        from portal.branding import (
+            get_branding,
+            get_logo_data_uri,
+            inject_pdf_header,
+            render_pdf_header,
+        )
+
+        brand = get_branding(db)
+        header_html = render_pdf_header(
+            brand["business_name"],
+            brand["accent_color"],
+            get_logo_data_uri(db),
+        )
+        html_to_render = inject_pdf_header(req.html, header_html)
+
     buf = io.BytesIO()
     try:
-        HTML(string=req.html, url_fetcher=_no_external_fetcher).write_pdf(buf)
+        HTML(string=html_to_render, url_fetcher=_no_external_fetcher).write_pdf(buf)
     except Exception as e:
         raise HTTPException(500, f"PDF render failed: {e}")
     buf.seek(0)
@@ -477,10 +569,12 @@ def email_send(
     request: Request,
     user: UserDep,
     db: DbDep,
+    x_portal_app: AppHeader = None,
     x_csrf: Annotated[Optional[str], Header(alias="X-CSRF-Token")] = None,
 ):
     me = _require_user(user)
     _require_csrf_for_cookie(request, x_csrf)
+    _require_service(_maybe_resolve_app(request, me, x_portal_app, db), "email")
     cfg = smtp_config(db)
     if not cfg["host"]:
         raise HTTPException(503, "Email service unavailable: SMTP not configured")
@@ -508,6 +602,23 @@ def email_send(
         send_message(msg, cfg)
     except Exception as e:
         raise HTTPException(502, f"Email send failed: {e}")
+
+    # Record to the rolling EmailSendLog so /admin/health can show recent
+    # outbound mail. Resolve the source app from the request context so the
+    # dashboard can attribute the send to the right app. Best-effort: an
+    # observability failure must never reject a successful send.
+    from portal.health import record_email_send
+
+    app_row = _maybe_resolve_app(request, me, None, db)
+    record_email_send(
+        db,
+        user_id=me.id,
+        app_slug=app_row.slug if app_row is not None else "",
+        recipient=str(to_list[0]) if to_list else "",
+        recipient_count=len(to_list),
+        subject=req.subject,
+        status="sent",
+    )
     return {"status": "sent", "count": len(to_list)}
 
 
@@ -545,6 +656,7 @@ def storage_list(
 ):
     me = _require_user(user)
     app_row = _resolve_app_slug(request, me, x_portal_app, db)
+    _require_service(app_row, "storage")
     ns = _ns_dir(app_row.slug, me.id)
     items = []
     usage = 0
@@ -563,6 +675,7 @@ def storage_get(
 ):
     me = _require_user(user)
     app_row = _resolve_app_slug(request, me, x_portal_app, db)
+    _require_service(app_row, "storage")
     safe = _validate_key(key)
     ns = _ns_dir(app_row.slug, me.id)
     target = (ns / safe).resolve()
@@ -599,6 +712,7 @@ async def storage_put(
     me = _require_user(user)
     _require_csrf_for_cookie(request, x_csrf)
     app_row = _resolve_app_slug(request, me, x_portal_app, db)
+    _require_service(app_row, "storage")
     safe = _validate_key(key)
     ns = _ns_dir(app_row.slug, me.id)
     target = (ns / safe).resolve()
@@ -648,6 +762,7 @@ def storage_delete(
     me = _require_user(user)
     _require_csrf_for_cookie(request, x_csrf)
     app_row = _resolve_app_slug(request, me, x_portal_app, db)
+    _require_service(app_row, "storage")
     safe = _validate_key(key)
     ns = _ns_dir(app_row.slug, me.id)
     target = (ns / safe).resolve()
@@ -659,6 +774,99 @@ def storage_delete(
         raise HTTPException(404)
     target.unlink()
     return {"deleted": key}
+
+
+# ----- /share -----
+
+class ShareCreateRequest(BaseModel):
+    kind: str = Field(default="storage")  # "storage" or "pdf"
+    # storage kind:
+    key: Optional[str] = None
+    # pdf kind:
+    html: Optional[str] = None
+    # both:
+    filename: Optional[str] = Field(default=None, max_length=80)
+    ttl_seconds: Optional[int] = None
+    max_views: Optional[int] = Field(default=None, ge=0, le=10000)
+
+
+@router.post("/share/create")
+def share_create(
+    body: ShareCreateRequest,
+    request: Request,
+    user: UserDep,
+    db: DbDep,
+    x_portal_app: AppHeader = None,
+    x_csrf: Annotated[Optional[str], Header(alias="X-CSRF-Token")] = None,
+):
+    """Mint a public share URL for either a stored object or a fresh render.
+
+    Requires app context (subdomain, /apps/<slug>/ Referer, or bearer
+    + X-Portal-App). The share inherits the creator's identity for storage
+    reads — the public /s/<token> handler reads from the creator's
+    per-(app, user) namespace, NOT the requester's.
+    """
+    me = _require_user(user)
+    _require_csrf_for_cookie(request, x_csrf)
+    app_row = _resolve_app_slug(request, me, x_portal_app, db)
+
+    kind = (body.kind or "storage").strip().lower()
+    if kind not in ("storage", "pdf"):
+        raise HTTPException(400, "kind must be 'storage' or 'pdf'")
+
+    from portal.shares import (
+        create_pdf_share,
+        create_storage_share,
+        share_url,
+    )
+
+    if kind == "storage":
+        _require_service(app_row, "storage")
+        if not body.key:
+            raise HTTPException(400, "storage shares require a 'key'")
+        safe_key = _validate_key(body.key)
+        ns = _ns_dir(app_row.slug, me.id)
+        target = (ns / safe_key).resolve()
+        try:
+            target.relative_to(ns)
+        except ValueError:
+            raise HTTPException(404, "key not found")
+        if not target.is_file():
+            raise HTTPException(404, "key not found")
+        row = create_storage_share(
+            db,
+            app_row=app_row,
+            user=me,
+            key=safe_key,
+            filename=body.filename or "",
+            ttl_seconds=body.ttl_seconds,
+            max_views=body.max_views,
+        )
+    else:
+        # pdf kind
+        _require_service(app_row, "pdf")
+        if not body.html:
+            raise HTTPException(400, "pdf shares require 'html'")
+        try:
+            row = create_pdf_share(
+                db,
+                app_row=app_row,
+                user=me,
+                html=body.html,
+                filename=body.filename or "shared.pdf",
+                ttl_seconds=body.ttl_seconds,
+                max_views=body.max_views,
+            )
+        except RuntimeError as e:
+            raise HTTPException(500, str(e))
+
+    return {
+        "token": row.token,
+        "url": share_url(row.token, request.headers.get("host")),
+        "expires_at": row.expires_at.isoformat() if row.expires_at else None,
+        "kind": row.kind,
+        "max_views": row.max_views,
+    }
 
 
 # ----- /apps (programmatic upload for the Claude skill) -----

@@ -3,6 +3,7 @@ from typing import Any, Optional
 
 from fastapi import Request
 from fastapi.templating import Jinja2Templates
+from sqlmodel import Session
 
 from portal.models import User
 from portal.security import csrf_token
@@ -21,6 +22,28 @@ def render(
     **context: Any,
 ):
     flashes = request.session.pop("flashes", [])
+    # Branding is read fresh on every render so a settings save takes effect
+    # without a process restart. One cheap SELECT per render — the alternative
+    # (module-scope cache + invalidation hook) would buy back microseconds at
+    # the cost of an extra moving part. Open our own short-lived Session so
+    # render() doesn't need a DbDep on every call site.
+    from portal.branding import get_branding
+    from portal.db import engine
+
+    try:
+        with Session(engine) as db:
+            branding = get_branding(db)
+    except Exception:
+        # During first-run setup or a transient DB blip, fall back to defaults
+        # rather than crash the response we're trying to render.
+        from portal.branding import DEFAULT_ACCENT_COLOR, DEFAULT_BUSINESS_NAME
+
+        branding = {
+            "business_name": DEFAULT_BUSINESS_NAME,
+            "accent_color": DEFAULT_ACCENT_COLOR,
+            "logo_url": None,
+        }
+
     return templates.TemplateResponse(
         request,
         name,
@@ -29,6 +52,7 @@ def render(
             "user": user,
             "flashes": flashes,
             "csrf_token": csrf_token(request),
+            "branding": branding,
         },
         status_code=status_code,
     )

@@ -3,15 +3,15 @@
 <head>
 	<meta charset="utf-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-	<title>{% block title %}PWA Portal{% endblock %}</title>
+	<title>{% block title %}{{ branding.business_name }}{% endblock %}</title>
 
 	<link rel="manifest" href="/manifest.webmanifest">
 	<link rel="icon" type="image/png" href="/static/icons/favicon.png">
 	<link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
-	<meta name="theme-color" content="#059669">
+	<meta name="theme-color" content="{{ branding.accent_color }}">
 	<meta name="apple-mobile-web-app-capable" content="yes">
 	<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-	<meta name="apple-mobile-web-app-title" content="Portal">
+	<meta name="apple-mobile-web-app-title" content="{{ branding.business_name }}">
 	<meta name="mobile-web-app-capable" content="yes">
 	<script>
 		// Apply persisted theme preference BEFORE any paint to avoid the
@@ -882,6 +882,68 @@
 		@supports (padding: env(safe-area-inset-top)) {
 			.topbar { padding-top: max(0.85rem, env(safe-area-inset-top)); }
 		}
+
+		/* Brand logo (uploaded by admin in /admin/settings → Branding). When
+		   no logo is configured, the templated <span class="brand-mark"> is
+		   rendered instead. The two share a footprint so the topbar layout
+		   stays stable when an admin uploads or clears a logo. */
+		.brand-logo {
+			height: 1.55rem;
+			width: auto;
+			max-width: 5rem;
+			object-fit: contain;
+			display: block;
+			flex-shrink: 0;
+		}
+
+		/* Signed-out pages (login, setup) have no topbar — branding sits
+		   centered above the form so the operator still sees the business
+		   identity at the door. */
+		.auth-brand {
+			display: flex;
+			flex-direction: column;
+			align-items: center;
+			gap: 0.5rem;
+			margin: 0 0 1.5rem;
+		}
+		.auth-brand-logo {
+			max-height: 3.5rem;
+			max-width: 12rem;
+			object-fit: contain;
+		}
+		.auth-brand-mark {
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			width: 3rem;
+			height: 3rem;
+			border-radius: var(--radius);
+			background: linear-gradient(135deg, var(--accent), var(--accent-hover));
+			color: var(--accent-fg);
+			font-size: 1.4rem;
+			font-weight: 700;
+			box-shadow: var(--shadow-sm);
+		}
+		.auth-brand-name {
+			font-size: 1.05rem;
+			font-weight: 600;
+			letter-spacing: -0.005em;
+			color: var(--text);
+		}
+	</style>
+
+	{# Admin-configured accent. Rendered last so it wins over the light/dark
+	   theme defaults defined above without us having to teach every variant
+	   block about branding overrides. #}
+	<style id="branding-accent">
+		:root,
+		:root[data-theme="light"],
+		:root[data-theme="dark"] {
+			--accent: {{ branding.accent_color }};
+		}
+		@media (prefers-color-scheme: dark) {
+			:root:not([data-theme="light"]) { --accent: {{ branding.accent_color }}; }
+		}
 	</style>
 </head>
 <body>
@@ -889,8 +951,12 @@
 	{% if user %}
 	<div class="topbar">
 		<a href="/" class="brand">
-			<span class="brand-mark">P</span>
-			<span class="brand-text">PWA Portal</span>
+			{% if branding.logo_url %}
+			<img src="{{ branding.logo_url }}" alt="" class="brand-logo">
+			{% else %}
+			<span class="brand-mark">{{ branding.business_name[0]|upper }}</span>
+			{% endif %}
+			<span class="brand-text">{{ branding.business_name }}</span>
 		</a>
 		<div class="topbar-actions">
 			<button type="button" class="theme-toggle" id="theme-toggle"
@@ -938,6 +1004,8 @@
 					<a href="/admin/users" class="nav-link">Users</a>
 					<a href="/admin/settings" class="nav-link">Settings</a>
 					<a href="/admin/tokens" class="nav-link">API tokens</a>
+					<a href="/admin/shares" class="nav-link">Share links</a>
+					<a href="/admin/health" class="nav-link">Health</a>
 					<a href="/admin/backup" class="nav-link">Backup</a>
 				</div>
 			</details>

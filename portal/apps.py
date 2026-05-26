@@ -15,7 +15,7 @@ from typing import Annotated, Optional
 
 import anyio
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field, ValidationError, field_validator
 from sqlmodel import Session, select
 
@@ -75,6 +75,13 @@ class PortalAppPermissions(BaseModel):
     # Same-origin requests (to the app's own subdomain or the SDK) are
     # always allowed and don't need to be listed.
     network: list[str] = Field(default_factory=list)
+    # Opt into a strict per-app Content-Security-Policy: drops
+    # ``'unsafe-inline'`` and ``'unsafe-eval'``; the portal substitutes the
+    # literal token ``{{NONCE}}`` in served HTML with a per-response nonce
+    # so legitimate inline scripts/styles can still run. Only takes effect
+    # under per-app-origin mode (the default). See SKILL.md for the author
+    # contract.
+    csp_strict: bool = False
 
     @field_validator("network")
     @classmethod
@@ -403,6 +410,7 @@ async def install_bundle(
                 raise
 
             requested = list(manifest.permissions.network)
+            declared_services = list(manifest.services)
             app_row = App(
                 slug=manifest.slug,
                 name=manifest.name,
@@ -410,7 +418,11 @@ async def install_bundle(
                 version=manifest.version,
                 icon=manifest.icon,
                 entry=manifest.entry,
-                services=manifest.services,
+                services=declared_services,
+                # Auto-approve every service the manifest declared on a fresh
+                # install — same rationale as ``allowed_origins`` below.
+                allowed_services=list(declared_services),
+                csp_strict=bool(manifest.permissions.csp_strict),
                 requested_origins=requested,
                 # Auto-approve everything the manifest declared on a fresh
                 # install. The admin already trusted the bundle enough to
@@ -464,12 +476,23 @@ async def install_bundle(
         prev_allowed = set(existing.allowed_origins or [])
         revoked = set(prev_requested) - prev_allowed
         new_allowed = [o for o in new_requested if o not in revoked]
+        # Same preserve-revocations logic for service scopes: any service the
+        # admin had explicitly turned off (declared previously but absent
+        # from allowed_services) stays off after the replace. Services newly
+        # declared in this upload are auto-approved.
+        new_services = list(manifest.services)
+        prev_services_declared = list(existing.services or [])
+        prev_services_allowed = set(existing.allowed_services or [])
+        services_revoked = set(prev_services_declared) - prev_services_allowed
+        new_allowed_services = [s for s in new_services if s not in services_revoked]
         existing.name = manifest.name
         existing.description = manifest.description
         existing.version = manifest.version
         existing.icon = manifest.icon
         existing.entry = manifest.entry
-        existing.services = manifest.services
+        existing.services = new_services
+        existing.allowed_services = new_allowed_services
+        existing.csp_strict = bool(manifest.permissions.csp_strict)
         existing.requested_origins = new_requested
         existing.allowed_origins = new_allowed
         existing.uploaded_by = uploader.id
@@ -639,6 +662,45 @@ def admin_apps_network_update(
     db.add(app_row)
     db.commit()
     flash(request, f"Network access updated for {app_row.name}.")
+    return RedirectResponse("/admin/apps", status_code=303)
+
+
+@router.post("/admin/apps/{slug}/services")
+def admin_apps_services_update(
+    slug: str,
+    request: Request,
+    db: DbDep,
+    admin: AdminDep,
+    csrf: str = Form(default="", alias="_csrf"),
+    allowed_services: list[str] = Form(default_factory=list),
+):
+    """Update the admin-approved subset of services for an app.
+
+    The checkbox set MUST be a subset of the manifest's declared services —
+    a malicious POST that tries to grant a service the app never declared
+    is silently filtered. To grant a new service, the app's manifest must
+    declare it and the bundle must be re-uploaded.
+    """
+    check_csrf(request, csrf)
+    app_row = db.exec(select(App).where(App.slug == slug)).first()
+    if app_row is None:
+        raise HTTPException(404)
+    declared = set(app_row.services or [])
+    # Filter to the declared set AND the known-allowed services so a
+    # malformed form post can't inject e.g. ``"shell"``.
+    picked = [s for s in allowed_services if s in declared and s in ALLOWED_SERVICES]
+    # Dedupe while preserving order so the admin UI doesn't shuffle entries.
+    seen: set[str] = set()
+    final: list[str] = []
+    for s in picked:
+        if s in seen:
+            continue
+        seen.add(s)
+        final.append(s)
+    app_row.allowed_services = final
+    db.add(app_row)
+    db.commit()
+    flash(request, f"Service access updated for {app_row.name}.")
     return RedirectResponse("/admin/apps", status_code=303)
 
 
@@ -840,13 +902,20 @@ def _serve_app_file(
 
 def _serve_app_subdomain_path(
     request: Request, db: Session, slug: str, path: str
-) -> FileResponse | RedirectResponse:
+) -> FileResponse | RedirectResponse | Response:
     """Serve a static file from ``data/apps/<slug>/<path>``.
 
     Requires an active ``AppSession`` cookie for this subdomain (checked by
     the caller via current_app_session_user). The bare ``portal-sdk.js`` is
     served from the portal's static dir so child apps fetching it from their
     own origin get the same code that the portal serves at root.
+
+    When the resolved app opted into strict CSP (manifest's
+    ``permissions.csp_strict``) and the served file is HTML, the literal
+    token ``{{NONCE}}`` is substituted with the per-response nonce stashed
+    on ``request.state.csp_nonce`` by ``ChildAppCSPMiddleware``. App
+    authors put ``nonce="{{NONCE}}"`` on every inline ``<script>`` /
+    ``<style>`` they want to keep running.
     """
     app_row = db.exec(select(App).where(App.slug == slug)).first()
     if app_row is None or not app_row.enabled:
@@ -880,6 +949,26 @@ def _serve_app_subdomain_path(
         raise HTTPException(404)
     if not target.is_file():
         raise HTTPException(404)
+
+    # Nonce-substitute HTML responses for csp_strict apps.
+    if bool(getattr(app_row, "csp_strict", False)):
+        suffix = target.suffix.lower()
+        if suffix in (".html", ".htm"):
+            nonce = getattr(request.state, "csp_nonce", None)
+            if nonce:
+                try:
+                    body = target.read_text(encoding="utf-8")
+                except (OSError, UnicodeDecodeError):
+                    # If the file isn't UTF-8 text after all, fall through
+                    # to the binary FileResponse path — the browser will
+                    # complain about an inline script lacking a nonce, which
+                    # is the correct outcome for an app that mis-declared.
+                    return FileResponse(target)
+                body = body.replace("{{NONCE}}", nonce)
+                return Response(
+                    body, media_type="text/html; charset=utf-8"
+                )
+
     return FileResponse(target)
 
 

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import hashlib
+import mimetypes
+import re
 import secrets
 import shutil
 import sqlite3
@@ -13,7 +15,7 @@ from pathlib import Path
 from typing import Annotated, Optional
 
 import anyio
-from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import EmailStr, TypeAdapter, ValidationError
 from sqlalchemy import func
@@ -27,12 +29,19 @@ from portal.access import (
     replace_user_app_access,
     set_default_access,
 )
+from portal.branding import (
+    ALLOWED_LOGO_TYPES,
+    DEFAULT_ACCENT_COLOR,
+    MAX_LOGO_BYTES,
+    branding_dir,
+    get_branding,
+)
 from portal.config import settings
 from portal.db import get_db
 from portal.deps import require_admin
 from portal.models import ApiToken, App, User, UserAppAccess
 from portal.security import check_csrf, hash_password, validate_password
-from portal.settings_store import set_secret, set_setting, smtp_config
+from portal.settings_store import get_setting, set_secret, set_setting, smtp_config
 from portal.smtp import send_message
 from portal.web import flash, render
 
@@ -49,6 +58,7 @@ email_adapter = TypeAdapter(EmailStr)
 @router.get("/admin/settings")
 def settings_form(request: Request, db: DbDep, admin: AdminDep):
     cfg = smtp_config(db)
+    brand = get_branding(db)
     # site_url is environment-only: Caddy reads SITE_URL at startup for the
     # wildcard subdomain config, so a DB-side change would silently diverge
     # from the routing layer. Surface the env value read-only and let admins
@@ -64,11 +74,99 @@ def settings_form(request: Request, db: DbDep, admin: AdminDep):
         smtp_from=cfg["from_addr"] or "",
         smtp_use_tls=cfg["use_tls"],
         default_user_app_access=get_default_access(db),
+        branding_business_name=brand["business_name"],
+        branding_accent_color=brand["accent_color"],
+        branding_logo_url=brand["logo_url"],
+        default_accent_color=DEFAULT_ACCENT_COLOR,
+        max_logo_kb=MAX_LOGO_BYTES // 1024,
     )
 
 
+# Six-digit hex only, matching ``portal.branding._HEX_COLOR_RE``. Duplicated
+# here so the form handler can validate the submitted value without crossing
+# into branding internals.
+_ACCENT_HEX_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+_LOGO_BASENAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _store_logo(upload: UploadFile) -> Optional[str]:
+    """Validate, persist, and return the filename of an uploaded logo.
+
+    Returns the stored filename on success. Returns None when the upload was
+    empty (no file selected). Raises HTTPException with a user-facing
+    message for any validation failure so the caller can surface it as a
+    flash without parsing the exception.
+    """
+    if upload is None or not (upload.filename or "").strip():
+        return None
+    # Read the body once into memory — the cap is 512 KiB, so this is fine.
+    # Read +1 byte to detect overruns deterministically rather than trust
+    # the multipart parser's size accounting.
+    blob = upload.file.read(MAX_LOGO_BYTES + 1)
+    if not blob:
+        return None
+    if len(blob) > MAX_LOGO_BYTES:
+        raise HTTPException(
+            413,
+            f"Logo exceeds {MAX_LOGO_BYTES // 1024} KB limit",
+        )
+
+    # Trust the declared content-type, but only if it's in the allowlist.
+    # For SVG we additionally do a cheap sniff for opening <svg> to catch
+    # files that lied about their type (an HTML disguised as SVG could pivot
+    # XSS via the /branding/<name> route's image/svg+xml content-type).
+    ct = (upload.content_type or "").lower().split(";")[0].strip()
+    if ct not in ALLOWED_LOGO_TYPES:
+        # Fall back to extension-based guess for clients that don't set type.
+        guessed, _ = mimetypes.guess_type(upload.filename or "")
+        if guessed and guessed.lower() in ALLOWED_LOGO_TYPES:
+            ct = guessed.lower()
+        else:
+            raise HTTPException(
+                400,
+                "Logo must be PNG, JPEG, SVG, or WebP",
+            )
+
+    if ct == "image/svg+xml":
+        head = blob.lstrip()[:200].lower()
+        if b"<svg" not in head:
+            raise HTTPException(400, "Logo does not look like a valid SVG")
+
+    ext = ALLOWED_LOGO_TYPES[ct]
+    # Derive a basename from the upload filename, sanitized to the safe
+    # whitelist. Append a short random suffix to avoid CDN-cache collisions
+    # when an admin replaces a logo with a new file of the same name.
+    stem = Path(upload.filename or "logo").stem
+    safe_stem = _LOGO_BASENAME_RE.sub("", stem.replace(" ", "-"))[:40] or "logo"
+    final_name = f"{safe_stem}-{secrets.token_hex(4)}{ext}"
+
+    target = branding_dir() / final_name
+    target.write_bytes(blob)
+    return final_name
+
+
+def _clear_existing_logo(db: Session) -> None:
+    """Delete the on-disk logo (if any) and clear the Setting row.
+
+    Safe to call when no logo is configured (no-op). Doesn't raise on
+    filesystem errors — the DB pointer is the source of truth and the file
+    becomes orphaned, which a future settings page load will tolerate.
+    """
+    existing = (get_setting(db, "branding_logo_path") or "").strip()
+    if existing:
+        from portal.branding import _safe_logo_name
+
+        if _safe_logo_name(existing):
+            path = branding_dir() / existing
+            try:
+                path.unlink()
+            except OSError:
+                pass
+    set_setting(db, "branding_logo_path", None)
+
+
 @router.post("/admin/settings")
-def settings_save(
+async def settings_save(
     request: Request,
     db: DbDep,
     admin: AdminDep,
@@ -79,6 +177,10 @@ def settings_save(
     smtp_from: Annotated[str, Form()] = "",
     smtp_use_tls: Annotated[Optional[str], Form()] = None,
     default_user_app_access: Annotated[str, Form()] = "all",
+    branding_business_name: Annotated[str, Form()] = "",
+    branding_accent_color: Annotated[str, Form()] = "",
+    branding_logo: Optional[UploadFile] = File(default=None),
+    branding_logo_clear: Annotated[Optional[str], Form()] = None,
     csrf: Annotated[str, Form(alias="_csrf")] = "",
 ):
     check_csrf(request, csrf)
@@ -95,6 +197,37 @@ def settings_save(
     # creations, which keeps the change reversible.
     if default_user_app_access in ("all", "none"):
         set_default_access(db, default_user_app_access)
+
+    # Branding: name + accent are direct settings; logo flows through
+    # _store_logo which validates type/size and writes to data/branding/.
+    business_name = (branding_business_name or "").strip()[:60]
+    set_setting(db, "branding_business_name", business_name)
+
+    accent = (branding_accent_color or "").strip()
+    if accent and not _ACCENT_HEX_RE.match(accent):
+        # Reject without rolling back the other settings — they're already
+        # staged. The flash tells the admin the accent didn't take.
+        flash(
+            request,
+            "Accent color must be a #rrggbb hex value; previous value kept.",
+            level="error",
+        )
+    else:
+        # Empty clears back to the default emerald.
+        set_setting(db, "branding_accent_color", accent or None)
+
+    if branding_logo_clear == "on":
+        _clear_existing_logo(db)
+    elif branding_logo is not None:
+        try:
+            stored = _store_logo(branding_logo)
+        except HTTPException as e:
+            flash(request, str(e.detail), level="error")
+        else:
+            if stored is not None:
+                _clear_existing_logo(db)
+                set_setting(db, "branding_logo_path", stored)
+
     db.commit()
     flash(request, "Settings saved.")
     return RedirectResponse("/admin/settings", status_code=303)
@@ -120,11 +253,15 @@ def settings_smtp_test(
         "If you received this, your portal's SMTP settings are working.\n\n"
         f"Sent at {datetime.now(timezone.utc).isoformat()}\n"
     )
+    from portal.health import record_smtp_test
+
     try:
         send_message(msg, cfg)
     except Exception as e:
+        record_smtp_test(db, success=False, error=str(e))
         flash(request, f"SMTP test failed: {e}", level="error")
         return RedirectResponse("/admin/settings", status_code=303)
+    record_smtp_test(db, success=True)
     flash(request, f"Test email sent to {admin.email}.")
     return RedirectResponse("/admin/settings", status_code=303)
 
@@ -360,6 +497,175 @@ async def users_apps_save(
     db.commit()
     flash(request, f"Updated app access for {target.email}.")
     return RedirectResponse(f"/admin/users/{user_id}/apps", status_code=303)
+
+
+# ----- Health dashboard -----
+
+@router.get("/admin/health")
+def health_dashboard(request: Request, db: DbDep, admin: AdminDep):
+    """Operational snapshot for admins.
+
+    Reads are all cheap (one SELECT per table, two filesystem walks scoped
+    to ``data/``). The page is not cached — admins viewing it expect live
+    numbers, and the SMB-scale data sets stay small enough that re-walking
+    on each load is fine.
+    """
+    from sqlalchemy.engine.url import make_url
+
+    from portal.config import settings as _settings
+    from portal.health import (
+        db_size_bytes,
+        fmt_bytes,
+        recent_email_sends,
+        recent_login_attempts,
+        smtp_last_test,
+        storage_usage_by_app,
+    )
+
+    data_dir = Path(_settings.data_dir).resolve()
+    # Best-effort parse of the configured DB URL. We only support sqlite
+    # in this deployment, but keep the code defensive in case someone
+    # points DATABASE_URL elsewhere — the helper returns 0 on missing.
+    url = make_url(_settings.database_url)
+    db_path = Path(url.database) if url.database else (data_dir / "portal.db")
+    if not db_path.is_absolute():
+        # Relative DB paths resolve against the working directory the
+        # portal was started in (which is the repo root in dev, /app in
+        # the container). Anchor to that explicitly.
+        db_path = Path.cwd() / db_path
+
+    storage_root = data_dir / "storage"
+    usage = storage_usage_by_app(storage_root)
+    # Join app metadata so the dashboard can show name + status alongside
+    # raw byte counts.
+    all_apps = db.exec(select(App).order_by(App.name)).all()
+    storage_rows = []
+    for app_row in all_apps:
+        bytes_used = usage.get(app_row.slug, 0)
+        storage_rows.append({
+            "slug": app_row.slug,
+            "name": app_row.name,
+            "enabled": app_row.enabled,
+            "bytes": bytes_used,
+            "human": fmt_bytes(bytes_used),
+        })
+    # Plus any storage dirs whose App row was deleted but whose data
+    # lingered (storage_* doesn't currently delete on app delete).
+    known_slugs = {row["slug"] for row in storage_rows}
+    for slug, bytes_used in usage.items():
+        if slug not in known_slugs:
+            storage_rows.append({
+                "slug": slug,
+                "name": "(orphaned)",
+                "enabled": False,
+                "bytes": bytes_used,
+                "human": fmt_bytes(bytes_used),
+            })
+    storage_rows.sort(key=lambda r: r["bytes"], reverse=True)
+    total_storage = sum(r["bytes"] for r in storage_rows)
+
+    return render(
+        request, "admin_health.html",
+        user=admin,
+        db_path=str(db_path),
+        db_size_human=fmt_bytes(db_size_bytes(db_path)),
+        storage_rows=storage_rows,
+        total_storage_human=fmt_bytes(total_storage),
+        smtp_last=smtp_last_test(db),
+        recent_logins=recent_login_attempts(db, limit=20),
+        recent_emails=recent_email_sends(db, limit=20),
+    )
+
+
+# ----- Public share links -----
+
+@router.get("/admin/shares")
+def shares_list(request: Request, db: DbDep, admin: AdminDep):
+    """Surface every share link with metadata + a revoke action.
+
+    Shows both active and inactive (revoked, expired, view-exhausted)
+    entries — the dashboard is for audit, not just management, and an
+    admin investigating "did we send out a link?" needs to see expired
+    rows too.
+    """
+    from portal.models import ShareLink as _ShareLink
+
+    rows = db.exec(
+        select(_ShareLink).order_by(_ShareLink.created_at.desc()).limit(200)
+    ).all()
+    # Join app + creator info for display. Two cheap dicts so we don't
+    # N+1 the template.
+    app_map = {a.id: a for a in db.exec(select(App)).all()}
+    user_map = {u.id: u for u in db.exec(select(User)).all()}
+    now = datetime.now(timezone.utc)
+
+    items = []
+    for r in rows:
+        app_row = app_map.get(r.app_id)
+        user_row = user_map.get(r.created_by)
+        expires_at = r.expires_at
+        if expires_at is not None and expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if r.revoked_at is not None:
+            state = "revoked"
+        elif expires_at is None or expires_at < now:
+            state = "expired"
+        elif r.max_views and r.view_count >= r.max_views:
+            state = "exhausted"
+        else:
+            state = "active"
+        items.append({
+            "row": r,
+            "app_name": app_row.name if app_row else "(deleted app)",
+            "app_slug": app_row.slug if app_row else "",
+            "creator": user_row.email if user_row else "(deleted user)",
+            "state": state,
+        })
+    return render(
+        request, "admin_shares.html", user=admin, items=items,
+        site_url=settings.site_url,
+    )
+
+
+@router.post("/admin/shares/{share_id}/revoke")
+def shares_revoke(
+    share_id: int, request: Request, db: DbDep, admin: AdminDep,
+    csrf: Annotated[str, Form(alias="_csrf")] = "",
+):
+    check_csrf(request, csrf)
+    from portal.models import ShareLink as _ShareLink
+    from portal.shares import revoke as _revoke
+
+    row = db.get(_ShareLink, share_id)
+    if row is None:
+        raise HTTPException(404)
+    if row.revoked_at is not None:
+        flash(request, "Already revoked.")
+        return RedirectResponse("/admin/shares", status_code=303)
+    _revoke(db, row)
+    flash(request, "Share link revoked.")
+    return RedirectResponse("/admin/shares", status_code=303)
+
+
+@router.post("/admin/shares/{share_id}/delete")
+def shares_delete(
+    share_id: int, request: Request, db: DbDep, admin: AdminDep,
+    csrf: Annotated[str, Form(alias="_csrf")] = "",
+):
+    check_csrf(request, csrf)
+    from portal.models import ShareLink as _ShareLink
+    from portal.shares import delete_share_files
+
+    row = db.get(_ShareLink, share_id)
+    if row is None:
+        raise HTTPException(404)
+    # If it's a PDF kind, remove the on-disk file as well.
+    if row.kind == "pdf":
+        delete_share_files([(row.payload or {}).get("path", "")])
+    db.delete(row)
+    db.commit()
+    flash(request, "Share link deleted.")
+    return RedirectResponse("/admin/shares", status_code=303)
 
 
 # ----- Backups -----

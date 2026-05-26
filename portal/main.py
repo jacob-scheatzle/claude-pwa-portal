@@ -228,6 +228,26 @@ def portal_sdk():
     )
 
 
+# Uploaded logo served by name. Anyone (signed-in or not) can fetch the
+# active logo — same trust level as /favicon.ico. We validate the filename
+# against the same whitelist the upload handler enforces so a stale or
+# malicious DB value can't traverse out of the branding directory.
+@app.get("/branding/{name}", include_in_schema=False)
+def branding_logo(name: str):
+    from portal.branding import _safe_logo_name, branding_dir
+
+    if not _safe_logo_name(name):
+        raise HTTPException(404)
+    target = (branding_dir() / name).resolve()
+    try:
+        target.relative_to(branding_dir())
+    except ValueError:
+        raise HTTPException(404)
+    if not target.is_file():
+        raise HTTPException(404)
+    return FileResponse(target, headers={"Cache-Control": "public, max-age=300"})
+
+
 # ----- First-run wizard -----
 
 @app.get("/setup", response_class=HTMLResponse)
@@ -320,8 +340,14 @@ def login_submit(
     csrf: Annotated[str, Form(alias="_csrf")] = "",
 ):
     check_csrf(request, csrf)
+    from portal.health import record_login_attempt
+
+    client_ip = request.client.host if request.client else "unknown"
     key = _login_key(request, email)
     if _login_blocked(key):
+        record_login_attempt(
+            db, ip=client_ip, email=email, success=False, reason="rate_limited",
+        )
         return render(
             request, "login.html",
             error="Too many failed attempts. Try again in a few minutes.",
@@ -332,12 +358,18 @@ def login_submit(
     user = db.exec(select(User).where(User.email == normalized)).first()
     if user is None or not verify_password(password, user.password_hash):
         _record_login_failure(key)
+        record_login_attempt(
+            db, ip=client_ip, email=email, success=False, reason="bad_credentials",
+        )
         return render(
             request, "login.html",
             error="Invalid email or password.", email=email, next=_safe_next(next),
             status_code=401,
         )
     _clear_login_failures(key)
+    record_login_attempt(
+        db, ip=client_ip, email=email, success=True, reason="ok",
+    )
     # Rotate the session on login to defeat session fixation: a pre-planted
     # session id (MITM before TLS terminated, leaked link, etc.) must not
     # survive the auth boundary. Clearing the dict changes its signed value,
@@ -421,6 +453,95 @@ def profile_change_password(
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+# ----- Public share URLs -----
+#
+# /s/<token> is the only public, unauthenticated content surface on the
+# portal origin. The token is high-entropy (token_urlsafe(24) = ~192 bits)
+# and lookup is constant-time relative to the user-supplied input, so
+# probing for valid tokens is infeasible in practice. Storage shares
+# stream from the creator's namespace; PDF shares serve a pre-rendered
+# file from data/shares/. Both return 404 for any non-serveable state
+# (unknown / revoked / expired / view-capped / missing file).
+
+@app.get("/s/{token}", include_in_schema=False)
+def share_view(token: str, db: DbDep):
+    import re
+
+    from fastapi.responses import FileResponse as _FileResponse
+    from portal.shares import lookup_active, record_view, shares_dir
+    from portal.models import App as _App
+
+    # The token URL-safe alphabet is [A-Za-z0-9_-]. Anything else is a
+    # malformed link; reject without hitting the DB.
+    if not re.match(r"^[A-Za-z0-9_-]+$", token) or len(token) > 64:
+        raise HTTPException(404)
+
+    row = lookup_active(db, token)
+    if row is None:
+        raise HTTPException(404)
+
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", row.filename or "shared") or "shared"
+
+    if row.kind == "pdf":
+        path_name = (row.payload or {}).get("path") or ""
+        if not path_name:
+            raise HTTPException(404)
+        base = shares_dir()
+        target = (base / path_name).resolve()
+        try:
+            target.relative_to(base)
+        except ValueError:
+            raise HTTPException(404)
+        if not target.is_file():
+            raise HTTPException(404)
+        record_view(db, row)
+        return _FileResponse(
+            target,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'inline; filename="{safe_name}"'},
+        )
+
+    if row.kind == "storage":
+        # Resolve the storage object out of the creator's namespace. The
+        # share is bound to (app, creator) at mint time, so revoking the
+        # creator's access to the app doesn't break the link — that's
+        # arguably right (the link is independent capability) but a
+        # design choice worth being explicit about.
+        app_row = db.get(_App, row.app_id)
+        if app_row is None or not app_row.enabled:
+            raise HTTPException(404)
+        key = (row.payload or {}).get("key") or ""
+        if not key:
+            raise HTTPException(404)
+        # Re-validate the key — defense in depth in case the row was
+        # written by a future version with looser rules.
+        from portal.api import _ns_dir, _validate_key
+
+        try:
+            safe_key = _validate_key(key)
+        except HTTPException:
+            raise HTTPException(404)
+        ns = _ns_dir(app_row.slug, row.created_by)
+        target = (ns / safe_key).resolve()
+        try:
+            target.relative_to(ns)
+        except ValueError:
+            raise HTTPException(404)
+        if not target.is_file():
+            raise HTTPException(404)
+        record_view(db, row)
+        import mimetypes
+
+        mt, _ = mimetypes.guess_type(str(target))
+        return FileResponse(
+            target,
+            media_type=mt or "application/octet-stream",
+            headers={"Content-Disposition": f'inline; filename="{safe_name}"'},
+        )
+
+    raise HTTPException(404)
 
 
 # ----- App subdomain catch-all -----
