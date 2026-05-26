@@ -466,6 +466,32 @@
 			color: inherit;
 		}
 
+		/* Page-level credit footer (used on the dashboard) */
+		.credit {
+			margin-top: 3.5rem;
+			padding-top: 1.5rem;
+			border-top: 1px solid var(--border);
+			text-align: center;
+			color: var(--text-faint);
+			font-size: 0.825rem;
+			line-height: 1.6;
+		}
+		.credit a {
+			color: var(--text-muted);
+			text-decoration: none;
+			border-bottom: 1px solid var(--border-strong);
+			transition: color 0.12s ease, border-color 0.12s ease;
+		}
+		.credit a:hover {
+			color: var(--accent);
+			border-color: var(--accent);
+		}
+		.credit .credit-dot {
+			margin: 0 0.5rem;
+			color: var(--text-faint);
+			opacity: 0.6;
+		}
+
 		@supports (padding: env(safe-area-inset-top)) {
 			.topbar { padding-top: max(0.85rem, env(safe-area-inset-top)); }
 		}
