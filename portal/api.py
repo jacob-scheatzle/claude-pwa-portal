@@ -155,6 +155,70 @@ def get_csrf_token(request: Request, user: UserDep):
     return {"csrf_token": _csrf_token(request)}
 
 
+# ----- /internal/cert-ask (Caddy on_demand_tls hook) -----
+
+# Pre-built once at import time so we don't recompile the pattern on every
+# Caddy probe. ``re.escape`` keeps the site URL safe even when it contains
+# regex metacharacters (a dotted hostname always does — ``.`` matches any
+# char if unescaped). The slug character class matches the slug rules
+# enforced by ``portal.apps``: lowercase letters, digits, and hyphens.
+_CERT_ASK_RE = re.compile(
+    rf"^([a-z0-9-]+)\.apps\.{re.escape(settings.site_url.lower())}$"
+)
+
+
+@router.get("/internal/cert-ask", include_in_schema=False)
+def cert_ask(domain: str, db: DbDep):
+    """Approve TLS-certificate issuance for known app subdomains.
+
+    Called by Caddy's ``on_demand_tls.ask`` hook BEFORE Caddy attempts to
+    fetch a Let's Encrypt certificate for a host that matches the wildcard
+    ``*.apps.<SITE_URL>`` block. Returns 200 if the host should be served,
+    404 otherwise — Caddy treats any non-2xx as "don't issue a cert."
+
+    The guardrail matters because Let's Encrypt enforces a per-registered-
+    domain rate limit (50 certs/week as of writing). Without this hook a
+    stranger could send requests for ``<random>.apps.<SITE_URL>`` and burn
+    the quota, locking the operator out of issuing certs for real apps.
+
+    Accepts:
+      * ``<slug>.apps.<SITE_URL>`` for any enabled ``App.slug``  -> 200
+      * The portal hostname itself                               -> 200
+        (defensive; Caddy may probe-ask for the main host under some
+        configurations even though the main host has its own site block
+        and wouldn't actually use on_demand)
+      * Anything else                                            -> 404
+
+    No authentication: Caddy reaches the portal over the internal Docker
+    network. External callers can't learn anything they couldn't already
+    learn by attempting ``https://<slug>.apps.<SITE_URL>/`` directly.
+    """
+    host = (domain or "").strip().lower().rstrip(".")
+    if not host:
+        raise HTTPException(404)
+
+    # Strip an optional :port suffix — Caddy normally sends a bare hostname
+    # but be defensive in case a future version adds one.
+    if ":" in host and not host.startswith("["):
+        host = host.rsplit(":", 1)[0]
+
+    site = settings.site_url.lower().rstrip(".")
+    if host == site:
+        return {"ok": True}
+
+    m = _CERT_ASK_RE.match(host)
+    if not m:
+        raise HTTPException(404)
+    slug = m.group(1)
+
+    app_row = db.exec(
+        select(App).where(App.slug == slug, App.enabled == True)  # noqa: E712
+    ).first()
+    if app_row is None:
+        raise HTTPException(404)
+    return {"ok": True}
+
+
 # ----- /session/exchange (app subdomain) -----
 
 class SessionExchangeRequest(BaseModel):

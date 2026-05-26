@@ -64,6 +64,20 @@ chmod 600 .env
 
 Anyone with read access to this file can forge session cookies and read your SMTP password.
 
+## 2.6. Set up wildcard DNS for child apps
+
+Child apps are served from a per-app subdomain — `<slug>.apps.<SITE_URL>` — so each app has its own browser origin. This requires a wildcard DNS A record:
+
+```
+*.apps.<your-domain>     A     <VPS IP>
+```
+
+Most DNS providers support wildcards. If you're using sslip.io (`<ip>.sslip.io`), you don't need to do anything — `<slug>.apps.<ip>.sslip.io` already resolves to the IP.
+
+Caddy will fetch a Let's Encrypt cert for each subdomain on first access using HTTP-01 challenges; no DNS provider credentials needed. The portal protects against cert-issuance probing via an `/internal/cert-ask` endpoint that only approves real app slugs.
+
+If you'd rather skip this step, set `CHILD_APPS_SAME_ORIGIN=true` in `.env`. The portal will then serve apps at `<SITE_URL>/apps/<slug>/` (same origin) with a security warning in the admin UI.
+
 ## 3. Boot it
 
 ```bash
@@ -175,6 +189,11 @@ The reset command prompts you for the new password.
 - Verify your domain's A record points at the VPS IP (`dig +short <your-domain>`)
 - Tail Caddy logs: `docker compose logs caddy`
 - If using sslip.io, make sure `SITE_URL` is exactly `<ip>.sslip.io` (no protocol prefix, no path)
+
+**Child-app subdomain returns "no such host" / cert error**
+- Verify wildcard DNS: `dig <random>.apps.your-domain.com` should return your VPS IP.
+- Check Caddy logs: `docker compose logs caddy | grep cert-ask` to see whether `/internal/cert-ask` is being called.
+- If you don't want subdomain isolation, set `CHILD_APPS_SAME_ORIGIN=true` and rebuild.
 
 **Portal returns 500 on the dashboard, logs show WeasyPrint import error**
 - Pango/Cairo libs missing from the container — open an issue; we ship them by default

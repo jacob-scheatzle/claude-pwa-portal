@@ -1,3 +1,15 @@
+# Global options. ``on_demand_tls.ask`` tells Caddy to consult the portal
+# before issuing a certificate for any host matched by an ``on_demand`` block
+# below. Without this guardrail, an attacker could send requests for
+# ``<random>.apps.<SITE_URL>`` and burn through Let's Encrypt's per-week
+# certificate quota. The portal answers 200 only for real, enabled app slugs
+# (and for the portal hostname itself, defensively).
+{
+	on_demand_tls {
+		ask http://portal:8000/api/v1/internal/cert-ask
+	}
+}
+
 {$SITE_URL:localhost} {
 	reverse_proxy portal:8000
 
@@ -20,9 +32,39 @@
 		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
 	}
 
-	# Child apps shipped under /apps/<slug>/ are written with Claude and rely on
-	# inline scripts/styles. 'unsafe-inline' + 'unsafe-eval' are intentional;
-	# frame-ancestors 'none' blocks a malicious child from iframing the portal shell.
+	# Child apps shipped under /apps/<slug>/ (legacy same-origin mode) are written
+	# with Claude and rely on inline scripts/styles. 'unsafe-inline' +
+	# 'unsafe-eval' are intentional; frame-ancestors 'none' blocks a malicious
+	# child from iframing the portal shell. In the new per-app-origin mode the
+	# wildcard block below takes over CSP duties for child apps.
 	@apps path /apps/*
 	header @apps Content-Security-Policy "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+}
+
+# Per-app subdomains. Each child app gets its own browser origin so the
+# same-origin policy enforces isolation between apps and between an app and the
+# portal shell. ``tls { on_demand }`` makes Caddy fetch a Let's Encrypt
+# certificate on the first hit for a previously-unseen subdomain (HTTP-01
+# challenge; no DNS-provider credentials required). The global
+# ``on_demand_tls.ask`` hook above ensures we only request certs for hostnames
+# the portal recognizes as real apps.
+*.apps.{$SITE_URL} {
+	reverse_proxy portal:8000
+
+	encode zstd gzip
+
+	tls {
+		on_demand
+	}
+
+	header {
+		# Strict CSP for child apps. The ``unsafe-inline`` / ``unsafe-eval`` /
+		# ``data:`` / ``blob:`` allowances mirror the legacy /apps/* CSP — child
+		# apps regularly ship inline scripts/styles, data: images, etc. Real
+		# isolation now comes from the origin, not from CSP. ``frame-ancestors``
+		# restricts embedding to the portal shell so nobody else can iframe a
+		# child app and ride its session.
+		Content-Security-Policy "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; frame-ancestors https://{$SITE_URL}; base-uri 'self'; form-action 'self'"
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+	}
 }
