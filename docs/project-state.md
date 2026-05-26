@@ -9,9 +9,9 @@ project up on a different machine or after a break.
 ## TL;DR
 
 - **Where we are:** all 9 original build milestones shipped, plus a full
-  code review, a security review, two parallel fix sweeps, and 3 of the
-  4 "before initial testing" follow-ups. The 4th (per-app origin
-  isolation) is designed but not implemented.
+  code review, a security review, two parallel fix sweeps, and all 4
+  "before initial testing" follow-ups including per-app origin isolation
+  (implemented across 5 phases + a final default flip).
 - **The repo is live on GitHub** at
   `https://github.com/jacob-scheatzle/claude-pwa-portal` (private).
   Main branch is `main`.
@@ -104,7 +104,7 @@ rotate across the login boundary.
 | 1 | Server-side session table | ✅ Shipped | commit `97cec37`, `portal/sessions.py`, `portal/models.py:UserSession` |
 | 2 | CSRF on JSON-body `/api/v1/*` | ✅ Shipped | commit `97cec37`, new `GET /api/v1/csrf-token`, SDK auto-fetches + retries |
 | 3 | Alembic migrations | ✅ Shipped | commit `108b7ea`, initial revision `7d3122820cf2_initial_schema`, `portal/db.py:init_db()` auto-stamps pre-Alembic DBs |
-| 4 | Separate origin per child app | 📋 Designed, not implemented | commit `4792f83`, full spec in [per-app-origin-design.md](per-app-origin-design.md), 5-phase rollout |
+| 4 | Separate origin per child app | ✅ Shipped | commits `7930fec` (backend) → `73d38fc` (Caddy + cert-ask) → `a06f455` (iframe wrapper) → `a47d22b` (SDK + subdomain auth) + the default flip; spec at [per-app-origin-design.md](per-app-origin-design.md) |
 
 ---
 
@@ -117,9 +117,7 @@ rotate across the login boundary.
    docker compose. The image build + Caddy auto-TLS on a real domain
    hasn't been exercised. Likely to surface: pango/Caddy/Caddyfile
    interactions you can't see without HTTPS + a real DNS name.
-3. **Item 4 implementation.** Spec is locked, phasing is documented;
-   when you're ready, the design doc is the brief.
-4. **First schema-change ship.** Now that Alembic is in, the next
+3. **First schema-change ship.** Now that Alembic is in, the next
    time you add a column to a model, the workflow is
    `alembic revision --autogenerate -m "..."` then commit + deploy.
    `portal/db.py:init_db()` runs `upgrade head` on container boot.
@@ -189,7 +187,7 @@ python3 ~/.claude/skills/pwa-portal-app/scripts/configure.py  # interactive; sav
 | [deploying.md](deploying.md) | Production deploy on a real VPS, SMTP setup, hardening checklist |
 | [app-authoring.md](app-authoring.md) | Manually writing a child app (no Claude) — schema, SDK, packaging |
 | [api-reference.md](api-reference.md) | HTTP API + SDK reference for child apps |
-| [per-app-origin-design.md](per-app-origin-design.md) | Spec for item 4 (separate origin per child app) — read before implementing |
+| [per-app-origin-design.md](per-app-origin-design.md) | Spec + rollout history for the per-app subdomain model — read before touching launch / exchange / Host dispatch |
 | [../claude-skill/pwa-portal-app/SKILL.md](../claude-skill/pwa-portal-app/SKILL.md) | What Claude knows when invoking the skill |
 
 ---
@@ -202,11 +200,13 @@ they're arbitrary HTML/JS served at portal-controlled URLs. Two auth
 modes: same-origin session cookie (UI + child apps), and
 `Authorization: Bearer <token>` (Claude skill + automation). The biggest
 remaining structural risk is that uploaded apps currently run
-**same-origin** with the portal, so a malicious app can read the portal
-session and forge admin calls. Item 4 in the deferred queue (per-app
-subdomain) is the architectural fix; today, the defense is "the admin
-trusts what they upload." For solo testing this is fine; before
-inviting a second admin, item 4 should ship.
+isolated on their own **subdomain** (`<slug>.apps.<SITE_URL>`) by default,
+so the browser's same-origin policy stops a malicious uploaded app from
+reading the portal's session or other apps' data. Self-hosters who can't
+configure wildcard DNS can opt back into same-origin mode via
+`CHILD_APPS_SAME_ORIGIN=true` (admins see a banner). For deployments
+where you control the admins but not necessarily every uploaded app,
+the new default is what you want.
 
 ---
 
@@ -219,7 +219,7 @@ inviting a second admin, item 4 should ship.
 5. **DNS** points at the VPS; ports 80/443 are open.
 6. **SMTP** configured via the admin UI (Settings) after first-run; click "Send test email" to confirm before depending on it.
 7. **`data/` is backed up** (rsync, restic, whatever) since it contains the DB + every uploaded app + every user's per-app storage.
-8. **The first real test app** is one *you* uploaded, not from a third party. Item 4 isn't shipped yet.
+8. **Wildcard DNS** is set up: `*.apps.<your-domain>` → VPS IP. Without it, Caddy can't serve child apps on subdomains; the deploy will work for everything except `/apps/<slug>/` page loads. If you can't add the wildcard, set `CHILD_APPS_SAME_ORIGIN=true` and accept the security trade-off.
 
 ---
 

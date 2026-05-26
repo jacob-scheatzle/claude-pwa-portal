@@ -24,7 +24,12 @@ class Settings(BaseSettings):
     # with their own isolated AppSession cookie — see
     # docs/per-app-origin-design.md. Requires a wildcard DNS A record at
     # ``*.apps.<SITE_URL>`` pointing at this VPS when False.
-    child_apps_same_origin: Optional[bool] = True
+    # Default = False: each child app runs on its own subdomain
+    # (<slug>.apps.<SITE_URL>) for browser-origin isolation. Set to True only
+    # if you can't or don't want to configure wildcard DNS — the portal falls
+    # back to serving apps at <SITE_URL>/apps/<slug>/ (same origin as the
+    # portal shell, less safe; admins see a warning banner).
+    child_apps_same_origin: Optional[bool] = False
 
     # SMTP (read here in step 5; admin UI will override in step 6)
     smtp_host: Optional[str] = None

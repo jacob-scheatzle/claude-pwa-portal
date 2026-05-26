@@ -51,7 +51,7 @@ docs/                 deploying, app-authoring, api-reference, project-state, pe
 
 4. **`request.state.auth_method`** is set to `"cookie"` or `"token"` (or unset for unauthenticated) by `current_user_or_token`. Any code that needs to differentiate (CSRF rules, slug resolution, etc.) reads this — **never inspect the `Authorization` header directly.** Doing so caused a critical bearer-spoof bypass we already fixed; don't reintroduce.
 
-5. **Storage / email / PDF endpoints are same-origin trusted today.** Child apps run same-origin with the portal at `/apps/<slug>/`. A malicious uploaded app can read portal cookies and forge admin calls. The architectural fix is documented in [docs/per-app-origin-design.md](docs/per-app-origin-design.md); until shipped, the trust model is "admin only uploads what they wrote or trust."
+5. **Child apps run on per-app subdomains by default.** `<slug>.apps.<SITE_URL>` — different browser origin per app, isolated cookies, no shared access to the portal's session. The `/apps/<slug>/` portal-origin URL renders an iframe wrapper that loads the subdomain. Legacy same-origin mode is available via `CHILD_APPS_SAME_ORIGIN=true` for self-hosters without wildcard DNS — admins see a warning banner. Full design + rollout history in [docs/per-app-origin-design.md](docs/per-app-origin-design.md).
 
 6. **SMTP password is Fernet-encrypted in DB.** Use `settings_store.set_secret(db, key, value)` to save it, `get_secret` to read. Plain `set_setting` for SMTP password writes plaintext — a footgun we already hit once.
 
@@ -165,7 +165,10 @@ Before committing:
 
 ## Status pointer
 
-All review items 1–3 from the "before initial testing" list are shipped.
-Item 4 (per-app origin) is designed but not implemented — see
-[docs/per-app-origin-design.md](docs/per-app-origin-design.md) for the spec
-and 5-phase rollout. Don't start item 4 without re-reading that doc.
+All four "before initial testing" items are shipped, including the per-app
+origin work (commits `7930fec` → `a47d22b`, plus a final default flip). The
+default is now per-app subdomain isolation; legacy same-origin remains as
+an opt-out via `CHILD_APPS_SAME_ORIGIN=true`. See
+[docs/per-app-origin-design.md](docs/per-app-origin-design.md) for the
+architectural context if you're touching the launch / exchange / Host
+dispatch code paths.
