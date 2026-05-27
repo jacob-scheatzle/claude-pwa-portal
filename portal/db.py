@@ -55,12 +55,14 @@ def init_db() -> None:
     # Wrapped in a broad try so a transient DB hiccup during this cleanup
     # can never block app startup.
     try:
+        from portal.audit import prune as prune_audit_log
         from portal.health import prune_logs
         from portal.sessions import purge_expired_launch_tokens
 
         with Session(engine) as db:
             purge_expired_launch_tokens(db)
             prune_logs(db)
+            prune_audit_log(db)
     except Exception:
         pass
 

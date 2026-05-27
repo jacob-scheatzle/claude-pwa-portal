@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}Audit log — Portal admin{% endblock %}
+{% block container_class %}wide{% endblock %}
+{% block content %}
+<h1>Audit log</h1>
+<p class="hint">
+	Append-only record of every state-changing action and every login attempt.
+	Pruned to the most recent {{ events|length }} rows shown; the table itself
+	is capped at 5000 rows by an opportunistic cleanup on each restart.
+	Useful for "what did the contractor admin actually do?" after the fact.
+</p>
+
+{% if events %}
+<table class="apps">
+	<thead>
+		<tr>
+			<th>When</th>
+			<th>Who</th>
+			<th>Action</th>
+			<th>Target</th>
+			<th>IP</th>
+			<th>Details</th>
+		</tr>
+	</thead>
+	<tbody>
+		{% for e in events %}
+		<tr>
+			<td data-label="When"><code>{{ e.at.strftime('%Y-%m-%d %H:%M:%S') }}Z</code></td>
+			<td data-label="Who">
+				{% if e.actor_email %}
+					{{ e.actor_email }}
+				{% else %}
+					<span class="muted">—</span>
+				{% endif %}
+			</td>
+			<td data-label="Action"><code>{{ e.action }}</code></td>
+			<td data-label="Target">
+				{% if e.target %}<code>{{ e.target }}</code>{% else %}<span class="muted">—</span>{% endif %}
+			</td>
+			<td data-label="IP">
+				{% if e.ip %}<code>{{ e.ip }}</code>{% else %}<span class="muted">—</span>{% endif %}
+			</td>
+			<td data-label="Details">
+				{% if e.details %}
+				<details>
+					<summary class="action-chip">Show</summary>
+					<div class="action-chip-panel">
+						<pre style="margin:0; white-space:pre-wrap; word-break:break-word;">{{ e.details|tojson(indent=2) }}</pre>
+					</div>
+				</details>
+				{% else %}
+				<span class="muted">—</span>
+				{% endif %}
+			</td>
+		</tr>
+		{% endfor %}
+	</tbody>
+</table>
+{% else %}
+<div class="empty">
+	<h2>No audit events yet</h2>
+	<p>The log starts populating as soon as anyone logs in or makes a state-changing admin call.</p>
+</div>
+{% endif %}
+{% endblock %}

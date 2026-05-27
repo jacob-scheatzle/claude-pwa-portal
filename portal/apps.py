@@ -24,6 +24,7 @@ from portal.access import (
     grant_default_access_for_new_app,
     user_can_access_app,
 )
+from portal.audit import record_event
 from portal.config import settings
 from portal.db import get_db
 from portal.deps import (
@@ -531,6 +532,11 @@ async def admin_apps_upload(
             request, "admin_apps_upload.html",
             user=admin, error=str(e), status_code=400,
         )
+    record_event(
+        db, actor=admin, action="app.upload", request=request,
+        target=f"app:{result.slug}",
+        details={"name": result.name, "version": result.version},
+    )
     flash(request, f"Uploaded ‘{result.name}’ (slug: {result.slug})")
     return RedirectResponse("/admin/apps", status_code=303)
 
@@ -557,6 +563,11 @@ async def admin_apps_replace(
             request, "admin_apps_upload.html",
             user=admin, error=str(e), status_code=400,
         )
+    record_event(
+        db, actor=admin, action="app.replace", request=request,
+        target=f"app:{result.slug}",
+        details={"name": result.name, "version": result.version, "via": "admin_ui"},
+    )
     flash(request, f"Replaced ‘{result.name}’ (slug: {result.slug})")
     return RedirectResponse("/admin/apps", status_code=303)
 
@@ -587,6 +598,11 @@ async def api_apps_replace(
         )
     except UploadError as e:
         raise HTTPException(400, str(e))
+    record_event(
+        db, actor=user, action="app.replace", request=request,
+        target=f"app:{result.slug}",
+        details={"name": result.name, "version": result.version, "via": "api"},
+    )
     return {
         "slug": result.slug,
         "name": result.name,
@@ -664,6 +680,11 @@ def admin_apps_network_update(
     app_row.allowed_origins = new_allowed
     db.add(app_row)
     db.commit()
+    record_event(
+        db, actor=admin, action="app.network.update", request=request,
+        target=f"app:{app_row.slug}",
+        details={"allowed": new_allowed},
+    )
     flash(request, f"Network access updated for {app_row.name}.")
     return RedirectResponse("/admin/apps", status_code=303)
 
@@ -703,6 +724,11 @@ def admin_apps_services_update(
     app_row.allowed_services = final
     db.add(app_row)
     db.commit()
+    record_event(
+        db, actor=admin, action="app.services.update", request=request,
+        target=f"app:{app_row.slug}",
+        details={"allowed_services": final},
+    )
     flash(request, f"Service access updated for {app_row.name}.")
     return RedirectResponse("/admin/apps", status_code=303)
 
@@ -747,6 +773,11 @@ def admin_apps_move(
         app.display_order = (i + 1) * 10
         db.add(app)
     db.commit()
+    record_event(
+        db, actor=admin, action="app.move", request=request,
+        target=f"app:{slug}",
+        details={"direction": direction},
+    )
     return RedirectResponse("/admin/apps", status_code=303)
 
 
@@ -766,6 +797,11 @@ def admin_apps_toggle(
     db.add(app_row)
     db.commit()
     state = "enabled" if app_row.enabled else "disabled"
+    record_event(
+        db, actor=admin, action="app.toggle", request=request,
+        target=f"app:{app_row.slug}",
+        details={"enabled": bool(app_row.enabled)},
+    )
     flash(request, f"{app_row.name} {state}")
     return RedirectResponse("/admin/apps", status_code=303)
 
@@ -794,10 +830,16 @@ def admin_apps_delete(
         shutil.rmtree(dest, ignore_errors=True)
 
     name = app_row.name
+    slug_for_audit = app_row.slug
     if app_row.id is not None:
         delete_access_for_app(db, app_row.id)
     db.delete(app_row)
     db.commit()
+    record_event(
+        db, actor=admin, action="app.delete", request=request,
+        target=f"app:{slug_for_audit}",
+        details={"name": name},
+    )
     flash(request, f"Deleted {name}")
     return RedirectResponse("/admin/apps", status_code=303)
 

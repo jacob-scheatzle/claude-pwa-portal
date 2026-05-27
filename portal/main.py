@@ -15,6 +15,7 @@ from portal import admin as admin_module
 from portal import api as api_module
 from portal import apps as apps_module
 from portal.access import accessible_app_ids_for
+from portal.audit import record_anonymous, record_event
 from portal.config import settings
 from portal.db import engine, get_db, init_db
 from portal.deps import current_user, require_user
@@ -67,7 +68,20 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="PWA Portal", lifespan=lifespan)
+# FastAPI's auto-generated docs (``/docs`` and ``/redoc``) and the
+# OpenAPI schema (``/openapi.json``) are turned off in production: this is a
+# self-hosted single-tenant portal, the API is documented for app authors in
+# ``docs/api-reference.md``, and the live endpoints aren't a public API
+# surface we want to advertise to scanners. Leaving them on after the first
+# real-VPS deploy showed scanners hitting /docs and /openapi.json within
+# minutes of TLS coming up.
+app = FastAPI(
+    title="PWA Portal",
+    lifespan=lifespan,
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+)
 app.add_middleware(
     SessionMiddleware,
     secret_key=settings.secret_key,
@@ -312,6 +326,10 @@ def setup_submit(
     # create_session needs user.id, which only exists after the commit above.
     sid = create_session(db, user)
     request.session["session_id"] = sid
+    record_event(
+        db, actor=user, action="setup.complete", request=request,
+        target=f"user:{user.email}",
+    )
     return RedirectResponse("/", status_code=303)
 
 
@@ -350,6 +368,11 @@ def login_submit(
         record_login_attempt(
             db, ip=client_ip, email=email, success=False, reason="rate_limited",
         )
+        record_anonymous(
+            db, action="login.failure", request=request,
+            target=f"email:{email.strip().lower()}", actor_email=email,
+            details={"reason": "rate_limited"},
+        )
         return render(
             request, "login.html",
             error="Too many failed attempts. Try again in a few minutes.",
@@ -363,6 +386,11 @@ def login_submit(
         record_login_attempt(
             db, ip=client_ip, email=email, success=False, reason="bad_credentials",
         )
+        record_anonymous(
+            db, action="login.failure", request=request,
+            target=f"email:{normalized}", actor_email=email,
+            details={"reason": "bad_credentials"},
+        )
         return render(
             request, "login.html",
             error="Invalid email or password.", email=email, next=_safe_next(next),
@@ -371,6 +399,10 @@ def login_submit(
     _clear_login_failures(key)
     record_login_attempt(
         db, ip=client_ip, email=email, success=True, reason="ok",
+    )
+    record_event(
+        db, actor=user, action="login.success", request=request,
+        target=f"user:{user.email}",
     )
     # Rotate the session on login to defeat session fixation: a pre-planted
     # session id (MITM before TLS terminated, leaked link, etc.) must not
@@ -397,10 +429,16 @@ def logout(
     # the revocation to every open child-app session for the same user.
     from portal.sessions import get_active_session
     session_row = get_active_session(db, sid)
+    actor: Optional[User] = None
     if session_row is not None:
+        actor = db.get(User, session_row.user_id)
         revoke_all_app_sessions_for_user(db, session_row.user_id)
     revoke_session(db, sid)
     request.session.clear()
+    record_event(
+        db, actor=actor, action="login.logout", request=request,
+        target=f"user:{actor.email}" if actor else "",
+    )
     return RedirectResponse("/login", status_code=303)
 
 
@@ -448,6 +486,10 @@ def profile_change_password(
     new_sid = create_session(db, user)
     request.session.clear()
     request.session["session_id"] = new_sid
+    record_event(
+        db, actor=user, action="profile.password.change", request=request,
+        target=f"user:{user.email}",
+    )
     flash(request, "Password updated.")
     return RedirectResponse("/profile", status_code=303)
 

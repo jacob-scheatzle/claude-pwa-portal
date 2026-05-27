@@ -29,6 +29,7 @@ from portal.access import (
     replace_user_app_access,
     set_default_access,
 )
+from portal.audit import record_event, recent_events
 from portal.branding import (
     ALLOWED_LOGO_TYPES,
     DEFAULT_ACCENT_COLOR,
@@ -229,6 +230,23 @@ async def settings_save(
                 set_setting(db, "branding_logo_path", stored)
 
     db.commit()
+    # Capture the high-signal subset of what changed in details — full diffs
+    # would be too noisy for the audit table given how many settings ride
+    # this single endpoint. The interesting forensic question is "was SMTP
+    # reconfigured / branding swapped / default access flipped" rather than
+    # "what was every byte of every form field".
+    record_event(
+        db, actor=admin, action="settings.save", request=request,
+        target="settings",
+        details={
+            "smtp_host_set": bool(smtp_host.strip()),
+            "smtp_password_changed": bool(smtp_password),
+            "branding_name_set": bool(business_name),
+            "branding_accent_set": bool(accent),
+            "branding_logo_cleared": branding_logo_clear == "on",
+            "default_user_app_access": default_user_app_access,
+        },
+    )
     flash(request, "Settings saved.")
     return RedirectResponse("/admin/settings", status_code=303)
 
@@ -259,9 +277,19 @@ def settings_smtp_test(
         send_message(msg, cfg)
     except Exception as e:
         record_smtp_test(db, success=False, error=str(e))
+        record_event(
+            db, actor=admin, action="settings.smtp.test", request=request,
+            target="settings",
+            details={"success": False, "error": str(e)[:200]},
+        )
         flash(request, f"SMTP test failed: {e}", level="error")
         return RedirectResponse("/admin/settings", status_code=303)
     record_smtp_test(db, success=True)
+    record_event(
+        db, actor=admin, action="settings.smtp.test", request=request,
+        target="settings",
+        details={"success": True, "recipient": admin.email},
+    )
     flash(request, f"Test email sent to {admin.email}.")
     return RedirectResponse("/admin/settings", status_code=303)
 
@@ -298,6 +326,11 @@ def tokens_create(
         name=name, token_hash=token_hash, prefix=raw[:8], created_by=admin.id,
     ))
     db.commit()
+    record_event(
+        db, actor=admin, action="token.create", request=request,
+        target=f"token:{name}",
+        details={"prefix": raw[:8]},
+    )
     # Render directly so the raw token survives only this response — no session round-trip.
     tokens = db.exec(select(ApiToken).order_by(ApiToken.created_at.desc())).all()
     return render(
@@ -318,8 +351,14 @@ def tokens_delete(
     if token is None:
         raise HTTPException(404)
     name = token.name
+    prefix = token.prefix
     db.delete(token)
     db.commit()
+    record_event(
+        db, actor=admin, action="token.revoke", request=request,
+        target=f"token:{name}",
+        details={"prefix": prefix},
+    )
     flash(request, f"Token '{name}' revoked.")
     return RedirectResponse("/admin/tokens", status_code=303)
 
@@ -372,6 +411,11 @@ def users_create(
     db.flush()
     grant_default_access_for_new_user(db, new_user)
     db.commit()
+    record_event(
+        db, actor=admin, action="user.create", request=request,
+        target=f"user:{validated_email}",
+        details={"role": role},
+    )
     flash(request, f"Created {validated_email} ({role}).")
     return RedirectResponse("/admin/users", status_code=303)
 
@@ -393,9 +437,15 @@ def users_set_role(
     if target.role == "admin" and role == "user" and _count_admins(db) <= 1:
         flash(request, "Can't demote the last admin.", level="error")
         return RedirectResponse("/admin/users", status_code=303)
+    old_role = target.role
     target.role = role
     db.add(target)
     db.commit()
+    record_event(
+        db, actor=admin, action="user.role.change", request=request,
+        target=f"user:{target.email}",
+        details={"from": old_role, "to": role},
+    )
     flash(request, f"{target.email} role set to {role}.")
     return RedirectResponse("/admin/users", status_code=303)
 
@@ -418,6 +468,10 @@ def users_reset_password(
     target.password_hash = hash_password(password)
     db.add(target)
     db.commit()
+    record_event(
+        db, actor=admin, action="user.reset_password", request=request,
+        target=f"user:{target.email}",
+    )
     flash(request, f"Password reset for {target.email}.")
     return RedirectResponse("/admin/users", status_code=303)
 
@@ -439,12 +493,18 @@ def users_delete(
         flash(request, "Can't delete the last admin.", level="error")
         return RedirectResponse("/admin/users", status_code=303)
     email = target.email
+    role = target.role
     # SQLite FKs are advisory here, so drop the access rows explicitly before
     # the User row goes away to keep the table consistent.
     if target.id is not None:
         delete_access_for_user(db, target.id)
     db.delete(target)
     db.commit()
+    record_event(
+        db, actor=admin, action="user.delete", request=request,
+        target=f"user:{email}",
+        details={"role": role},
+    )
     flash(request, f"Deleted {email}.")
     return RedirectResponse("/admin/users", status_code=303)
 
@@ -495,6 +555,11 @@ async def users_apps_save(
             continue
     replace_user_app_access(db, target, allowed)
     db.commit()
+    record_event(
+        db, actor=admin, action="user.apps.update", request=request,
+        target=f"user:{target.email}",
+        details={"app_ids": allowed},
+    )
     flash(request, f"Updated app access for {target.email}.")
     return RedirectResponse(f"/admin/users/{user_id}/apps", status_code=303)
 
@@ -577,6 +642,24 @@ def health_dashboard(request: Request, db: DbDep, admin: AdminDep):
     )
 
 
+# ----- Audit log -----
+
+@router.get("/admin/audit")
+def audit_log(request: Request, db: DbDep, admin: AdminDep):
+    """Forensic view of every state-changing action.
+
+    Renders the most recent 200 events newest-first. Each row shows who
+    did what, when, where from (IP), and an optional details dict. The
+    underlying table is bounded by ``portal.audit.MAX_ROWS`` so this query
+    is always cheap.
+    """
+    events = recent_events(db, limit=200)
+    return render(
+        request, "admin_audit.html",
+        user=admin, events=events,
+    )
+
+
 # ----- Public share links -----
 
 @router.get("/admin/shares")
@@ -643,6 +726,11 @@ def shares_revoke(
         flash(request, "Already revoked.")
         return RedirectResponse("/admin/shares", status_code=303)
     _revoke(db, row)
+    record_event(
+        db, actor=admin, action="share.revoke", request=request,
+        target=f"share:{row.id}",
+        details={"kind": row.kind, "app_id": row.app_id},
+    )
     flash(request, "Share link revoked.")
     return RedirectResponse("/admin/shares", status_code=303)
 
@@ -659,11 +747,19 @@ def shares_delete(
     row = db.get(_ShareLink, share_id)
     if row is None:
         raise HTTPException(404)
+    share_id_audit = row.id
+    share_kind = row.kind
+    share_app = row.app_id
     # If it's a PDF kind, remove the on-disk file as well.
     if row.kind == "pdf":
         delete_share_files([(row.payload or {}).get("path", "")])
     db.delete(row)
     db.commit()
+    record_event(
+        db, actor=admin, action="share.delete", request=request,
+        target=f"share:{share_id_audit}",
+        details={"kind": share_kind, "app_id": share_app},
+    )
     flash(request, "Share link deleted.")
     return RedirectResponse("/admin/shares", status_code=303)
 
@@ -753,6 +849,10 @@ async def backup_download(
     # doesn't block the event loop while the response is being prepared.
     backup_path, tmp_dir, filename = await anyio.to_thread.run_sync(
         _build_backup, data_dir
+    )
+    record_event(
+        db, actor=admin, action="backup.download", request=request,
+        target=f"backup:{filename}",
     )
     # The BackgroundTask runs AFTER the file is fully streamed to the client,
     # then removes the entire scratch directory (including the tarball).

@@ -191,6 +191,41 @@ class ShareLink(SQLModel, table=True):
     revoked_at: Optional[datetime] = None
 
 
+class AuditEvent(SQLModel, table=True):
+    # Append-only record of every state-changing admin action plus every
+    # login attempt. The point is forensic: if you've granted a contractor
+    # admin access briefly, this is the table that tells you *exactly* what
+    # they changed.
+    #
+    # Schema notes:
+    #   - ``actor_user_id`` is nullable so failed-login attempts (the email
+    #     may not correspond to a real user) and any future system-driven
+    #     events can have NULL here.
+    #   - ``actor_email`` is the user's email captured at event time. Cached
+    #     so the row stays readable after the user is deleted; empty string
+    #     for unauthenticated events.
+    #   - ``action`` is a dot-namespaced verb (``app.upload``,
+    #     ``user.role.change``, ``login.failure`` …). Free-form so we don't
+    #     have to migrate the table when a new handler is added.
+    #   - ``target`` is a short human-readable resource identifier
+    #     (``app:my-slug``, ``user:alice@x.com``, ``token:claude-skill``).
+    #   - ``details`` is a small JSON dict carrying the change diff or
+    #     failure reason — kept compact deliberately.
+    #
+    # Pruned by the same opportunistic cleanup in ``init_db`` as the other
+    # rolling-history tables.
+    id: Optional[int] = Field(default=None, primary_key=True)
+    at: datetime = Field(default_factory=_utcnow, index=True)
+    actor_user_id: Optional[int] = Field(
+        default=None, foreign_key="user.id", index=True,
+    )
+    actor_email: str = Field(default="")
+    action: str = Field(index=True)
+    target: str = Field(default="")
+    ip: str = Field(default="")
+    details: dict = Field(default_factory=dict, sa_column=Column(JSON))
+
+
 class UserAppAccess(SQLModel, table=True):
     # Per-user grant for a specific app. Presence of the row = user can launch
     # the app from the dashboard / API; absence = denied. Admins bypass this

@@ -72,10 +72,47 @@ def main() -> int:
         print(f"entry file '{entry}' not found in {src}", file=sys.stderr)
         return 1
 
+    # Every app must ship an icon so the dashboard tile is identifiable —
+    # an iconless app falls back to the generic portal placeholder, which
+    # makes the home screen useless once the user installs more than one.
     icon = manifest.get("icon")
-    if icon and not (src / icon).is_file():
+    if not icon:
+        print(
+            "portal.json: 'icon' is required. Set it to a relative path "
+            "(e.g. \"icon.png\") and place a 192x192 PNG / SVG / JPEG / WebP "
+            "in the app directory before packaging.",
+            file=sys.stderr,
+        )
+        return 1
+    if not (src / icon).is_file():
         print(f"icon file '{icon}' not found in {src}", file=sys.stderr)
         return 1
+    # Refuse the unmodified scaffold icon — it ships as a placeholder so
+    # ``package.py`` doesn't fail on a fresh ``cp -r templates/basic``, but
+    # an app uploaded with the default icon would be visually indistinguishable
+    # from every other freshly-scaffolded one on the dashboard. Either replace
+    # the file with one tailored to the app, or overwrite it with a generated
+    # icon (e.g. a single accent-colored letter on a tinted background).
+    placeholder_path = (
+        Path(__file__).resolve().parent.parent
+        / "templates" / "basic" / "icon.png"
+    )
+    try:
+        if placeholder_path.is_file() and (src / icon).resolve() != placeholder_path:
+            if (src / icon).read_bytes() == placeholder_path.read_bytes():
+                print(
+                    f"icon '{icon}' is the unmodified scaffold placeholder. "
+                    "Replace it with an app-specific icon before packaging "
+                    "(a 192x192 PNG with the app's initial on the portal "
+                    "accent color works well).",
+                    file=sys.stderr,
+                )
+                return 1
+    except OSError:
+        # Best-effort check — if we can't read either file for any reason,
+        # fall through and let the upload proceed. The validation isn't
+        # security-critical, just an ergonomics guard.
+        pass
 
     if len(sys.argv) >= 3:
         output = Path(sys.argv[2]).resolve()

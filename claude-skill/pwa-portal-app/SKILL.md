@@ -39,9 +39,61 @@ Every app is a folder containing:
 - `portal.json` — manifest (required, at the root of the zip)
 - `index.html` — entry page (default; override with manifest `entry`)
 - App's own CSS/JS/icons/images
-- Optional `icon.png` (referenced from `portal.json.icon`)
+- **`icon.png` (required)** — referenced from `portal.json.icon`, drives the
+  dashboard tile and the iOS home-screen icon. See "Icons" below — every app
+  you build must ship a real one, not the scaffold placeholder.
 
 When uploaded, the portal extracts to `data/apps/<slug>/` and serves the app.
+
+### Icons (required for every app)
+
+Every app MUST ship a real icon. The dashboard tile and the iOS
+"Add-to-Home-Screen" badge both pull from `portal.json.icon`; an app with
+no icon falls back to the generic portal placeholder, which makes the
+home screen useless after the user installs more than one app.
+
+The scaffold ships a placeholder at `templates/basic/icon.png`. **You must
+replace it** before packaging — `package.py` refuses to build a zip whose
+icon byte-for-byte matches the placeholder. Two ways to do it:
+
+1. **Recommended — generate one with a single accent-colored letter.**
+   Pick the app's initial (e.g. "Q" for a quote calculator, "R" for
+   receipts), generate a 192x192 PNG with that letter centered on the
+   portal's emerald accent (`#059669`) or a per-app accent of your
+   choice. Python + Pillow is the simplest path:
+   ```bash
+   python3 -c "
+   from PIL import Image, ImageDraw, ImageFont
+   im = Image.new('RGB', (192, 192), '#059669')
+   d = ImageDraw.Draw(im)
+   try:
+       f = ImageFont.truetype('/System/Library/Fonts/Helvetica.ttc', 110)
+   except OSError:
+       f = ImageFont.load_default()
+   d.text((96, 96), 'Q', fill='white', font=f, anchor='mm')
+   im.save('/path/to/<slug>/icon.png')
+   "
+   ```
+   On Linux containers without Helvetica, fall back to
+   `/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf`.
+
+2. **User supplied** — if the user attached their own PNG/SVG/JPEG/WebP,
+   save it to `<slug>/icon.png` (or update `portal.json.icon` to match
+   the actual filename). Keep it square; 192x192 PNG is the sweet spot
+   for both the dashboard tile and iOS.
+
+Rules the portal enforces:
+
+- Manifest's `icon` must be a relative path inside the bundle (no `..`,
+  no leading `/`).
+- The file must exist in the zip.
+- `package.py` rejects the unmodified scaffold placeholder.
+- Supported formats: PNG, SVG, JPEG, WebP. PNG at 192x192 renders
+  cleanest across iOS, Android, and desktop browsers.
+
+**Authoring rule**: never `package.py` an app whose icon is still the
+scaffold default. Generate or copy in a real icon as part of the build
+workflow below — not as an afterthought.
 
 ### Where the app runs
 
@@ -83,7 +135,7 @@ are identical.
 | `name` | yes | 1–60 chars, human-readable |
 | `version` | yes | freeform string up to 20 chars (semver recommended) |
 | `description` | no | up to 200 chars |
-| `icon` | no | relative path inside the bundle; recommended 192×192 PNG |
+| `icon` | **yes** | relative path inside the bundle, 192×192 PNG / SVG / JPEG / WebP. See "Icons" above — placeholder is rejected at package time. |
 | `entry` | no | defaults to `index.html`; must exist in the zip |
 | `services` | **yes if calling** | declarative list of portal services the app will use; allowed: `pdf`, `email`, `storage`. Enforced server-side — see "Services" below |
 | `permissions.network` | no | external HTTPS origins the app's `fetch()` calls need to reach — see "Network permissions" below |
@@ -314,17 +366,22 @@ Requires the corresponding service in your manifest's `services`
    ```
    Then edit `portal.json` (slug/name/version) and `index.html` (initial content).
 4. **Implement.** Edit `index.html`. Add CSS/JS inline or as separate files. Keep it minimal — non-coder users don't want elaborate code.
-5. **Package.**
+5. **Generate an icon** — REQUIRED, see the "Icons" section above. The
+   simplest move is the Pillow one-liner that paints the app's initial on
+   the portal accent color. Overwrite `<slug>/icon.png` with the result.
+   `package.py` will refuse to build a zip whose icon is still the
+   scaffold placeholder, so this step is enforced, not optional.
+6. **Package.**
    ```
    python3 ~/.claude/skills/pwa-portal-app/scripts/package.py /path/to/<slug>
    ```
    Produces `<slug>-<version>.zip` next to the source folder.
-6. **Upload.**
+7. **Upload.**
    ```
    python3 ~/.claude/skills/pwa-portal-app/scripts/upload.py /path/to/<slug>-<version>.zip
    ```
    On success prints `Uploaded <name> (slug: ..., version: ...)`.
-7. **Confirm.** Tell the user the app is live at `<portal_url>/apps/<slug>/`.
+8. **Confirm.** Tell the user the app is live at `<portal_url>/apps/<slug>/`.
 
 ## Coding conventions for child apps
 
