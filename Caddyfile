@@ -15,6 +15,18 @@
 
 	encode zstd gzip
 
+	# JSON access log on stdout. Each handled request emits one line with
+	# ``request.client_ip``, ``request.uri``, ``status`` etc., which the
+	# Docker journald log driver forwards to the host journal under tag
+	# ``pwa-portal-caddy`` (see docker-compose.yml). fail2ban filters in
+	# ``contrib/fail2ban/`` consume this stream to ban scanners hitting
+	# bait paths like ``/.env`` or ``/.git/`` before the request even
+	# reaches the portal.
+	log {
+		output stdout
+		format json
+	}
+
 	# Portal-shell headers — scoped to NON-/apps/* paths only. The
 	# ``not path /apps/*`` matcher is critical: without it, the matcher-less
 	# header block gets compiled to run AFTER the @apps matcher block,
@@ -68,6 +80,13 @@
 	reverse_proxy portal:8000
 
 	encode zstd gzip
+
+	# Per-app subdomain access log — same format as the portal-shell
+	# block above. Scanners probing for child-app paths show up here too.
+	log {
+		output stdout
+		format json
+	}
 
 	tls {
 		on_demand

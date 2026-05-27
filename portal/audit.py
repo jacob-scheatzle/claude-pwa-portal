@@ -25,15 +25,27 @@ Pruning is opportunistic at startup, like the other rolling-history
 tables. ``MAX_ROWS`` is large enough that an active small business won't
 lose a quarter's worth of history under normal use, and small enough
 that the table fits comfortably in SQLite without a separate cron.
+
+In addition to the DB row, security-relevant events (failed logins,
+rate-limited login attempts) are mirrored to a plain-text file at
+``<data_dir>/security.log`` in a fail2ban-friendly format. The DB row is
+the source of truth for human review at /admin/audit; the text log
+exists so external tooling (fail2ban, fluent-bit, vector, etc.) can tail
+a stable file path on the host without having to query SQLite.
 """
 from __future__ import annotations
 
+import logging
+import logging.handlers
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 from fastapi import Request
 from sqlalchemy import delete
 from sqlmodel import Session, select
 
+from portal.config import settings
 from portal.models import AuditEvent, User
 
 # Forensic retention target. 5000 events covers months of normal use for
@@ -41,6 +53,96 @@ from portal.models import AuditEvent, User
 # Adjust if you're operating with many more daily admins than the typical
 # SMB single-tenant deployment.
 MAX_ROWS = 5000
+
+# ----- fail2ban-friendly text log -----
+#
+# A second sink for security-relevant events. The format is deliberately
+# space-separated, single-line, no JSON, no escaping — fail2ban regexes
+# stay short and uvicorn's access-log format changing (or being replaced
+# by something else upstream) can't break the parse.
+#
+# Format:
+#
+#   <ISO8601 timestamp Z> <EVENT_NAME> ip=<addr> [key=value ...]
+#
+# Examples:
+#
+#   2026-05-27T14:35:18Z FAILED_LOGIN ip=45.88.138.44 email=admin@example.com reason=bad_credentials
+#   2026-05-27T14:36:02Z FAILED_LOGIN ip=45.88.138.44 email=admin@example.com reason=rate_limited
+#
+# A RotatingFileHandler caps the on-disk footprint at 5 × 1MB ≈ 5MB. That
+# fits comfortably alongside the SQLite DB in the bind-mounted ``data/``
+# dir; operators who want longer retention can swap in logrotate.
+_security_logger: Optional[logging.Logger] = None
+
+
+def _security_log() -> Optional[logging.Logger]:
+    """Lazily build the ``portal.security`` logger.
+
+    Returns ``None`` (and silently no-ops) if the data dir isn't writable.
+    Initialization is wrapped in a broad try so a missing path or
+    permission error can never block startup; the DB-side audit row
+    still lands either way.
+    """
+    global _security_logger
+    if _security_logger is not None:
+        return _security_logger
+    try:
+        log_path = Path(settings.data_dir) / "security.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        handler = logging.handlers.RotatingFileHandler(
+            log_path,
+            maxBytes=1_000_000,
+            backupCount=5,
+        )
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        lg = logging.getLogger("portal.security")
+        lg.setLevel(logging.INFO)
+        # Replace any existing handlers (in case this is re-entered after
+        # a reload) so we don't end up with duplicate writes.
+        for h in list(lg.handlers):
+            lg.removeHandler(h)
+        lg.addHandler(handler)
+        # Don't propagate to root — the line is for the security file
+        # only, not the regular uvicorn / stderr stream.
+        lg.propagate = False
+        _security_logger = lg
+    except Exception:
+        return None
+    return _security_logger
+
+
+def _sanitize_value(v: object) -> str:
+    """Make a value safe to drop into the ``key=value`` line."""
+    s = str(v if v is not None else "")
+    # Collapse whitespace so the line stays single-token-parseable.
+    s = s.replace("\n", " ").replace("\r", " ").strip()
+    s = "_".join(s.split())
+    return s[:120]
+
+
+def emit_security_line(event: str, ip: str, **fields: object) -> None:
+    """Append one line to ``data/security.log``. Best-effort — never raises.
+
+    ``event`` should be a short UPPERCASE token (FAILED_LOGIN,
+    LOGIN_RATE_LIMITED) so fail2ban filters can anchor on it. ``ip``
+    becomes the ``ip=<addr>`` field; ``-`` is rendered when empty so the
+    field is always present and the regex stays simple. Remaining kwargs
+    are appended as ``key=value`` pairs in insertion order.
+    """
+    lg = _security_log()
+    if lg is None:
+        return
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    parts = [ts, (event or "")[:40], f"ip={(ip or '-')[:64]}"]
+    for k, v in fields.items():
+        val = _sanitize_value(v)
+        if val:
+            parts.append(f"{k}={val}")
+    try:
+        lg.info(" ".join(parts))
+    except Exception:
+        pass
 
 
 def _client_ip(request: Optional[Request]) -> str:

@@ -15,7 +15,7 @@ from portal import admin as admin_module
 from portal import api as api_module
 from portal import apps as apps_module
 from portal.access import accessible_app_ids_for
-from portal.audit import record_anonymous, record_event
+from portal.audit import emit_security_line, record_anonymous, record_event
 from portal.config import settings
 from portal.db import engine, get_db, init_db
 from portal.deps import current_user, require_user
@@ -373,6 +373,10 @@ def login_submit(
             target=f"email:{email.strip().lower()}", actor_email=email,
             details={"reason": "rate_limited"},
         )
+        emit_security_line(
+            "LOGIN_RATE_LIMITED", client_ip,
+            email=email.strip().lower(), reason="rate_limited",
+        )
         return render(
             request, "login.html",
             error="Too many failed attempts. Try again in a few minutes.",
@@ -390,6 +394,10 @@ def login_submit(
             db, action="login.failure", request=request,
             target=f"email:{normalized}", actor_email=email,
             details={"reason": "bad_credentials"},
+        )
+        emit_security_line(
+            "FAILED_LOGIN", client_ip,
+            email=normalized, reason="bad_credentials",
         )
         return render(
             request, "login.html",

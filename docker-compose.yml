@@ -32,6 +32,16 @@ services:
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     tmpfs: [/tmp]
+    # Tag the container's stdout/stderr with a stable journald identifier so
+    # host-side tooling (``journalctl -t pwa-portal``, fail2ban for ad-hoc
+    # log inspection) reads a predictable stream. The actual fail2ban ban
+    # signal lives in ``./data/security.log`` — a focused, fail2ban-friendly
+    # text log written by ``portal/audit.py`` — so journald is informational
+    # here. See ``docs/fail2ban.md``.
+    logging:
+      driver: journald
+      options:
+        tag: pwa-portal
     restart: unless-stopped
 
   caddy:
@@ -51,6 +61,14 @@ services:
     cap_drop: [ALL]
     cap_add: [NET_BIND_SERVICE]
     security_opt: [no-new-privileges:true]
+    # journald tag for Caddy's JSON access log (emitted to stdout from the
+    # Caddyfile ``log`` directive). fail2ban's pwa-portal-caddy filter reads
+    # ``SYSLOG_IDENTIFIER=pwa-portal-caddy`` to ban scanners at the proxy
+    # layer before requests even reach uvicorn. See ``docs/fail2ban.md``.
+    logging:
+      driver: journald
+      options:
+        tag: pwa-portal-caddy
     depends_on:
       - portal
     restart: unless-stopped

@@ -29,6 +29,14 @@ http://{$SITE_URL:localhost} {
 
 	encode zstd gzip
 
+	# JSON access log on stdout, same as the default Caddyfile. Forwarded
+	# to journald by Docker's journald log driver (see docker-compose.yml)
+	# so fail2ban can read it via SYSLOG_IDENTIFIER=pwa-portal-caddy.
+	log {
+		output stdout
+		format json
+	}
+
 	# Portal-shell headers — scoped to NON-/apps/* paths only. See the
 	# default Caddyfile for the matcher-ordering rationale; without this
 	# matcher, the matcher-less header block runs AFTER the @apps block
@@ -66,6 +74,11 @@ http://*.apps.{$SITE_URL} {
 	reverse_proxy portal:8000
 
 	encode zstd gzip
+
+	log {
+		output stdout
+		format json
+	}
 
 	header {
 		# Per-app Content-Security-Policy is set by the portal's

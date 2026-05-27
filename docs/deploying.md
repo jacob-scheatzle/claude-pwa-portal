@@ -220,6 +220,25 @@ On iOS Safari: open the portal URL → tap **Share** → **Add to Home Screen** 
 
 On Chrome desktop, look for the "install app" affordance in the address bar.
 
+## Optional: fail2ban
+
+Once the portal is publicly reachable, brute-force login attempts and
+scanner traffic start within minutes. The repo ships drop-in
+[`fail2ban`](https://www.fail2ban.org/) configs that ban offenders at
+the host firewall — see [fail2ban.md](fail2ban.md) for the full walkthrough.
+
+Two layers, both safe to enable:
+
+- **Portal login jail** — reads `./data/security.log` (the focused
+  fail2ban-friendly text log written by `portal/audit.py`); bans IPs
+  after 5 failed `/login` POSTs in 10 minutes.
+- **Caddy scanner jail** — reads Caddy's JSON access log from journald;
+  bans IPs probing for `/.env`, `/.git/`, `/wp-admin/`, etc.
+
+The portal log is the high-value one (it's the only thing standing
+between an attacker and an admin account); the Caddy layer is easy
+hygiene that keeps scanner garbage out of your logs.
+
 ## Backups
 
 All persistent state is in the `./data/` directory:
