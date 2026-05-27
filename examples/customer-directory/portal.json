@@ -1,0 +1,13 @@
+{
+	"slug": "customer-directory",
+	"name": "Customer Directory",
+	"version": "1.0.0",
+	"description": "Lightweight CRM: track customers, tag them, and send quick emails.",
+	"icon": "icon.png",
+	"entry": "index.html",
+	"services": ["storage", "email"],
+	"permissions": {
+		"network": []
+	},
+	"min_portal_version": "0.1.0"
+}

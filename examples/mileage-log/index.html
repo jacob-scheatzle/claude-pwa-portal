@@ -1,0 +1,365 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Mileage Log</title>
+<script src="/portal-sdk.js"></script>
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #fafaf9; --surface: #ffffff; --surface-2: #f5f5f4;
+  --border: #e7e5e4; --border-strong: #d6d3d1;
+  --text: #1c1917; --text-muted: #57534e; --text-faint: #78716c;
+  --accent: #059669; --accent-hover: #047857; --accent-fg: #ffffff;
+  --accent-tint: #ecfdf5; --accent-soft: rgba(5,150,105,0.12);
+  --danger: #b91c1c; --success: #15803d;
+  --radius-sm: 0.4rem; --radius: 0.55rem;
+  --shadow-sm: 0 1px 2px rgba(15,23,42,0.05), 0 1px 1px rgba(15,23,42,0.025);
+  --shadow: 0 2px 4px rgba(15,23,42,0.06), 0 1px 2px rgba(15,23,42,0.04);
+  --font-sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0c0a09; --surface: #1c1917; --surface-2: #292524;
+    --border: #292524; --border-strong: #44403c;
+    --text: #fafaf9; --text-muted: #a8a29e;
+    --accent: #10b981; --accent-hover: #34d399; --accent-fg: #0c0a09;
+    --accent-tint: #064e3b; --accent-soft: rgba(16,185,129,0.18);
+    --danger: #f87171; --success: #4ade80;
+  }
+}
+* { box-sizing: border-box; }
+body { font-family: var(--font-sans); background: var(--bg); color: var(--text); margin: 0; line-height: 1.55; -webkit-font-smoothing: antialiased; }
+.shell { max-width: 52rem; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
+h1 { margin: 0 0 0.25rem; font-size: 1.65rem; font-weight: 700; letter-spacing: -0.025em; }
+h2 { margin: 2rem 0 0.75rem; font-size: 1.1rem; font-weight: 600; letter-spacing: -0.01em; }
+.muted { color: var(--text-muted); font-size: 0.9rem; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.25rem; box-shadow: var(--shadow-sm); margin-top: 1rem; }
+.grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.75rem; }
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
+@media (max-width: 700px) { .grid-3, .grid-2 { grid-template-columns: 1fr; } }
+label { font-weight: 600; font-size: 0.8rem; display: block; margin-bottom: 0.3rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+input, textarea, select {
+  width: 100%; padding: 0.6rem 0.8rem;
+  border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  background: var(--surface); color: var(--text); font-size: 0.95rem; font-family: inherit;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+input:focus, textarea:focus, select:focus { outline: 0; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+button {
+  display: inline-flex; align-items: center; justify-content: center; gap: 0.4rem;
+  padding: 0.6rem 1.05rem; border: 0; border-radius: var(--radius-sm);
+  background: var(--accent); color: var(--accent-fg);
+  font-weight: 600; font-size: 0.925rem; font-family: inherit; cursor: pointer;
+  box-shadow: var(--shadow-sm); transition: background 0.12s ease, box-shadow 0.12s ease, transform 0.06s ease;
+}
+button:hover { background: var(--accent-hover); box-shadow: var(--shadow); }
+button:active { transform: translateY(1px); box-shadow: none; }
+button.secondary { background: var(--surface); color: var(--accent); border: 1px solid var(--border-strong); box-shadow: none; }
+button.secondary:hover { background: var(--accent-tint); border-color: var(--accent); }
+button.ghost { background: transparent; color: var(--text-muted); border: 0; box-shadow: none; padding: 0.35rem 0.6rem; font-size: 0.85rem; }
+button.ghost:hover { background: var(--surface-2); color: var(--text); }
+.actions { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-top: 1rem; align-items: center; }
+.status { font-size: 0.875rem; color: var(--text-muted); min-height: 1.2em; margin-top: 0.75rem; }
+.status.error { color: var(--danger); }
+.status.success { color: var(--success); }
+.summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr)); gap: 0.6rem; margin-top: 0.5rem; }
+.summary .tile { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 0.7rem 0.85rem; }
+.summary .tile .lbl { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); font-weight: 600; }
+.summary .tile .val { font-size: 1.15rem; font-weight: 700; font-variant-numeric: tabular-nums; margin-top: 0.15rem; }
+.summary .tile.total { background: var(--accent-tint); border-color: var(--accent); }
+table.list { width: 100%; border-collapse: collapse; margin-top: 0.5rem; }
+table.list th { text-align: left; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); font-weight: 600; padding: 0.45rem 0.5rem; border-bottom: 1px solid var(--border); }
+table.list td { padding: 0.55rem 0.5rem; border-bottom: 1px solid var(--border); font-size: 0.92rem; }
+table.list td.num { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+table.list tr:hover td { background: var(--surface-2); }
+.empty { color: var(--text-faint); font-style: italic; font-size: 0.9rem; padding: 1rem 0; text-align: center; }
+.filters { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: end; margin-bottom: 0.75rem; }
+.filters > div { flex: 1 1 8rem; }
+.rate-note { padding: 0.75rem 0.9rem; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); font-size: 0.85rem; color: var(--text-muted); margin-top: 0.75rem; }
+.rate-note strong { color: var(--text); }
+</style>
+</head>
+<body>
+<main class="shell">
+  <h1>Mileage Log</h1>
+  <p class="muted">Track every business trip and export a year-end IRS-style report with your standard mileage deduction.</p>
+
+  <div class="card">
+    <h2 style="margin-top:0">Log a trip</h2>
+    <div class="grid-3">
+      <div>
+        <label>Date</label>
+        <input id="t-date" type="date">
+      </div>
+      <div>
+        <label>Start odometer / location</label>
+        <input id="t-from" placeholder="Office or street">
+      </div>
+      <div>
+        <label>End odometer / location</label>
+        <input id="t-to" placeholder="Job site or street">
+      </div>
+    </div>
+    <div class="grid-2" style="margin-top: 0.75rem;">
+      <div>
+        <label>Miles driven</label>
+        <input id="t-miles" type="number" step="0.1" min="0" placeholder="0.0">
+      </div>
+      <div>
+        <label>Business purpose</label>
+        <input id="t-purpose" placeholder="Client meeting, supply run, etc.">
+      </div>
+    </div>
+    <div class="actions">
+      <button id="add">Add trip</button>
+      <span id="status" class="status"></span>
+    </div>
+  </div>
+
+  <h2>Year-to-date</h2>
+  <div class="summary" id="summary"></div>
+  <div class="rate-note">
+    Deduction rate: <strong>$<span id="rate-display">0.70</span> / mile</strong>.
+    Adjust to your tax year's IRS standard rate if needed.
+    <input id="rate-input" type="number" step="0.01" min="0" max="2" value="0.70" style="display: inline-block; width: 6rem; margin-left: 0.5rem; padding: 0.25rem 0.5rem; font-size: 0.85rem;">
+  </div>
+
+  <h2>All trips</h2>
+  <div class="card">
+    <div class="filters">
+      <div>
+        <label>From</label>
+        <input id="f-from" type="date">
+      </div>
+      <div>
+        <label>To</label>
+        <input id="f-to" type="date">
+      </div>
+      <div>
+        <label>Search</label>
+        <input id="f-search" placeholder="Purpose or location">
+      </div>
+      <div style="flex: 0 0 auto;">
+        <button class="secondary" id="export">Export PDF</button>
+      </div>
+    </div>
+    <table class="list">
+      <thead>
+        <tr>
+          <th style="width: 6.5rem;">Date</th>
+          <th>From → To</th>
+          <th>Purpose</th>
+          <th style="width: 5rem; text-align: right;">Miles</th>
+          <th style="width: 6rem; text-align: right;">Deduction</th>
+          <th style="width: 2.5rem;"></th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const todayISO = () => new Date().toISOString().slice(0, 10);
+const escapeHTML = (s) => String(s ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+const fmt$ = (n) => "$" + (Number(n)||0).toFixed(2);
+
+let trips = [];
+let rate = 0.70;
+
+async function load() {
+  trips = [];
+  try {
+    const list = await portal.storage.list();
+    const keys = (list.items || []).filter(i => i.key.startsWith("trips/")).map(i => i.key);
+    trips = (await Promise.all(keys.map(async (k) => {
+      try { return await portal.storage.get(k); } catch { return null; }
+    }))).filter(Boolean);
+    try {
+      const s = await portal.storage.get("settings.json");
+      if (s && typeof s.rate === "number") {
+        rate = s.rate;
+        $("rate-input").value = rate;
+      }
+    } catch {}
+  } catch (e) { setStatus("Load failed: " + e.message, "error"); }
+  trips.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+  render();
+}
+
+function setStatus(msg, kind = "") {
+  const el = $("status");
+  el.textContent = msg;
+  el.className = "status" + (kind ? " " + kind : "");
+  if (msg && kind === "success") setTimeout(() => { el.textContent = ""; el.className = "status"; }, 2500);
+}
+
+$("rate-input").addEventListener("change", async () => {
+  const v = Number($("rate-input").value);
+  if (v >= 0 && v <= 2) {
+    rate = v;
+    try { await portal.storage.put("settings.json", { rate }); } catch {}
+    render();
+  }
+});
+
+$("add").addEventListener("click", async () => {
+  const date = $("t-date").value;
+  const miles = Number($("t-miles").value);
+  const purpose = $("t-purpose").value.trim();
+  if (!date) { setStatus("Pick a date.", "error"); return; }
+  if (!miles || miles <= 0) { setStatus("Miles must be greater than zero.", "error"); return; }
+  if (!purpose) { setStatus("Add a business purpose (required for IRS records).", "error"); return; }
+  const id = Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 6);
+  const record = {
+    id, date, miles, purpose,
+    from: $("t-from").value.trim(),
+    to: $("t-to").value.trim(),
+  };
+  try {
+    await portal.storage.put(`trips/${id}.json`, record);
+    trips.unshift(record);
+    trips.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+    $("t-from").value = ""; $("t-to").value = "";
+    $("t-miles").value = ""; $("t-purpose").value = "";
+    render();
+    setStatus("Trip saved.", "success");
+  } catch (e) { setStatus("Save failed: " + e.message, "error"); }
+});
+
+$("rows").addEventListener("click", async (e) => {
+  const id = e.target.dataset.del;
+  if (!id) return;
+  if (!confirm("Delete this trip?")) return;
+  try {
+    await portal.storage.delete(`trips/${id}.json`);
+    trips = trips.filter(x => x.id !== id);
+    render();
+  } catch (err) { setStatus("Delete failed: " + err.message, "error"); }
+});
+
+["f-from", "f-to", "f-search"].forEach(id => $(id).addEventListener("input", render));
+
+function filtered() {
+  const from = $("f-from").value;
+  const to = $("f-to").value;
+  const q = $("f-search").value.trim().toLowerCase();
+  return trips.filter(t => {
+    if (from && t.date < from) return false;
+    if (to && t.date > to) return false;
+    if (q && !`${t.from||""} ${t.to||""} ${t.purpose||""}`.toLowerCase().includes(q)) return false;
+    return true;
+  });
+}
+
+function render() {
+  $("rate-display").textContent = rate.toFixed(2);
+
+  const yr = new Date().getFullYear().toString();
+  const ytd = trips.filter(t => (t.date||"").startsWith(yr));
+  const ytdMiles = ytd.reduce((s, t) => s + (Number(t.miles)||0), 0);
+  const ytdDed = ytdMiles * rate;
+  // Group by month for top tiles
+  const byMonth = {};
+  ytd.forEach(t => { const m = (t.date||"").slice(0, 7); byMonth[m] = (byMonth[m]||0) + Number(t.miles); });
+  $("summary").innerHTML = `
+    <div class="tile total">
+      <div class="lbl">${yr} miles</div>
+      <div class="val">${ytdMiles.toFixed(1)}</div>
+    </div>
+    <div class="tile">
+      <div class="lbl">${yr} deduction</div>
+      <div class="val">${fmt$(ytdDed)}</div>
+    </div>
+    <div class="tile">
+      <div class="lbl">Trips</div>
+      <div class="val">${ytd.length}</div>
+    </div>
+  ` + Object.entries(byMonth).sort((a,b)=>a[0].localeCompare(b[0])).slice(-3).map(([m, v]) => `
+    <div class="tile"><div class="lbl">${escapeHTML(m)}</div><div class="val">${v.toFixed(1)}</div></div>
+  `).join("");
+
+  const f = filtered();
+  const tbody = $("rows");
+  tbody.innerHTML = "";
+  if (!f.length) {
+    tbody.innerHTML = `<tr><td colspan="6" class="empty">No trips in this range.</td></tr>`;
+    return;
+  }
+  f.forEach(t => {
+    const tr = document.createElement("tr");
+    const route = [t.from, t.to].filter(Boolean).join(" → ") || "—";
+    tr.innerHTML = `
+      <td>${escapeHTML(t.date)}</td>
+      <td>${escapeHTML(route)}</td>
+      <td class="muted">${escapeHTML(t.purpose||"")}</td>
+      <td class="num">${Number(t.miles).toFixed(1)}</td>
+      <td class="num">${fmt$(Number(t.miles) * rate)}</td>
+      <td><button class="ghost" data-del="${escapeHTML(t.id)}" type="button" aria-label="Delete">✕</button></td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+$("export").addEventListener("click", async () => {
+  const f = filtered();
+  if (!f.length) { setStatus("No trips in this range.", "error"); return; }
+  const sorted = f.slice().sort((a,b) => (a.date||"").localeCompare(b.date||""));
+  const totalMiles = sorted.reduce((s, t) => s + Number(t.miles), 0);
+  const totalDed = totalMiles * rate;
+  const from = $("f-from").value || sorted[0].date;
+  const to = $("f-to").value || sorted[sorted.length-1].date;
+  const html = `
+    <html><head><meta charset="utf-8"><style>
+      body { font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif; color: #1c1917; font-size: 10pt; }
+      h1 { font-size: 20pt; margin: 0 0 0.25rem; letter-spacing: -0.02em; }
+      .meta { color: #57534e; margin-bottom: 1.25rem; }
+      table { width: 100%; border-collapse: collapse; }
+      th { text-align: left; font-size: 9pt; text-transform: uppercase; letter-spacing: 0.05em; color: #78716c; padding: 0.4rem 0.5rem; border-bottom: 2px solid #1c1917; }
+      th:nth-child(4), th:nth-child(5), td:nth-child(4), td:nth-child(5) { text-align: right; }
+      td { padding: 0.4rem 0.5rem; border-bottom: 1px solid #e7e5e4; font-variant-numeric: tabular-nums; }
+      .totals { margin-top: 1rem; margin-left: auto; width: 18rem; }
+      .totals tr td { border: 0; padding: 0.2rem 0.5rem; }
+      .totals tr:last-child td { font-weight: 700; font-size: 13pt; border-top: 2px solid #1c1917; padding-top: 0.5rem; }
+      .summary-line { color: #57534e; font-size: 10pt; margin: 0.25rem 0 1.25rem; }
+    </style></head><body>
+      <h1>Mileage Deduction Report</h1>
+      <div class="meta">${escapeHTML(from)} → ${escapeHTML(to)} &middot; ${sorted.length} trips</div>
+      <div class="summary-line">Standard mileage rate applied: <strong>$${rate.toFixed(2)}</strong> per mile.</div>
+      <table>
+        <thead><tr><th>Date</th><th>Route</th><th>Purpose</th><th>Miles</th><th>Deduction</th></tr></thead>
+        <tbody>
+          ${sorted.map(t => `
+            <tr>
+              <td>${escapeHTML(t.date)}</td>
+              <td>${escapeHTML([t.from, t.to].filter(Boolean).join(" → ") || "—")}</td>
+              <td>${escapeHTML(t.purpose||"")}</td>
+              <td>${Number(t.miles).toFixed(1)}</td>
+              <td>${fmt$(Number(t.miles)*rate)}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+      <table class="totals">
+        <tr><td>Total miles</td><td style="text-align:right">${totalMiles.toFixed(1)}</td></tr>
+        <tr><td>Total deduction</td><td style="text-align:right">${fmt$(totalDed)}</td></tr>
+      </table>
+    </body></html>
+  `;
+  try {
+    setStatus("Generating PDF…");
+    await portal.pdf.download({ html, filename: `mileage-${from}_to_${to}.pdf`, branded: true });
+    setStatus("Downloaded.", "success");
+  } catch (e) { setStatus("PDF failed: " + e.message, "error"); }
+});
+
+// Init
+$("t-date").value = todayISO();
+load();
+</script>
+</body>
+</html>

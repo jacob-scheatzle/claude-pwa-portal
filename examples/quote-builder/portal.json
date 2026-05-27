@@ -1,0 +1,13 @@
+{
+  "slug": "quote-builder",
+  "name": "Quote Builder",
+  "version": "1.0.0",
+  "description": "Build itemized quotes, generate a PDF, and share a link the customer can open.",
+  "icon": "icon.png",
+  "entry": "index.html",
+  "services": ["pdf", "email", "storage"],
+  "permissions": {
+    "network": []
+  },
+  "min_portal_version": "0.1.0"
+}

@@ -1,0 +1,553 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Customer Directory</title>
+<script src="/portal-sdk.js"></script>
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #fafaf9; --surface: #ffffff; --surface-2: #f5f5f4;
+  --border: #e7e5e4; --border-strong: #d6d3d1;
+  --text: #1c1917; --text-muted: #57534e; --text-faint: #78716c;
+  --accent: #0891b2; --accent-hover: #0e7490; --accent-fg: #ffffff;
+  --accent-tint: #ecfeff; --accent-soft: rgba(8,145,178,0.12);
+  --danger: #b91c1c; --success: #15803d;
+  --radius-sm: 0.4rem; --radius: 0.55rem;
+  --shadow-sm: 0 1px 2px rgba(15,23,42,0.05), 0 1px 1px rgba(15,23,42,0.025);
+  --shadow: 0 2px 4px rgba(15,23,42,0.06), 0 1px 2px rgba(15,23,42,0.04);
+  --font-sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0c0a09; --surface: #1c1917; --surface-2: #292524;
+    --border: #292524; --border-strong: #44403c;
+    --text: #fafaf9; --text-muted: #a8a29e;
+    --accent: #22d3ee; --accent-hover: #67e8f9; --accent-fg: #0c0a09;
+    --accent-tint: #164e63; --accent-soft: rgba(34,211,238,0.18);
+    --danger: #f87171; --success: #4ade80;
+  }
+}
+* { box-sizing: border-box; }
+body { font-family: var(--font-sans); background: var(--bg); color: var(--text); margin: 0; line-height: 1.55; -webkit-font-smoothing: antialiased; }
+.shell { max-width: 56rem; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
+h1 { margin: 0 0 0.25rem; font-size: 1.65rem; font-weight: 700; letter-spacing: -0.025em; }
+h2 { margin: 2rem 0 0.75rem; font-size: 1.1rem; font-weight: 600; letter-spacing: -0.01em; }
+.muted { color: var(--text-muted); font-size: 0.9rem; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.25rem; box-shadow: var(--shadow-sm); margin-top: 1rem; }
+.grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.75rem; }
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
+@media (max-width: 700px) { .grid-3, .grid-2 { grid-template-columns: 1fr; } }
+label { font-weight: 600; font-size: 0.8rem; display: block; margin-bottom: 0.3rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+input, textarea, select {
+  width: 100%; padding: 0.6rem 0.8rem;
+  border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  background: var(--surface); color: var(--text); font-size: 0.95rem; font-family: inherit;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+input:focus, textarea:focus, select:focus { outline: 0; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+textarea { resize: vertical; min-height: 4rem; font-family: inherit; }
+button {
+  display: inline-flex; align-items: center; justify-content: center; gap: 0.4rem;
+  padding: 0.6rem 1.05rem; border: 0; border-radius: var(--radius-sm);
+  background: var(--accent); color: var(--accent-fg);
+  font-weight: 600; font-size: 0.925rem; font-family: inherit; cursor: pointer;
+  box-shadow: var(--shadow-sm); transition: background 0.12s ease, box-shadow 0.12s ease, transform 0.06s ease;
+}
+button:hover { background: var(--accent-hover); box-shadow: var(--shadow); }
+button:active { transform: translateY(1px); box-shadow: none; }
+button.secondary { background: var(--surface); color: var(--accent); border: 1px solid var(--border-strong); box-shadow: none; }
+button.secondary:hover { background: var(--accent-tint); border-color: var(--accent); }
+button.ghost { background: transparent; color: var(--text-muted); border: 0; box-shadow: none; padding: 0.35rem 0.6rem; font-size: 0.85rem; }
+button.ghost:hover { background: var(--surface-2); color: var(--text); }
+button.danger { background: transparent; color: var(--danger); border: 0; box-shadow: none; padding: 0.35rem 0.6rem; font-size: 0.85rem; }
+button.danger:hover { background: var(--surface-2); }
+.actions { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-top: 1rem; align-items: center; }
+.status { font-size: 0.875rem; color: var(--text-muted); min-height: 1.2em; margin-top: 0.75rem; }
+.status.error { color: var(--danger); }
+.status.success { color: var(--success); }
+table.list { width: 100%; border-collapse: collapse; margin-top: 0.5rem; }
+table.list th { text-align: left; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); font-weight: 600; padding: 0.45rem 0.5rem; border-bottom: 1px solid var(--border); cursor: pointer; user-select: none; }
+table.list th.sort-active { color: var(--accent); }
+table.list td { padding: 0.6rem 0.5rem; border-bottom: 1px solid var(--border); font-size: 0.92rem; vertical-align: top; }
+table.list tr.row { cursor: pointer; transition: background 0.08s ease; }
+table.list tr.row:hover td { background: var(--surface-2); }
+.empty { color: var(--text-faint); font-style: italic; font-size: 0.9rem; padding: 1.5rem 0; text-align: center; }
+.filters { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: end; margin-bottom: 0.75rem; }
+.filters > div { flex: 1 1 12rem; }
+.tags { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-top: 0.25rem; }
+.tag { background: var(--accent-soft); color: var(--accent); padding: 0.15rem 0.55rem; border-radius: 999px; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.02em; }
+.tag.dim { background: var(--surface-2); color: var(--text-muted); }
+.detail-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; }
+.detail-head h2 { margin: 0; font-size: 1.25rem; }
+.detail-meta { display: grid; grid-template-columns: max-content 1fr; gap: 0.35rem 1rem; margin-top: 0.75rem; font-size: 0.92rem; }
+.detail-meta dt { color: var(--text-muted); font-weight: 600; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; padding-top: 0.15rem; }
+.detail-meta dd { margin: 0; color: var(--text); word-break: break-word; }
+.notes-block { margin-top: 0.75rem; padding: 0.75rem 0.9rem; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); font-size: 0.9rem; white-space: pre-wrap; color: var(--text); }
+.hidden { display: none !important; }
+.tabs { display: flex; gap: 0.25rem; border-bottom: 1px solid var(--border); margin-bottom: 0.5rem; }
+.tabs button { background: transparent; color: var(--text-muted); box-shadow: none; border: 0; border-bottom: 2px solid transparent; border-radius: 0; padding: 0.6rem 0.9rem; font-weight: 600; }
+.tabs button.active { color: var(--accent); border-bottom-color: var(--accent); }
+.tabs button:hover { background: var(--surface-2); }
+.contact-log { margin-top: 0.5rem; font-size: 0.85rem; color: var(--text-muted); }
+.contact-log .entry { padding: 0.4rem 0; border-top: 1px solid var(--border); }
+.contact-log .entry:first-child { border-top: 0; }
+</style>
+</head>
+<body>
+<main class="shell">
+  <h1>Customer Directory</h1>
+  <p class="muted">A lightweight CRM: keep customer contact info, tag them, and send quick emails — all stored in your portal.</p>
+
+  <!-- LIST VIEW -->
+  <section id="list-view">
+    <div class="card">
+      <h2 style="margin-top:0">Add a customer</h2>
+      <div class="grid-2">
+        <div>
+          <label>Name</label>
+          <input id="c-name" placeholder="Jane Doe">
+        </div>
+        <div>
+          <label>Company</label>
+          <input id="c-company" placeholder="Acme Co.">
+        </div>
+      </div>
+      <div class="grid-2" style="margin-top:0.75rem">
+        <div>
+          <label>Email</label>
+          <input id="c-email" type="email" placeholder="jane@acme.com">
+        </div>
+        <div>
+          <label>Phone</label>
+          <input id="c-phone" placeholder="(555) 123-4567">
+        </div>
+      </div>
+      <div style="margin-top:0.75rem">
+        <label>Tags <span style="text-transform:none;font-weight:400;letter-spacing:0">— comma-separated</span></label>
+        <input id="c-tags" placeholder="lead, vip, repeat">
+      </div>
+      <div style="margin-top:0.75rem">
+        <label>Notes</label>
+        <textarea id="c-notes" placeholder="Anything worth remembering"></textarea>
+      </div>
+      <div class="actions">
+        <button id="save-customer">Save customer</button>
+        <button class="ghost" id="clear-form">Clear form</button>
+      </div>
+      <div class="status" id="form-status"></div>
+    </div>
+
+    <h2>Customers</h2>
+    <div class="card">
+      <div class="filters">
+        <div>
+          <label>Search</label>
+          <input id="f-search" type="search" placeholder="Name, email, company, tag…">
+        </div>
+        <div>
+          <label>Tag</label>
+          <select id="f-tag"><option value="">All tags</option></select>
+        </div>
+      </div>
+      <table class="list" id="customer-table">
+        <thead>
+          <tr>
+            <th data-sort="name">Name</th>
+            <th data-sort="company">Company</th>
+            <th data-sort="email">Email</th>
+            <th data-sort="last_contacted">Last contacted</th>
+          </tr>
+        </thead>
+        <tbody id="customer-rows"></tbody>
+      </table>
+      <div class="empty hidden" id="empty">No customers yet — add one above.</div>
+    </div>
+  </section>
+
+  <!-- DETAIL VIEW -->
+  <section id="detail-view" class="hidden">
+    <div class="card">
+      <div class="detail-head">
+        <div>
+          <button class="ghost" id="back-btn">← Back to list</button>
+          <h2 id="d-name" style="margin-top:0.5rem"></h2>
+          <div class="tags" id="d-tags"></div>
+        </div>
+        <button class="danger" id="delete-customer">Delete</button>
+      </div>
+
+      <div class="tabs">
+        <button class="active" data-tab="info">Info</button>
+        <button data-tab="email">Send email</button>
+        <button data-tab="edit">Edit</button>
+      </div>
+
+      <!-- Info tab -->
+      <div id="tab-info">
+        <dl class="detail-meta">
+          <dt>Company</dt><dd id="d-company"></dd>
+          <dt>Email</dt><dd id="d-email"></dd>
+          <dt>Phone</dt><dd id="d-phone"></dd>
+          <dt>Added</dt><dd id="d-created"></dd>
+          <dt>Last contacted</dt><dd id="d-lastcontact"></dd>
+        </dl>
+        <div id="d-notes-wrap" class="hidden">
+          <label style="margin-top:1rem">Notes</label>
+          <div class="notes-block" id="d-notes"></div>
+        </div>
+        <div class="contact-log" id="d-contact-log"></div>
+      </div>
+
+      <!-- Email tab -->
+      <div id="tab-email" class="hidden">
+        <div>
+          <label>Subject</label>
+          <input id="e-subject" placeholder="Quick check-in">
+        </div>
+        <div style="margin-top:0.75rem">
+          <label>Message</label>
+          <textarea id="e-body" rows="8" placeholder="Hi {name},&#10;&#10;Just wanted to reach out…"></textarea>
+          <p class="muted" style="margin: 0.4rem 0 0; font-size: 0.8rem">Tip: <code>{name}</code>, <code>{company}</code>, and <code>{first}</code> are replaced automatically.</p>
+        </div>
+        <div class="actions">
+          <button id="send-email">Send email</button>
+          <button class="secondary" id="preview-email">Preview merge</button>
+        </div>
+        <div class="status" id="email-status"></div>
+      </div>
+
+      <!-- Edit tab -->
+      <div id="tab-edit" class="hidden">
+        <div class="grid-2">
+          <div>
+            <label>Name</label>
+            <input id="ed-name">
+          </div>
+          <div>
+            <label>Company</label>
+            <input id="ed-company">
+          </div>
+        </div>
+        <div class="grid-2" style="margin-top:0.75rem">
+          <div>
+            <label>Email</label>
+            <input id="ed-email" type="email">
+          </div>
+          <div>
+            <label>Phone</label>
+            <input id="ed-phone">
+          </div>
+        </div>
+        <div style="margin-top:0.75rem">
+          <label>Tags</label>
+          <input id="ed-tags" placeholder="comma-separated">
+        </div>
+        <div style="margin-top:0.75rem">
+          <label>Notes</label>
+          <textarea id="ed-notes"></textarea>
+        </div>
+        <div class="actions">
+          <button id="save-edit">Save changes</button>
+          <button class="ghost" id="cancel-edit">Cancel</button>
+        </div>
+        <div class="status" id="edit-status"></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const PREFIX = 'customers/';
+
+let customers = [];        // loaded list, each: {id, name, company, email, phone, tags:[], notes, created_at, last_contacted, contact_log:[]}
+let sortKey = 'name';
+let sortDir = 1;           // 1 asc, -1 desc
+let activeId = null;       // currently viewed customer
+
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+const fmtDate = ts => ts ? new Date(ts).toLocaleDateString(undefined, { year:'numeric', month:'short', day:'numeric' }) : '—';
+const fmtDateTime = ts => ts ? new Date(ts).toLocaleString(undefined, { dateStyle:'medium', timeStyle:'short' }) : '—';
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const parseTags = s => String(s || '').split(',').map(t => t.trim()).filter(Boolean);
+
+function setStatus(el, msg, kind) {
+  el.textContent = msg;
+  el.className = 'status' + (kind ? ' ' + kind : '');
+  if (kind === 'success') setTimeout(() => { if (el.textContent === msg) el.textContent = ''; el.className = 'status'; }, 3500);
+}
+
+async function loadAll() {
+  customers = [];
+  try {
+    const keys = await portal.storage.list(PREFIX);
+    for (const k of keys) {
+      try {
+        const c = await portal.storage.get(k);
+        if (c && c.id) customers.push(c);
+      } catch (e) { /* skip */ }
+    }
+  } catch (e) {
+    console.error('list failed', e);
+  }
+  render();
+}
+
+function refreshTagFilter() {
+  const all = new Set();
+  customers.forEach(c => (c.tags || []).forEach(t => all.add(t)));
+  const sel = $('f-tag');
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">All tags</option>' + [...all].sort().map(t => `<option>${esc(t)}</option>`).join('');
+  if ([...all].includes(cur)) sel.value = cur;
+}
+
+function compareCustomers(a, b) {
+  const av = (a[sortKey] || '').toString().toLowerCase();
+  const bv = (b[sortKey] || '').toString().toLowerCase();
+  if (sortKey === 'last_contacted') {
+    return ((a.last_contacted || 0) - (b.last_contacted || 0)) * sortDir;
+  }
+  if (av < bv) return -1 * sortDir;
+  if (av > bv) return 1 * sortDir;
+  return 0;
+}
+
+function render() {
+  refreshTagFilter();
+  const term = $('f-search').value.trim().toLowerCase();
+  const tagFilter = $('f-tag').value;
+  let view = customers.slice();
+  if (term) {
+    view = view.filter(c =>
+      (c.name || '').toLowerCase().includes(term) ||
+      (c.company || '').toLowerCase().includes(term) ||
+      (c.email || '').toLowerCase().includes(term) ||
+      (c.tags || []).some(t => t.toLowerCase().includes(term))
+    );
+  }
+  if (tagFilter) view = view.filter(c => (c.tags || []).includes(tagFilter));
+  view.sort(compareCustomers);
+
+  const tbody = $('customer-rows');
+  if (view.length === 0) {
+    tbody.innerHTML = '';
+    $('empty').classList.remove('hidden');
+  } else {
+    $('empty').classList.add('hidden');
+    tbody.innerHTML = view.map(c => `
+      <tr class="row" data-id="${esc(c.id)}">
+        <td>
+          <div style="font-weight:600">${esc(c.name) || '<span class="muted">(no name)</span>'}</div>
+          <div class="tags">${(c.tags || []).map(t => `<span class="tag">${esc(t)}</span>`).join('')}</div>
+        </td>
+        <td>${esc(c.company) || '—'}</td>
+        <td style="word-break:break-all">${esc(c.email) || '—'}</td>
+        <td>${c.last_contacted ? fmtDate(c.last_contacted) : '<span class="muted">never</span>'}</td>
+      </tr>
+    `).join('');
+  }
+  document.querySelectorAll('#customer-table th').forEach(th => {
+    th.classList.toggle('sort-active', th.dataset.sort === sortKey);
+  });
+}
+
+document.querySelectorAll('#customer-table th').forEach(th => {
+  th.addEventListener('click', () => {
+    const k = th.dataset.sort;
+    if (sortKey === k) sortDir = -sortDir;
+    else { sortKey = k; sortDir = 1; }
+    render();
+  });
+});
+
+$('f-search').addEventListener('input', render);
+$('f-tag').addEventListener('change', render);
+
+$('customer-rows').addEventListener('click', e => {
+  const row = e.target.closest('tr.row');
+  if (!row) return;
+  openDetail(row.dataset.id);
+});
+
+$('save-customer').addEventListener('click', async () => {
+  const status = $('form-status');
+  const name = $('c-name').value.trim();
+  if (!name) { setStatus(status, 'Name is required.', 'error'); return; }
+  const c = {
+    id: uid(),
+    name,
+    company: $('c-company').value.trim(),
+    email: $('c-email').value.trim(),
+    phone: $('c-phone').value.trim(),
+    tags: parseTags($('c-tags').value),
+    notes: $('c-notes').value.trim(),
+    created_at: Date.now(),
+    last_contacted: null,
+    contact_log: []
+  };
+  try {
+    await portal.storage.put(PREFIX + c.id + '.json', c);
+    customers.push(c);
+    setStatus(status, 'Customer saved.', 'success');
+    ['c-name','c-company','c-email','c-phone','c-tags','c-notes'].forEach(id => $(id).value = '');
+    render();
+  } catch (e) {
+    setStatus(status, 'Save failed: ' + (e.message || e), 'error');
+  }
+});
+
+$('clear-form').addEventListener('click', () => {
+  ['c-name','c-company','c-email','c-phone','c-tags','c-notes'].forEach(id => $(id).value = '');
+  $('form-status').textContent = '';
+});
+
+function openDetail(id) {
+  const c = customers.find(x => x.id === id);
+  if (!c) return;
+  activeId = id;
+  $('list-view').classList.add('hidden');
+  $('detail-view').classList.remove('hidden');
+  window.scrollTo({ top: 0, behavior: 'instant' });
+
+  $('d-name').textContent = c.name || '(no name)';
+  $('d-tags').innerHTML = (c.tags || []).map(t => `<span class="tag">${esc(t)}</span>`).join('') || '<span class="tag dim">untagged</span>';
+  $('d-company').textContent = c.company || '—';
+  $('d-email').innerHTML = c.email ? `<a href="mailto:${esc(c.email)}" style="color:var(--accent)">${esc(c.email)}</a>` : '—';
+  $('d-phone').textContent = c.phone || '—';
+  $('d-created').textContent = fmtDate(c.created_at);
+  $('d-lastcontact').textContent = c.last_contacted ? fmtDateTime(c.last_contacted) : 'never';
+
+  if (c.notes) {
+    $('d-notes-wrap').classList.remove('hidden');
+    $('d-notes').textContent = c.notes;
+  } else {
+    $('d-notes-wrap').classList.add('hidden');
+  }
+
+  const log = c.contact_log || [];
+  if (log.length) {
+    $('d-contact-log').innerHTML = '<label style="margin-top:1rem">Contact history</label>' +
+      log.slice().reverse().map(e => `<div class="entry"><strong>${fmtDateTime(e.at)}</strong> — ${esc(e.kind)}${e.subject ? ': ' + esc(e.subject) : ''}</div>`).join('');
+  } else {
+    $('d-contact-log').innerHTML = '';
+  }
+
+  // populate edit tab
+  $('ed-name').value = c.name || '';
+  $('ed-company').value = c.company || '';
+  $('ed-email').value = c.email || '';
+  $('ed-phone').value = c.phone || '';
+  $('ed-tags').value = (c.tags || []).join(', ');
+  $('ed-notes').value = c.notes || '';
+
+  // reset email tab
+  $('e-subject').value = '';
+  $('e-body').value = '';
+  $('email-status').textContent = '';
+
+  // default to info tab
+  switchTab('info');
+}
+
+$('back-btn').addEventListener('click', () => {
+  activeId = null;
+  $('detail-view').classList.add('hidden');
+  $('list-view').classList.remove('hidden');
+});
+
+document.querySelectorAll('.tabs button').forEach(b => {
+  b.addEventListener('click', () => switchTab(b.dataset.tab));
+});
+function switchTab(name) {
+  document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+  ['info', 'email', 'edit'].forEach(n => $('tab-' + n).classList.toggle('hidden', n !== name));
+}
+
+function mergeFields(template, c) {
+  const first = (c.name || '').split(/\s+/)[0] || '';
+  return template
+    .replaceAll('{name}', c.name || '')
+    .replaceAll('{first}', first)
+    .replaceAll('{company}', c.company || '');
+}
+
+$('preview-email').addEventListener('click', () => {
+  const c = customers.find(x => x.id === activeId);
+  if (!c) return;
+  const body = mergeFields($('e-body').value, c);
+  const subject = mergeFields($('e-subject').value, c);
+  setStatus($('email-status'), `Preview — Subject: ${subject || '(empty)'}\n${body || '(empty body)'}`);
+});
+
+$('send-email').addEventListener('click', async () => {
+  const status = $('email-status');
+  const c = customers.find(x => x.id === activeId);
+  if (!c) return;
+  if (!c.email) { setStatus(status, 'No email on file for this customer.', 'error'); return; }
+  const subject = mergeFields($('e-subject').value.trim(), c);
+  const bodyText = mergeFields($('e-body').value.trim(), c);
+  if (!subject || !bodyText) { setStatus(status, 'Subject and message are both required.', 'error'); return; }
+  setStatus(status, 'Sending…');
+  try {
+    const html = `<div style="font-family: -apple-system, Segoe UI, Roboto, sans-serif; font-size:14px; line-height:1.5; color:#1c1917; white-space:pre-wrap">${esc(bodyText)}</div>`;
+    await portal.email.send({ to: c.email, subject, html, text: bodyText });
+    c.last_contacted = Date.now();
+    c.contact_log = c.contact_log || [];
+    c.contact_log.push({ at: c.last_contacted, kind: 'email', subject });
+    await portal.storage.put(PREFIX + c.id + '.json', c);
+    setStatus(status, 'Email sent.', 'success');
+    $('e-subject').value = '';
+    $('e-body').value = '';
+    openDetail(c.id);
+  } catch (e) {
+    setStatus(status, 'Send failed: ' + (e.message || e), 'error');
+  }
+});
+
+$('save-edit').addEventListener('click', async () => {
+  const status = $('edit-status');
+  const c = customers.find(x => x.id === activeId);
+  if (!c) return;
+  const name = $('ed-name').value.trim();
+  if (!name) { setStatus(status, 'Name is required.', 'error'); return; }
+  c.name = name;
+  c.company = $('ed-company').value.trim();
+  c.email = $('ed-email').value.trim();
+  c.phone = $('ed-phone').value.trim();
+  c.tags = parseTags($('ed-tags').value);
+  c.notes = $('ed-notes').value.trim();
+  try {
+    await portal.storage.put(PREFIX + c.id + '.json', c);
+    setStatus(status, 'Saved.', 'success');
+    openDetail(c.id);
+  } catch (e) {
+    setStatus(status, 'Save failed: ' + (e.message || e), 'error');
+  }
+});
+
+$('cancel-edit').addEventListener('click', () => switchTab('info'));
+
+$('delete-customer').addEventListener('click', async () => {
+  const c = customers.find(x => x.id === activeId);
+  if (!c) return;
+  if (!confirm(`Delete ${c.name}? This can't be undone.`)) return;
+  try {
+    await portal.storage.delete(PREFIX + c.id + '.json');
+    customers = customers.filter(x => x.id !== c.id);
+    activeId = null;
+    $('detail-view').classList.add('hidden');
+    $('list-view').classList.remove('hidden');
+    render();
+  } catch (e) {
+    alert('Delete failed: ' + (e.message || e));
+  }
+});
+
+loadAll();
+</script>
+</body>
+</html>

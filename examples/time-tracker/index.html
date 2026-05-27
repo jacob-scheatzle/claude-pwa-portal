@@ -1,0 +1,464 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Time Tracker</title>
+<script src="/portal-sdk.js"></script>
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #fafaf9; --surface: #ffffff; --surface-2: #f5f5f4;
+  --border: #e7e5e4; --border-strong: #d6d3d1;
+  --text: #1c1917; --text-muted: #57534e; --text-faint: #78716c;
+  --accent: #059669; --accent-hover: #047857; --accent-fg: #ffffff;
+  --accent-tint: #ecfdf5; --accent-soft: rgba(5,150,105,0.12);
+  --danger: #b91c1c; --success: #15803d;
+  --radius-sm: 0.4rem; --radius: 0.55rem;
+  --shadow-sm: 0 1px 2px rgba(15,23,42,0.05), 0 1px 1px rgba(15,23,42,0.025);
+  --shadow: 0 2px 4px rgba(15,23,42,0.06), 0 1px 2px rgba(15,23,42,0.04);
+  --font-sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0c0a09; --surface: #1c1917; --surface-2: #292524;
+    --border: #292524; --border-strong: #44403c;
+    --text: #fafaf9; --text-muted: #a8a29e;
+    --accent: #10b981; --accent-hover: #34d399; --accent-fg: #0c0a09;
+    --accent-tint: #064e3b; --accent-soft: rgba(16,185,129,0.18);
+    --danger: #f87171; --success: #4ade80;
+  }
+}
+* { box-sizing: border-box; }
+body { font-family: var(--font-sans); background: var(--bg); color: var(--text); margin: 0; line-height: 1.55; -webkit-font-smoothing: antialiased; }
+.shell { max-width: 52rem; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
+h1 { margin: 0 0 0.25rem; font-size: 1.65rem; font-weight: 700; letter-spacing: -0.025em; }
+h2 { margin: 2rem 0 0.75rem; font-size: 1.1rem; font-weight: 600; letter-spacing: -0.01em; }
+.muted { color: var(--text-muted); font-size: 0.9rem; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.25rem; box-shadow: var(--shadow-sm); margin-top: 1rem; }
+.grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.75rem; }
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
+@media (max-width: 700px) { .grid-3, .grid-2 { grid-template-columns: 1fr; } }
+label { font-weight: 600; font-size: 0.8rem; display: block; margin-bottom: 0.3rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+input, textarea, select {
+  width: 100%; padding: 0.6rem 0.8rem;
+  border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  background: var(--surface); color: var(--text); font-size: 0.95rem; font-family: inherit;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+input:focus, textarea:focus, select:focus { outline: 0; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+button {
+  display: inline-flex; align-items: center; justify-content: center; gap: 0.4rem;
+  padding: 0.6rem 1.05rem; border: 0; border-radius: var(--radius-sm);
+  background: var(--accent); color: var(--accent-fg);
+  font-weight: 600; font-size: 0.925rem; font-family: inherit; cursor: pointer;
+  box-shadow: var(--shadow-sm); transition: background 0.12s ease, box-shadow 0.12s ease, transform 0.06s ease;
+}
+button:hover { background: var(--accent-hover); box-shadow: var(--shadow); }
+button:active { transform: translateY(1px); box-shadow: none; }
+button.secondary { background: var(--surface); color: var(--accent); border: 1px solid var(--border-strong); box-shadow: none; }
+button.secondary:hover { background: var(--accent-tint); border-color: var(--accent); }
+button.ghost { background: transparent; color: var(--text-muted); border: 0; box-shadow: none; padding: 0.35rem 0.6rem; font-size: 0.85rem; }
+button.ghost:hover { background: var(--surface-2); color: var(--text); }
+button.stop { background: var(--danger); color: white; }
+button.stop:hover { background: #991b1b; }
+.actions { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-top: 1rem; align-items: center; }
+.status { font-size: 0.875rem; color: var(--text-muted); min-height: 1.2em; margin-top: 0.75rem; }
+.status.error { color: var(--danger); }
+.status.success { color: var(--success); }
+.timer-card { background: var(--surface); border: 2px solid var(--border); border-radius: var(--radius); padding: 1.25rem; box-shadow: var(--shadow-sm); transition: border-color 0.2s ease; }
+.timer-card.running { border-color: var(--accent); background: var(--accent-tint); }
+.elapsed { font-family: var(--font-mono); font-size: 2.5rem; font-weight: 700; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.timer-card.running .elapsed { color: var(--accent); }
+.timer-meta { display: flex; gap: 0.75rem; align-items: baseline; flex-wrap: wrap; }
+.timer-meta .client { font-weight: 700; font-size: 1.1rem; }
+.timer-meta .project { color: var(--text-muted); }
+table.list { width: 100%; border-collapse: collapse; margin-top: 0.5rem; }
+table.list th { text-align: left; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); font-weight: 600; padding: 0.45rem 0.5rem; border-bottom: 1px solid var(--border); }
+table.list td { padding: 0.55rem 0.5rem; border-bottom: 1px solid var(--border); font-size: 0.92rem; }
+table.list td.dur { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+table.list tr:hover td { background: var(--surface-2); }
+.empty { color: var(--text-faint); font-style: italic; font-size: 0.9rem; padding: 1rem 0; text-align: center; }
+.summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr)); gap: 0.6rem; margin-top: 0.5rem; }
+.summary .tile { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 0.7rem 0.85rem; }
+.summary .tile .lbl { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); font-weight: 600; }
+.summary .tile .val { font-size: 1.15rem; font-weight: 700; font-variant-numeric: tabular-nums; margin-top: 0.15rem; }
+.summary .tile.total { background: var(--accent-tint); border-color: var(--accent); }
+.filters { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: end; margin-bottom: 0.75rem; }
+.filters > div { flex: 1 1 9rem; min-width: 8rem; }
+</style>
+</head>
+<body>
+<main class="shell">
+  <h1>Time Tracker</h1>
+  <p class="muted">Track billable hours by client and project. Export a timesheet PDF, or email it to your client.</p>
+
+  <h2 style="margin-top: 1.25rem;">Active timer</h2>
+  <div id="timer-card" class="timer-card">
+    <div id="idle">
+      <div class="grid-3">
+        <div>
+          <label>Client</label>
+          <input id="t-client" placeholder="Acme Corp." list="clients-list">
+          <datalist id="clients-list"></datalist>
+        </div>
+        <div>
+          <label>Project</label>
+          <input id="t-project" placeholder="Website redesign">
+        </div>
+        <div>
+          <label>Hourly rate ($)</label>
+          <input id="t-rate" type="number" step="0.01" min="0" placeholder="0.00">
+        </div>
+      </div>
+      <div style="margin-top: 0.75rem;">
+        <label>What are you working on?</label>
+        <input id="t-desc" placeholder="Wireframes for landing page">
+      </div>
+      <div class="actions">
+        <button id="start">▶ Start timer</button>
+        <span id="status" class="status"></span>
+      </div>
+    </div>
+    <div id="running" style="display: none;">
+      <div class="timer-meta">
+        <div class="client" id="r-client"></div>
+        <div class="project" id="r-project"></div>
+      </div>
+      <div class="elapsed" id="elapsed">00:00:00</div>
+      <div class="muted" id="r-desc"></div>
+      <div class="actions">
+        <button class="stop" id="stop">■ Stop</button>
+        <button class="ghost" id="discard">Discard</button>
+      </div>
+    </div>
+  </div>
+
+  <h2>This week</h2>
+  <div class="summary" id="summary"></div>
+
+  <h2>Entries</h2>
+  <div class="card">
+    <div class="filters">
+      <div>
+        <label>From</label>
+        <input id="f-from" type="date">
+      </div>
+      <div>
+        <label>To</label>
+        <input id="f-to" type="date">
+      </div>
+      <div>
+        <label>Client</label>
+        <select id="f-client"><option value="">All</option></select>
+      </div>
+      <div style="flex: 0 0 auto;">
+        <button class="secondary" id="export">Export PDF</button>
+      </div>
+      <div style="flex: 0 0 auto;">
+        <button class="secondary" id="email">Email to client</button>
+      </div>
+    </div>
+    <table class="list">
+      <thead>
+        <tr>
+          <th style="width: 6.5rem;">Date</th>
+          <th>Client</th>
+          <th>Project</th>
+          <th>Description</th>
+          <th style="width: 5rem; text-align: right;">Hours</th>
+          <th style="width: 6rem; text-align: right;">Amount</th>
+          <th style="width: 2.5rem;"></th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const todayISO = () => new Date().toISOString().slice(0, 10);
+const escapeHTML = (s) => String(s ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+const fmt$ = (n) => "$" + (Number(n)||0).toFixed(2);
+const fmtH = (sec) => (sec / 3600).toFixed(2);
+const fmtClock = (sec) => {
+  sec = Math.max(0, Math.floor(sec));
+  const h = String(Math.floor(sec / 3600)).padStart(2, "0");
+  const m = String(Math.floor((sec % 3600) / 60)).padStart(2, "0");
+  const s = String(sec % 60).padStart(2, "0");
+  return `${h}:${m}:${s}`;
+};
+
+let entries = [];
+let active = null;
+let tickHandle = null;
+
+async function load() {
+  entries = [];
+  try {
+    const list = await portal.storage.list();
+    const keys = (list.items || []).filter(i => i.key.startsWith("entries/")).map(i => i.key);
+    entries = (await Promise.all(keys.map(async (k) => {
+      try { return await portal.storage.get(k); } catch { return null; }
+    }))).filter(Boolean);
+    // Try to restore active timer
+    try { active = await portal.storage.get("active.json"); } catch { active = null; }
+  } catch (e) {
+    setStatus("Load failed: " + e.message, "error");
+  }
+  entries.sort((a, b) => (b.date || "").localeCompare(a.date || "") || (b.started_at || "").localeCompare(a.started_at || ""));
+  if (active) startTick();
+  render();
+}
+
+function setStatus(msg, kind = "") {
+  const el = $("status");
+  el.textContent = msg;
+  el.className = "status" + (kind ? " " + kind : "");
+  if (msg && kind === "success") setTimeout(() => { el.textContent = ""; el.className = "status"; }, 2500);
+}
+
+function startTick() {
+  if (tickHandle) clearInterval(tickHandle);
+  $("idle").style.display = "none";
+  $("running").style.display = "block";
+  $("timer-card").classList.add("running");
+  $("r-client").textContent = active.client;
+  $("r-project").textContent = active.project ? "· " + active.project : "";
+  $("r-desc").textContent = active.desc || "";
+  const update = () => {
+    const sec = (Date.now() - active.started_ms) / 1000;
+    $("elapsed").textContent = fmtClock(sec);
+  };
+  update();
+  tickHandle = setInterval(update, 1000);
+}
+
+function stopTick() {
+  if (tickHandle) { clearInterval(tickHandle); tickHandle = null; }
+  $("idle").style.display = "block";
+  $("running").style.display = "none";
+  $("timer-card").classList.remove("running");
+}
+
+$("start").addEventListener("click", async () => {
+  const client = $("t-client").value.trim();
+  if (!client) { setStatus("Pick a client.", "error"); return; }
+  active = {
+    client,
+    project: $("t-project").value.trim(),
+    rate: Number($("t-rate").value) || 0,
+    desc: $("t-desc").value.trim(),
+    started_ms: Date.now(),
+    started_at: new Date().toISOString(),
+  };
+  try {
+    await portal.storage.put("active.json", active);
+    startTick();
+  } catch (e) { setStatus("Couldn't start: " + e.message, "error"); active = null; }
+});
+
+$("stop").addEventListener("click", async () => {
+  if (!active) return;
+  const duration_sec = Math.max(1, Math.floor((Date.now() - active.started_ms) / 1000));
+  const id = Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 6);
+  const record = {
+    id,
+    date: new Date(active.started_ms).toISOString().slice(0, 10),
+    client: active.client,
+    project: active.project,
+    desc: active.desc,
+    rate: active.rate,
+    started_at: active.started_at,
+    ended_at: new Date().toISOString(),
+    duration_sec,
+  };
+  try {
+    await portal.storage.put(`entries/${id}.json`, record);
+    await portal.storage.delete("active.json");
+    entries.unshift(record);
+    entries.sort((a, b) => (b.date || "").localeCompare(a.date || "") || (b.started_at || "").localeCompare(a.started_at || ""));
+    active = null;
+    stopTick();
+    $("t-desc").value = "";
+    setStatus(`Logged ${fmtH(duration_sec)}h.`, "success");
+    render();
+  } catch (e) { setStatus("Save failed: " + e.message, "error"); }
+});
+
+$("discard").addEventListener("click", async () => {
+  if (!confirm("Discard the running timer?")) return;
+  try { await portal.storage.delete("active.json"); } catch {}
+  active = null;
+  stopTick();
+});
+
+$("rows").addEventListener("click", async (e) => {
+  const id = e.target.dataset.del;
+  if (!id) return;
+  if (!confirm("Delete this entry?")) return;
+  try {
+    await portal.storage.delete(`entries/${id}.json`);
+    entries = entries.filter(x => x.id !== id);
+    render();
+  } catch (err) { setStatus("Delete failed: " + err.message, "error"); }
+});
+
+function startOfWeek() {
+  const d = new Date(); d.setHours(0,0,0,0);
+  const day = d.getDay() || 7;
+  if (day !== 1) d.setHours(-24 * (day - 1));
+  return d.toISOString().slice(0, 10);
+}
+
+function filtered() {
+  const from = $("f-from").value;
+  const to = $("f-to").value;
+  const cl = $("f-client").value;
+  return entries.filter(e => {
+    if (from && e.date < from) return false;
+    if (to && e.date > to) return false;
+    if (cl && e.client !== cl) return false;
+    return true;
+  });
+}
+
+function render() {
+  // Client datalist + filter dropdown
+  const clients = Array.from(new Set(entries.map(e => e.client).filter(Boolean))).sort();
+  const dl = $("clients-list");
+  dl.innerHTML = clients.map(c => `<option value="${escapeHTML(c)}">`).join("");
+  const cs = $("f-client");
+  const current = cs.value;
+  cs.innerHTML = `<option value="">All</option>` + clients.map(c => `<option ${c===current?'selected':''}>${escapeHTML(c)}</option>`).join("");
+
+  // This-week summary
+  const wkStart = startOfWeek();
+  const wk = entries.filter(e => e.date >= wkStart);
+  const totalSec = wk.reduce((s, e) => s + (e.duration_sec || 0), 0);
+  const totalAmt = wk.reduce((s, e) => s + ((e.duration_sec/3600) * (e.rate||0)), 0);
+  const byClient = {};
+  wk.forEach(e => { byClient[e.client] = (byClient[e.client]||0) + e.duration_sec; });
+  const sum = $("summary");
+  sum.innerHTML = `
+    <div class="tile total">
+      <div class="lbl">This week</div>
+      <div class="val">${fmtH(totalSec)}h</div>
+    </div>
+    <div class="tile">
+      <div class="lbl">Billable</div>
+      <div class="val">${fmt$(totalAmt)}</div>
+    </div>
+  ` + Object.entries(byClient).sort((a,b)=>b[1]-a[1]).slice(0, 4).map(([k, v]) => `
+    <div class="tile"><div class="lbl">${escapeHTML(k)}</div><div class="val">${fmtH(v)}h</div></div>
+  `).join("");
+
+  // Entries
+  const f = filtered();
+  const tbody = $("rows");
+  tbody.innerHTML = "";
+  if (!f.length) {
+    tbody.innerHTML = `<tr><td colspan="7" class="empty">No entries in this range.</td></tr>`;
+    return;
+  }
+  f.forEach(e => {
+    const tr = document.createElement("tr");
+    const hrs = (e.duration_sec || 0) / 3600;
+    tr.innerHTML = `
+      <td>${escapeHTML(e.date)}</td>
+      <td>${escapeHTML(e.client || "")}</td>
+      <td class="muted">${escapeHTML(e.project || "")}</td>
+      <td class="muted">${escapeHTML(e.desc || "")}</td>
+      <td class="dur">${hrs.toFixed(2)}</td>
+      <td class="dur">${fmt$(hrs * (e.rate||0))}</td>
+      <td><button class="ghost" data-del="${escapeHTML(e.id)}" type="button" aria-label="Delete">✕</button></td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+["f-from", "f-to", "f-client"].forEach(id => $(id).addEventListener("input", render));
+
+function buildTimesheetHTML() {
+  const f = filtered();
+  if (!f.length) return null;
+  const sorted = f.slice().sort((a,b) => (a.date||"").localeCompare(b.date||""));
+  const totalSec = sorted.reduce((s, e) => s + (e.duration_sec||0), 0);
+  const totalAmt = sorted.reduce((s, e) => s + (e.duration_sec/3600)*(e.rate||0), 0);
+  const from = $("f-from").value || sorted[0].date;
+  const to = $("f-to").value || sorted[sorted.length-1].date;
+  const cl = $("f-client").value;
+  const period = `${from} → ${to}` + (cl ? ` · ${cl}` : "");
+  return `
+    <html><head><meta charset="utf-8"><style>
+      body { font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif; color: #1c1917; font-size: 10pt; }
+      h1 { font-size: 20pt; margin: 0 0 0.25rem; letter-spacing: -0.02em; }
+      .meta { color: #57534e; margin-bottom: 1.25rem; }
+      table { width: 100%; border-collapse: collapse; }
+      th { text-align: left; font-size: 9pt; text-transform: uppercase; letter-spacing: 0.05em; color: #78716c; padding: 0.4rem 0.5rem; border-bottom: 2px solid #1c1917; }
+      th:nth-child(5), th:nth-child(6), td:nth-child(5), td:nth-child(6) { text-align: right; }
+      td { padding: 0.4rem 0.5rem; border-bottom: 1px solid #e7e5e4; font-variant-numeric: tabular-nums; }
+      .totals { margin-top: 1rem; margin-left: auto; width: 16rem; }
+      .totals tr td { border: 0; padding: 0.2rem 0.5rem; }
+      .totals tr:last-child td { font-weight: 700; font-size: 13pt; border-top: 2px solid #1c1917; padding-top: 0.5rem; }
+    </style></head><body>
+      <h1>Timesheet</h1>
+      <div class="meta">${escapeHTML(period)} &middot; ${sorted.length} entries</div>
+      <table>
+        <thead><tr><th>Date</th><th>Client</th><th>Project</th><th>Description</th><th>Hours</th><th>Amount</th></tr></thead>
+        <tbody>
+          ${sorted.map(e => `
+            <tr>
+              <td>${escapeHTML(e.date)}</td>
+              <td>${escapeHTML(e.client||"")}</td>
+              <td>${escapeHTML(e.project||"")}</td>
+              <td>${escapeHTML(e.desc||"")}</td>
+              <td>${((e.duration_sec||0)/3600).toFixed(2)}</td>
+              <td>${fmt$(((e.duration_sec||0)/3600)*(e.rate||0))}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+      <table class="totals">
+        <tr><td>Total hours</td><td style="text-align:right">${(totalSec/3600).toFixed(2)}</td></tr>
+        <tr><td>Total billable</td><td style="text-align:right">${fmt$(totalAmt)}</td></tr>
+      </table>
+    </body></html>
+  `;
+}
+
+$("export").addEventListener("click", async () => {
+  const html = buildTimesheetHTML();
+  if (!html) { setStatus("No entries in this range.", "error"); return; }
+  try {
+    setStatus("Generating PDF…");
+    await portal.pdf.download({ html, filename: "timesheet.pdf", branded: true });
+    setStatus("Downloaded.", "success");
+  } catch (e) { setStatus("PDF failed: " + e.message, "error"); }
+});
+
+$("email").addEventListener("click", async () => {
+  const html = buildTimesheetHTML();
+  if (!html) { setStatus("No entries in this range.", "error"); return; }
+  const to = prompt("Email timesheet to:");
+  if (!to) return;
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) { setStatus("Invalid email.", "error"); return; }
+  try {
+    setStatus("Sending…");
+    await portal.email.send({
+      to,
+      subject: "Timesheet",
+      html,
+      text: "Your timesheet is attached below.",
+    });
+    setStatus("Emailed.", "success");
+  } catch (e) { setStatus("Email failed: " + e.message, "error"); }
+});
+
+// Init
+load();
+</script>
+</body>
+</html>

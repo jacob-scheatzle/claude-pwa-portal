@@ -1,0 +1,13 @@
+{
+  "slug": "mileage-log",
+  "name": "Mileage Log",
+  "version": "1.0.0",
+  "description": "Log business trips with miles and purpose, and export an IRS-ready deduction report.",
+  "icon": "icon.png",
+  "entry": "index.html",
+  "services": ["pdf", "storage"],
+  "permissions": {
+    "network": []
+  },
+  "min_portal_version": "0.1.0"
+}

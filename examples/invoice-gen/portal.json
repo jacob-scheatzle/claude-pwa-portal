@@ -1,0 +1,13 @@
+{
+  "slug": "invoice-gen",
+  "name": "Invoice Generator",
+  "version": "1.0.0",
+  "description": "Build line-item invoices, generate a branded PDF, and email it to the customer.",
+  "icon": "icon.png",
+  "entry": "index.html",
+  "services": ["pdf", "email", "storage"],
+  "permissions": {
+    "network": []
+  },
+  "min_portal_version": "0.1.0"
+}

@@ -1,0 +1,13 @@
+{
+  "slug": "time-tracker",
+  "name": "Time Tracker",
+  "version": "1.0.0",
+  "description": "Track billable time by client and project, then export a clean timesheet PDF.",
+  "icon": "icon.png",
+  "entry": "index.html",
+  "services": ["pdf", "email", "storage"],
+  "permissions": {
+    "network": []
+  },
+  "min_portal_version": "0.1.0"
+}

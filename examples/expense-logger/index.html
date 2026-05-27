@@ -1,0 +1,380 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Expense Logger</title>
+<script src="/portal-sdk.js"></script>
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #fafaf9; --surface: #ffffff; --surface-2: #f5f5f4;
+  --border: #e7e5e4; --border-strong: #d6d3d1;
+  --text: #1c1917; --text-muted: #57534e; --text-faint: #78716c;
+  --accent: #059669; --accent-hover: #047857; --accent-fg: #ffffff;
+  --accent-tint: #ecfdf5; --accent-soft: rgba(5,150,105,0.12);
+  --danger: #b91c1c; --success: #15803d;
+  --radius-sm: 0.4rem; --radius: 0.55rem;
+  --shadow-sm: 0 1px 2px rgba(15,23,42,0.05), 0 1px 1px rgba(15,23,42,0.025);
+  --shadow: 0 2px 4px rgba(15,23,42,0.06), 0 1px 2px rgba(15,23,42,0.04);
+  --font-sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0c0a09; --surface: #1c1917; --surface-2: #292524;
+    --border: #292524; --border-strong: #44403c;
+    --text: #fafaf9; --text-muted: #a8a29e;
+    --accent: #10b981; --accent-hover: #34d399; --accent-fg: #0c0a09;
+    --accent-tint: #064e3b; --accent-soft: rgba(16,185,129,0.18);
+    --danger: #f87171; --success: #4ade80;
+  }
+}
+* { box-sizing: border-box; }
+body { font-family: var(--font-sans); background: var(--bg); color: var(--text); margin: 0; line-height: 1.55; -webkit-font-smoothing: antialiased; }
+.shell { max-width: 50rem; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
+h1 { margin: 0 0 0.25rem; font-size: 1.65rem; font-weight: 700; letter-spacing: -0.025em; }
+h2 { margin: 2rem 0 0.75rem; font-size: 1.1rem; font-weight: 600; letter-spacing: -0.01em; }
+.muted { color: var(--text-muted); font-size: 0.9rem; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.25rem; box-shadow: var(--shadow-sm); margin-top: 1rem; }
+.grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.75rem; }
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
+@media (max-width: 600px) { .grid-3, .grid-2 { grid-template-columns: 1fr; } }
+label { font-weight: 600; font-size: 0.8rem; display: block; margin-bottom: 0.3rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+input, textarea, select {
+  width: 100%; padding: 0.6rem 0.8rem;
+  border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  background: var(--surface); color: var(--text); font-size: 0.95rem; font-family: inherit;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+input:focus, textarea:focus, select:focus { outline: 0; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+button {
+  display: inline-flex; align-items: center; justify-content: center; gap: 0.4rem;
+  padding: 0.6rem 1.05rem; border: 0; border-radius: var(--radius-sm);
+  background: var(--accent); color: var(--accent-fg);
+  font-weight: 600; font-size: 0.925rem; font-family: inherit; cursor: pointer;
+  box-shadow: var(--shadow-sm); transition: background 0.12s ease, box-shadow 0.12s ease, transform 0.06s ease;
+}
+button:hover { background: var(--accent-hover); box-shadow: var(--shadow); }
+button:active { transform: translateY(1px); box-shadow: none; }
+button.secondary { background: var(--surface); color: var(--accent); border: 1px solid var(--border-strong); box-shadow: none; }
+button.secondary:hover { background: var(--accent-tint); border-color: var(--accent); }
+button.ghost { background: transparent; color: var(--text-muted); border: 0; box-shadow: none; padding: 0.35rem 0.6rem; font-size: 0.85rem; }
+button.ghost:hover { background: var(--surface-2); color: var(--text); }
+button.danger { background: var(--surface); color: var(--danger); border: 1px solid var(--border); }
+button.danger:hover { background: rgba(185,28,28,0.08); }
+.actions { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-top: 1rem; align-items: center; }
+.status { font-size: 0.875rem; color: var(--text-muted); min-height: 1.2em; margin-top: 0.75rem; }
+.status.error { color: var(--danger); }
+.status.success { color: var(--success); }
+.summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr)); gap: 0.6rem; margin-top: 0.5rem; }
+.summary .tile { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 0.7rem 0.85rem; }
+.summary .tile .lbl { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); font-weight: 600; }
+.summary .tile .val { font-size: 1.15rem; font-weight: 700; font-variant-numeric: tabular-nums; margin-top: 0.15rem; }
+.summary .tile.total { background: var(--accent-tint); border-color: var(--accent); }
+table.list { width: 100%; border-collapse: collapse; margin-top: 0.5rem; }
+table.list th { text-align: left; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); font-weight: 600; padding: 0.45rem 0.5rem; border-bottom: 1px solid var(--border); }
+table.list td { padding: 0.55rem 0.5rem; border-bottom: 1px solid var(--border); font-size: 0.92rem; }
+table.list td.amt { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+table.list tr:hover td { background: var(--surface-2); }
+.cat { display: inline-block; padding: 0.15rem 0.55rem; border-radius: 999px; font-size: 0.72rem; font-weight: 600; background: var(--surface-2); color: var(--text-muted); }
+.empty { color: var(--text-faint); font-style: italic; font-size: 0.9rem; padding: 1rem 0; text-align: center; }
+.filters { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: end; margin-bottom: 0.75rem; }
+.filters > div { flex: 1 1 8rem; }
+</style>
+</head>
+<body>
+<main class="shell">
+  <h1>Expense Logger</h1>
+  <p class="muted">Log every business expense in seconds, then export a clean monthly report for your bookkeeper.</p>
+
+  <div class="card">
+    <h2 style="margin-top:0">Log an expense</h2>
+    <div class="grid-3">
+      <div>
+        <label>Date</label>
+        <input id="e-date" type="date">
+      </div>
+      <div>
+        <label>Amount</label>
+        <input id="e-amount" type="number" step="0.01" min="0" placeholder="0.00">
+      </div>
+      <div>
+        <label>Category</label>
+        <select id="e-category">
+          <option>Meals &amp; entertainment</option>
+          <option>Travel</option>
+          <option>Vehicle &amp; fuel</option>
+          <option>Office supplies</option>
+          <option>Software &amp; subscriptions</option>
+          <option>Equipment</option>
+          <option>Marketing &amp; advertising</option>
+          <option>Utilities</option>
+          <option>Insurance</option>
+          <option>Professional services</option>
+          <option>Rent</option>
+          <option>Other</option>
+        </select>
+      </div>
+    </div>
+    <div class="grid-2" style="margin-top: 0.75rem;">
+      <div>
+        <label>Vendor / payee</label>
+        <input id="e-vendor" placeholder="Home Depot, AT&amp;T, etc.">
+      </div>
+      <div>
+        <label>Note (optional)</label>
+        <input id="e-note" placeholder="Project, purpose, etc.">
+      </div>
+    </div>
+    <div class="actions">
+      <button id="add">Add expense</button>
+      <span id="status" class="status"></span>
+    </div>
+  </div>
+
+  <h2>This month</h2>
+  <div class="summary" id="summary"></div>
+
+  <h2>All expenses</h2>
+  <div class="card">
+    <div class="filters">
+      <div>
+        <label>Month</label>
+        <input id="f-month" type="month">
+      </div>
+      <div>
+        <label>Category</label>
+        <select id="f-category"><option value="">All</option></select>
+      </div>
+      <div>
+        <label>Search</label>
+        <input id="f-search" placeholder="Vendor or note">
+      </div>
+      <div style="flex: 0 0 auto;">
+        <button class="secondary" id="export">Export PDF</button>
+      </div>
+    </div>
+    <table class="list">
+      <thead>
+        <tr>
+          <th style="width: 6.5rem;">Date</th>
+          <th>Vendor</th>
+          <th>Category</th>
+          <th>Note</th>
+          <th style="width: 6rem; text-align: right;">Amount</th>
+          <th style="width: 2.5rem;"></th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const fmt = (n) => "$" + (Number(n)||0).toFixed(2);
+const todayISO = () => new Date().toISOString().slice(0, 10);
+const monthOf = (iso) => (iso || "").slice(0, 7);
+const escapeHTML = (s) => String(s ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+
+const CATEGORIES = [
+  "Meals & entertainment","Travel","Vehicle & fuel","Office supplies",
+  "Software & subscriptions","Equipment","Marketing & advertising",
+  "Utilities","Insurance","Professional services","Rent","Other",
+];
+
+let expenses = [];
+
+async function load() {
+  expenses = [];
+  try {
+    const list = await portal.storage.list();
+    const keys = (list.items || []).filter(i => i.key.startsWith("expenses/")).map(i => i.key);
+    expenses = (await Promise.all(keys.map(async (k) => {
+      try { return await portal.storage.get(k); } catch { return null; }
+    }))).filter(Boolean);
+  } catch (e) {
+    setStatus("Couldn't load saved expenses: " + e.message, "error");
+  }
+  expenses.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+  render();
+}
+
+function setStatus(msg, kind = "") {
+  const el = $("status");
+  el.textContent = msg;
+  el.className = "status" + (kind ? " " + kind : "");
+  if (msg && kind === "success") setTimeout(() => { el.textContent = ""; el.className = "status"; }, 2500);
+}
+
+function render() {
+  // Populate category filter (once)
+  const sel = $("f-category");
+  if (sel.options.length <= 1) {
+    CATEGORIES.forEach(c => { const o = document.createElement("option"); o.value = c; o.textContent = c; sel.appendChild(o); });
+  }
+
+  // This-month summary
+  const thisMonth = todayISO().slice(0, 7);
+  const monthExp = expenses.filter(e => monthOf(e.date) === thisMonth);
+  const byCat = {};
+  let total = 0;
+  monthExp.forEach(e => { byCat[e.category] = (byCat[e.category] || 0) + Number(e.amount); total += Number(e.amount); });
+  const sumEl = $("summary");
+  sumEl.innerHTML = `
+    <div class="tile total">
+      <div class="lbl">${thisMonth}</div>
+      <div class="val">${fmt(total)}</div>
+    </div>
+  ` + Object.entries(byCat)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([cat, amt]) => `
+        <div class="tile">
+          <div class="lbl">${escapeHTML(cat)}</div>
+          <div class="val">${fmt(amt)}</div>
+        </div>
+      `).join("");
+  if (!monthExp.length) {
+    sumEl.innerHTML = `<div class="tile total"><div class="lbl">${thisMonth}</div><div class="val">${fmt(0)}</div></div><div class="muted" style="align-self:center; padding-left:0.5rem;">No expenses yet this month.</div>`;
+  }
+
+  // List with filters
+  const m = $("f-month").value;
+  const c = $("f-category").value;
+  const q = $("f-search").value.trim().toLowerCase();
+  const filtered = expenses.filter(e => {
+    if (m && monthOf(e.date) !== m) return false;
+    if (c && e.category !== c) return false;
+    if (q && !`${e.vendor||""} ${e.note||""}`.toLowerCase().includes(q)) return false;
+    return true;
+  });
+  const tbody = $("rows");
+  tbody.innerHTML = "";
+  if (!filtered.length) {
+    tbody.innerHTML = `<tr><td colspan="6" class="empty">No expenses match these filters.</td></tr>`;
+    return;
+  }
+  filtered.forEach(e => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${escapeHTML(e.date)}</td>
+      <td>${escapeHTML(e.vendor || "")}</td>
+      <td><span class="cat">${escapeHTML(e.category || "")}</span></td>
+      <td class="muted">${escapeHTML(e.note || "")}</td>
+      <td class="amt">${fmt(e.amount)}</td>
+      <td><button class="ghost" data-del="${escapeHTML(e.id)}" type="button" aria-label="Delete">✕</button></td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+$("add").addEventListener("click", async () => {
+  const date = $("e-date").value;
+  const amount = Number($("e-amount").value);
+  const category = $("e-category").value;
+  const vendor = $("e-vendor").value.trim();
+  if (!date) { setStatus("Pick a date.", "error"); return; }
+  if (!amount || amount <= 0) { setStatus("Amount must be greater than zero.", "error"); return; }
+  if (!vendor) { setStatus("Add a vendor.", "error"); return; }
+  const id = Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 6);
+  const record = { id, date, amount, category, vendor, note: $("e-note").value.trim() };
+  try {
+    await portal.storage.put(`expenses/${id}.json`, record);
+    expenses.unshift(record);
+    expenses.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+    $("e-amount").value = "";
+    $("e-vendor").value = "";
+    $("e-note").value = "";
+    render();
+    setStatus("Saved.", "success");
+  } catch (e) {
+    setStatus("Save failed: " + e.message, "error");
+  }
+});
+
+$("rows").addEventListener("click", async (e) => {
+  const id = e.target.dataset.del;
+  if (!id) return;
+  if (!confirm("Delete this expense?")) return;
+  try {
+    await portal.storage.delete(`expenses/${id}.json`);
+    expenses = expenses.filter(x => x.id !== id);
+    render();
+  } catch (err) {
+    setStatus("Delete failed: " + err.message, "error");
+  }
+});
+
+["f-month", "f-category", "f-search"].forEach(id => $(id).addEventListener("input", render));
+
+$("export").addEventListener("click", async () => {
+  const m = $("f-month").value;
+  const c = $("f-category").value;
+  const q = $("f-search").value.trim().toLowerCase();
+  const filtered = expenses.filter(e => {
+    if (m && monthOf(e.date) !== m) return false;
+    if (c && e.category !== c) return false;
+    if (q && !`${e.vendor||""} ${e.note||""}`.toLowerCase().includes(q)) return false;
+    return true;
+  });
+  if (!filtered.length) { setStatus("Nothing to export with these filters.", "error"); return; }
+  const byCat = {};
+  let total = 0;
+  filtered.forEach(e => { byCat[e.category] = (byCat[e.category] || 0) + Number(e.amount); total += Number(e.amount); });
+  const period = m || "All time";
+  const html = `
+    <html><head><meta charset="utf-8"><style>
+      body { font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif; color: #1c1917; font-size: 10pt; }
+      h1 { font-size: 20pt; margin: 0 0 0.25rem; letter-spacing: -0.02em; }
+      .meta { color: #57534e; margin-bottom: 1.25rem; }
+      h2 { font-size: 12pt; margin: 1.5rem 0 0.5rem; }
+      table { width: 100%; border-collapse: collapse; }
+      th { text-align: left; font-size: 9pt; text-transform: uppercase; letter-spacing: 0.05em; color: #78716c; padding: 0.4rem 0.5rem; border-bottom: 2px solid #1c1917; }
+      th:last-child, td:last-child { text-align: right; }
+      td { padding: 0.4rem 0.5rem; border-bottom: 1px solid #e7e5e4; }
+      td.amt { text-align: right; font-variant-numeric: tabular-nums; }
+      .grand { font-weight: 700; font-size: 13pt; border-top: 2px solid #1c1917; padding-top: 0.5rem !important; }
+    </style></head><body>
+      <h1>Expense Report</h1>
+      <div class="meta">${escapeHTML(period)} &middot; ${filtered.length} entries</div>
+      <h2>By category</h2>
+      <table>
+        <thead><tr><th>Category</th><th>Amount</th></tr></thead>
+        <tbody>
+          ${Object.entries(byCat).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`<tr><td>${escapeHTML(k)}</td><td class="amt">${fmt(v)}</td></tr>`).join("")}
+          <tr><td class="grand">Total</td><td class="amt grand">${fmt(total)}</td></tr>
+        </tbody>
+      </table>
+      <h2>Detail</h2>
+      <table>
+        <thead><tr><th>Date</th><th>Vendor</th><th>Category</th><th>Note</th><th>Amount</th></tr></thead>
+        <tbody>
+          ${filtered.slice().sort((a,b)=>(a.date||"").localeCompare(b.date||"")).map(e=>`
+            <tr>
+              <td>${escapeHTML(e.date)}</td>
+              <td>${escapeHTML(e.vendor||"")}</td>
+              <td>${escapeHTML(e.category||"")}</td>
+              <td>${escapeHTML(e.note||"")}</td>
+              <td class="amt">${fmt(e.amount)}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </body></html>
+  `;
+  try {
+    setStatus("Generating PDF…");
+    await portal.pdf.download({ html, filename: `expenses-${period.replace(/[^\w-]/g,"_")}.pdf`, branded: true });
+    setStatus("Downloaded.", "success");
+  } catch (e) { setStatus("PDF failed: " + e.message, "error"); }
+});
+
+// Init
+$("e-date").value = todayISO();
+$("f-month").value = todayISO().slice(0, 7);
+load();
+</script>
+</body>
+</html>

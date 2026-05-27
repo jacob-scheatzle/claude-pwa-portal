@@ -1,0 +1,426 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Invoice Generator</title>
+<script src="/portal-sdk.js"></script>
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #fafaf9; --surface: #ffffff; --surface-2: #f5f5f4;
+  --border: #e7e5e4; --border-strong: #d6d3d1;
+  --text: #1c1917; --text-muted: #57534e; --text-faint: #78716c;
+  --accent: #059669; --accent-hover: #047857; --accent-fg: #ffffff;
+  --accent-tint: #ecfdf5; --accent-soft: rgba(5,150,105,0.12);
+  --danger: #b91c1c; --success: #15803d;
+  --radius-sm: 0.4rem; --radius: 0.55rem;
+  --shadow-sm: 0 1px 2px rgba(15,23,42,0.05), 0 1px 1px rgba(15,23,42,0.025);
+  --shadow: 0 2px 4px rgba(15,23,42,0.06), 0 1px 2px rgba(15,23,42,0.04);
+  --font-sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0c0a09; --surface: #1c1917; --surface-2: #292524;
+    --border: #292524; --border-strong: #44403c;
+    --text: #fafaf9; --text-muted: #a8a29e;
+    --accent: #10b981; --accent-hover: #34d399; --accent-fg: #0c0a09;
+    --accent-tint: #064e3b; --accent-soft: rgba(16,185,129,0.18);
+    --danger: #f87171; --success: #4ade80;
+  }
+}
+* { box-sizing: border-box; }
+body { font-family: var(--font-sans); background: var(--bg); color: var(--text); margin: 0; line-height: 1.55; -webkit-font-smoothing: antialiased; }
+.shell { max-width: 48rem; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
+h1 { margin: 0 0 0.25rem; font-size: 1.65rem; font-weight: 700; letter-spacing: -0.025em; }
+h2 { margin: 2rem 0 0.75rem; font-size: 1.1rem; font-weight: 600; letter-spacing: -0.01em; }
+.muted { color: var(--text-muted); font-size: 0.9rem; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.25rem; box-shadow: var(--shadow-sm); margin-top: 1rem; }
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.85rem; }
+@media (max-width: 600px) { .grid-2 { grid-template-columns: 1fr; } }
+label { font-weight: 600; font-size: 0.8rem; display: block; margin-bottom: 0.3rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+input, textarea, select {
+  width: 100%; padding: 0.6rem 0.8rem;
+  border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  background: var(--surface); color: var(--text); font-size: 0.95rem; font-family: inherit;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+input:focus, textarea:focus, select:focus { outline: 0; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+textarea { min-height: 4rem; resize: vertical; }
+button {
+  display: inline-flex; align-items: center; justify-content: center; gap: 0.4rem;
+  padding: 0.6rem 1.05rem; border: 0; border-radius: var(--radius-sm);
+  background: var(--accent); color: var(--accent-fg);
+  font-weight: 600; font-size: 0.925rem; font-family: inherit; cursor: pointer;
+  box-shadow: var(--shadow-sm); transition: background 0.12s ease, box-shadow 0.12s ease, transform 0.06s ease;
+}
+button:hover { background: var(--accent-hover); box-shadow: var(--shadow); }
+button:active { transform: translateY(1px); box-shadow: none; }
+button.secondary { background: var(--surface); color: var(--accent); border: 1px solid var(--border-strong); box-shadow: none; }
+button.secondary:hover { background: var(--accent-tint); border-color: var(--accent); }
+button.ghost { background: transparent; color: var(--text-muted); border: 0; box-shadow: none; padding: 0.35rem 0.6rem; font-size: 0.85rem; }
+button.ghost:hover { background: var(--surface-2); color: var(--text); }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+.actions { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-top: 1rem; }
+.status { font-size: 0.875rem; color: var(--text-muted); min-height: 1.2em; margin-top: 0.75rem; }
+.status.error { color: var(--danger); }
+.status.success { color: var(--success); }
+table.lines { width: 100%; border-collapse: collapse; margin-top: 0.5rem; }
+table.lines th { text-align: left; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); font-weight: 600; padding: 0.35rem 0.4rem; border-bottom: 1px solid var(--border); }
+table.lines td { padding: 0.25rem 0.3rem; vertical-align: top; }
+table.lines td input { padding: 0.45rem 0.55rem; font-size: 0.9rem; }
+.col-desc { width: 50%; }
+.col-num  { width: 16%; }
+.col-amt  { width: 14%; text-align: right; padding-right: 0.6rem; font-variant-numeric: tabular-nums; }
+.col-del  { width: 2.5rem; text-align: center; }
+.totals { display: grid; grid-template-columns: 1fr auto; row-gap: 0.35rem; column-gap: 1.5rem; margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border); font-variant-numeric: tabular-nums; }
+.totals .label { color: var(--text-muted); font-size: 0.9rem; }
+.totals .val { text-align: right; font-weight: 500; }
+.totals .grand-label, .totals .grand-val { font-weight: 700; font-size: 1.1rem; color: var(--text); padding-top: 0.4rem; border-top: 1px solid var(--border); }
+.history-item { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; padding: 0.7rem 0.85rem; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); margin-bottom: 0.5rem; }
+.history-item .who { font-weight: 600; }
+.history-item .meta { color: var(--text-muted); font-size: 0.85rem; }
+.history-item .amt { font-variant-numeric: tabular-nums; font-weight: 600; }
+.empty { color: var(--text-faint); font-style: italic; font-size: 0.9rem; padding: 0.5rem 0; }
+.row-actions { display: flex; gap: 0.4rem; }
+</style>
+</head>
+<body>
+<main class="shell">
+  <h1>Invoice Generator</h1>
+  <p class="muted">Build a line-item invoice, generate a branded PDF, and send it to your customer.</p>
+
+  <div class="card">
+    <div class="grid-2">
+      <div>
+        <label>Customer name</label>
+        <input id="customer-name" placeholder="Acme Corp.">
+      </div>
+      <div>
+        <label>Customer email</label>
+        <input id="customer-email" type="email" placeholder="billing@acme.com">
+      </div>
+      <div>
+        <label>Invoice number</label>
+        <input id="invoice-number">
+      </div>
+      <div>
+        <label>Invoice date</label>
+        <input id="invoice-date" type="date">
+      </div>
+      <div>
+        <label>Due date</label>
+        <input id="due-date" type="date">
+      </div>
+      <div>
+        <label>Tax rate (%)</label>
+        <input id="tax-rate" type="number" step="0.001" min="0" value="0">
+      </div>
+    </div>
+
+    <h2>Line items</h2>
+    <table class="lines">
+      <thead>
+        <tr>
+          <th class="col-desc">Description</th>
+          <th class="col-num">Qty</th>
+          <th class="col-num">Rate</th>
+          <th class="col-amt">Amount</th>
+          <th class="col-del"></th>
+        </tr>
+      </thead>
+      <tbody id="lines"></tbody>
+    </table>
+    <button class="secondary" type="button" id="add-line" style="margin-top: 0.75rem;">+ Add line</button>
+
+    <div class="totals">
+      <span class="label">Subtotal</span><span class="val" id="sub">$0.00</span>
+      <span class="label">Tax</span><span class="val" id="tax">$0.00</span>
+      <span class="grand-label">Total</span><span class="grand-val" id="total">$0.00</span>
+    </div>
+
+    <div style="margin-top: 1rem;">
+      <label>Notes / payment terms</label>
+      <textarea id="notes" placeholder="Net 30. Wire to ..."></textarea>
+    </div>
+
+    <div class="actions">
+      <button id="download">Download PDF</button>
+      <button class="secondary" id="email">Email to customer</button>
+      <button class="ghost" id="reset" type="button">Reset</button>
+    </div>
+    <p id="status" class="status"></p>
+  </div>
+
+  <h2>Recent invoices</h2>
+  <div id="history"></div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const fmt = (n) => "$" + (Number(n) || 0).toFixed(2);
+const todayISO = () => new Date().toISOString().slice(0, 10);
+const addDays = (iso, d) => { const t = new Date(iso); t.setDate(t.getDate() + d); return t.toISOString().slice(0, 10); };
+
+const state = { lines: [] };
+
+function newLine(desc = "", qty = 1, rate = 0) {
+  return { id: Math.random().toString(36).slice(2, 9), desc, qty, rate };
+}
+
+function renderLines() {
+  const tbody = $("lines");
+  tbody.innerHTML = "";
+  state.lines.forEach((ln, i) => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td><input data-k="desc" data-i="${i}" value="${escapeAttr(ln.desc)}" placeholder="Service or item"></td>
+      <td><input data-k="qty" data-i="${i}" type="number" step="0.01" min="0" value="${ln.qty}"></td>
+      <td><input data-k="rate" data-i="${i}" type="number" step="0.01" min="0" value="${ln.rate}"></td>
+      <td class="col-amt">${fmt(ln.qty * ln.rate)}</td>
+      <td class="col-del"><button class="ghost" data-del="${i}" type="button" aria-label="Remove">✕</button></td>
+    `;
+    tbody.appendChild(tr);
+  });
+  recalc();
+}
+
+function escapeAttr(s) { return String(s ?? "").replace(/&/g,"&amp;").replace(/"/g,"&quot;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+function escapeHTML(s) { return String(s ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+
+function recalc() {
+  const sub = state.lines.reduce((s, ln) => s + (Number(ln.qty) || 0) * (Number(ln.rate) || 0), 0);
+  const rate = Number($("tax-rate").value) || 0;
+  const tax = sub * (rate / 100);
+  $("sub").textContent = fmt(sub);
+  $("tax").textContent = fmt(tax);
+  $("total").textContent = fmt(sub + tax);
+}
+
+$("lines").addEventListener("input", (e) => {
+  const i = e.target.dataset.i, k = e.target.dataset.k;
+  if (i === undefined) return;
+  const v = e.target.value;
+  state.lines[i][k] = (k === "desc") ? v : Number(v) || 0;
+  // Just refresh the amount cell + totals — don't blow away inputs while typing
+  const row = e.target.closest("tr");
+  if (row && k !== "desc") {
+    row.querySelector(".col-amt").textContent = fmt(state.lines[i].qty * state.lines[i].rate);
+  }
+  recalc();
+});
+$("lines").addEventListener("click", (e) => {
+  const i = e.target.dataset.del;
+  if (i === undefined) return;
+  state.lines.splice(Number(i), 1);
+  if (state.lines.length === 0) state.lines.push(newLine());
+  renderLines();
+});
+$("add-line").addEventListener("click", () => { state.lines.push(newLine()); renderLines(); });
+$("tax-rate").addEventListener("input", recalc);
+
+function buildHTML() {
+  const cust = $("customer-name").value || "Customer";
+  const email = $("customer-email").value || "";
+  const num = $("invoice-number").value || "—";
+  const date = $("invoice-date").value || todayISO();
+  const due = $("due-date").value || "";
+  const taxRate = Number($("tax-rate").value) || 0;
+  const sub = state.lines.reduce((s, ln) => s + (Number(ln.qty) || 0) * (Number(ln.rate) || 0), 0);
+  const tax = sub * (taxRate / 100);
+  const total = sub + tax;
+  const notes = $("notes").value;
+
+  const rows = state.lines.map(ln => `
+    <tr>
+      <td>${escapeHTML(ln.desc)}</td>
+      <td style="text-align:right">${Number(ln.qty).toFixed(2)}</td>
+      <td style="text-align:right">${fmt(ln.rate)}</td>
+      <td style="text-align:right">${fmt((Number(ln.qty)||0) * (Number(ln.rate)||0))}</td>
+    </tr>
+  `).join("");
+
+  return `
+  <html><head><meta charset="utf-8"><style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif; color: #1c1917; font-size: 11pt; }
+    h1 { font-size: 22pt; margin: 0 0 0.5rem; letter-spacing: -0.02em; }
+    .meta { color: #57534e; font-size: 10pt; margin-bottom: 1.5rem; }
+    .bill { margin: 1.25rem 0; }
+    .bill .lbl { color: #78716c; font-size: 9pt; text-transform: uppercase; letter-spacing: 0.06em; }
+    .bill .v { font-size: 11pt; font-weight: 600; }
+    table { width: 100%; border-collapse: collapse; margin-top: 0.5rem; }
+    th { text-align: left; font-size: 9pt; text-transform: uppercase; letter-spacing: 0.05em; color: #78716c; padding: 0.4rem 0.5rem; border-bottom: 2px solid #1c1917; }
+    th:last-child, td:last-child { text-align: right; }
+    th:nth-child(2), th:nth-child(3) { text-align: right; }
+    td { padding: 0.5rem; border-bottom: 1px solid #e7e5e4; }
+    .totals { margin-top: 1rem; margin-left: auto; width: 18rem; }
+    .totals tr td { border: 0; padding: 0.2rem 0.5rem; }
+    .totals tr:last-child td { font-weight: 700; font-size: 13pt; border-top: 2px solid #1c1917; padding-top: 0.5rem; }
+    .notes { margin-top: 2rem; padding: 0.85rem 1rem; background: #f5f5f4; border-radius: 6px; font-size: 10pt; color: #57534e; white-space: pre-wrap; }
+  </style></head><body>
+    <h1>Invoice ${escapeHTML(num)}</h1>
+    <div class="meta">Issued ${escapeHTML(date)}${due ? ` &middot; Due ${escapeHTML(due)}` : ""}</div>
+    <div class="bill">
+      <div class="lbl">Bill to</div>
+      <div class="v">${escapeHTML(cust)}</div>
+      ${email ? `<div style="color:#57534e">${escapeHTML(email)}</div>` : ""}
+    </div>
+    <table>
+      <thead><tr><th>Description</th><th>Qty</th><th>Rate</th><th>Amount</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <table class="totals">
+      <tr><td>Subtotal</td><td>${fmt(sub)}</td></tr>
+      <tr><td>Tax (${taxRate.toFixed(2)}%)</td><td>${fmt(tax)}</td></tr>
+      <tr><td>Total</td><td>${fmt(total)}</td></tr>
+    </table>
+    ${notes ? `<div class="notes">${escapeHTML(notes)}</div>` : ""}
+  </body></html>`;
+}
+
+function setStatus(msg, kind = "") {
+  const el = $("status");
+  el.textContent = msg;
+  el.className = "status" + (kind ? " " + kind : "");
+}
+
+function snapshot() {
+  return {
+    number: $("invoice-number").value,
+    date: $("invoice-date").value,
+    customer: $("customer-name").value,
+    email: $("customer-email").value,
+    total: state.lines.reduce((s, ln) => s + (Number(ln.qty)||0)*(Number(ln.rate)||0), 0) * (1 + (Number($("tax-rate").value)||0)/100),
+    saved_at: new Date().toISOString(),
+  };
+}
+
+async function saveHistory(record) {
+  try {
+    const key = `invoices/${record.number || record.saved_at}.json`;
+    await portal.storage.put(key, record);
+  } catch (e) { /* non-fatal */ }
+}
+
+$("download").addEventListener("click", async () => {
+  if (!validate()) return;
+  setStatus("Generating PDF…");
+  try {
+    const num = $("invoice-number").value || "invoice";
+    await portal.pdf.download({ html: buildHTML(), filename: `invoice-${num}.pdf`, branded: true });
+    await saveHistory(snapshot());
+    setStatus("Downloaded.", "success");
+    loadHistory();
+  } catch (e) { setStatus("PDF failed: " + e.message, "error"); }
+});
+
+$("email").addEventListener("click", async () => {
+  if (!validate({ requireEmail: true })) return;
+  setStatus("Rendering and sending…");
+  try {
+    const num = $("invoice-number").value || "invoice";
+    const html = buildHTML();
+    const blob = await portal.pdf.render({ html, filename: `invoice-${num}.pdf`, branded: true });
+    const buf = await blob.arrayBuffer();
+    const b64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
+    await portal.email.send({
+      to: $("customer-email").value,
+      subject: `Invoice ${num}`,
+      html: `<p>Hi,</p><p>Your invoice is attached.</p><p>Thanks!</p>`,
+      text: `Hi,\n\nYour invoice is attached.\n\nThanks!`,
+      attachments: [{ filename: `invoice-${num}.pdf`, content: b64, content_type: "application/pdf" }],
+    });
+    await saveHistory(snapshot());
+    setStatus("Emailed.", "success");
+    loadHistory();
+  } catch (e) {
+    // Some portals may not support attachments via this path; fall back to inline body link
+    if (/attachment|unsupported/i.test(e.message || "")) {
+      try {
+        await portal.email.send({
+          to: $("customer-email").value,
+          subject: `Invoice ${$("invoice-number").value || ""}`.trim(),
+          html: buildHTML(),
+        });
+        await saveHistory(snapshot());
+        setStatus("Emailed (inline).", "success");
+        loadHistory();
+        return;
+      } catch (e2) { setStatus("Email failed: " + e2.message, "error"); return; }
+    }
+    setStatus("Email failed: " + e.message, "error");
+  }
+});
+
+$("reset").addEventListener("click", () => {
+  state.lines = [newLine("", 1, 0)];
+  $("customer-name").value = "";
+  $("customer-email").value = "";
+  $("notes").value = "";
+  $("invoice-number").value = nextInvoiceNumber();
+  $("invoice-date").value = todayISO();
+  $("due-date").value = addDays(todayISO(), 30);
+  $("tax-rate").value = "0";
+  renderLines();
+  setStatus("");
+});
+
+function validate({ requireEmail = false } = {}) {
+  if (!$("customer-name").value.trim()) { setStatus("Add a customer name.", "error"); return false; }
+  if (requireEmail) {
+    const v = $("customer-email").value.trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) { setStatus("Enter a valid customer email.", "error"); return false; }
+  }
+  const hasLine = state.lines.some(ln => ln.desc.trim() && (Number(ln.qty)||0) > 0);
+  if (!hasLine) { setStatus("Add at least one line item.", "error"); return false; }
+  return true;
+}
+
+function nextInvoiceNumber() {
+  const yr = new Date().getFullYear();
+  const stamp = Date.now().toString().slice(-5);
+  return `INV-${yr}-${stamp}`;
+}
+
+async function loadHistory() {
+  const el = $("history");
+  el.innerHTML = "";
+  try {
+    const list = await portal.storage.list();
+    const items = (list.items || []).filter(i => i.key.startsWith("invoices/"));
+    if (!items.length) { el.innerHTML = `<div class="empty">No invoices saved yet.</div>`; return; }
+    const records = await Promise.all(items.map(async (i) => {
+      try { return await portal.storage.get(i.key); } catch { return null; }
+    }));
+    records
+      .filter(Boolean)
+      .sort((a, b) => (b.saved_at || "").localeCompare(a.saved_at || ""))
+      .slice(0, 20)
+      .forEach(r => {
+        const div = document.createElement("div");
+        div.className = "history-item";
+        div.innerHTML = `
+          <div>
+            <div class="who">${escapeHTML(r.customer || "(no name)")} <span class="muted">— ${escapeHTML(r.number || "")}</span></div>
+            <div class="meta">${escapeHTML(r.date || (r.saved_at || "").slice(0, 10))}</div>
+          </div>
+          <div class="amt">${fmt(r.total)}</div>
+        `;
+        el.appendChild(div);
+      });
+  } catch (e) {
+    el.innerHTML = `<div class="empty">Couldn't load history: ${escapeHTML(e.message)}</div>`;
+  }
+}
+
+// Init
+state.lines = [newLine("", 1, 0)];
+$("invoice-number").value = nextInvoiceNumber();
+$("invoice-date").value = todayISO();
+$("due-date").value = addDays(todayISO(), 30);
+renderLines();
+loadHistory();
+</script>
+</body>
+</html>
