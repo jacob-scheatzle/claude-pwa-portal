@@ -121,7 +121,7 @@ Child apps are served from a per-app subdomain — `<slug>.apps.<SITE_URL>` — 
 
 Most DNS providers support wildcards. If you're using sslip.io (`<ip>.sslip.io`), you don't need to do anything — `<slug>.apps.<ip>.sslip.io` already resolves to the IP.
 
-Caddy will fetch a Let's Encrypt cert for each subdomain on first access using HTTP-01 challenges; no DNS provider credentials needed. The portal protects against cert-issuance probing via an `/internal/cert-ask` endpoint that only approves real app slugs.
+Caddy will fetch a Let's Encrypt cert for each subdomain on first access using HTTP-01 challenges; no DNS provider credentials needed. The portal protects against cert-issuance probing via an `/api/v1/internal/cert-ask` endpoint that only approves real app slugs (Caddy calls it from inside the docker bridge; external hits with an X-Forwarded-For header are rejected).
 
 > ### ⚠️ sslip.io's Let's Encrypt rate limit
 >
@@ -406,9 +406,26 @@ For zero-downtime backups, take a SQLite online-backup of `data/portal.db` and r
 
 ## Updates
 
+From the directory holding your `docker-compose.yml` and `.env`:
+
 ```bash
-cd ProgressiveWebAppPortal
-git pull
+docker compose pull   # fetch the new GHCR images
+docker compose up -d  # recreate containers with the new images
+```
+
+That's it — no `git pull`, no rebuild. The container ships a pinned set
+of dependencies plus the Alembic migration chain, so a normal upgrade is
+just two commands.
+
+To pin to a specific release instead of `latest`, set `PORTAL_IMAGE_TAG=v0.6.7`
+(or whichever tag you want) in `.env` before the `up -d`. Tags live at
+<https://github.com/jacob-scheatzle/claude-pwa-portal/pkgs/container/claude-pwa-portal>.
+
+If you're running from a cloned repo for local patches, the
+build-from-source variant is:
+
+```bash
+cd ProgressiveWebAppPortal && git pull
 docker compose up --build -d
 ```
 
@@ -447,7 +464,7 @@ The reset command prompts you for the new password.
 
 **Child-app subdomain returns "no such host" / cert error**
 - Verify wildcard DNS: `dig <random>.apps.your-domain.com` should return your VPS IP.
-- Check Caddy logs: `docker compose logs caddy | grep cert-ask` to see whether `/internal/cert-ask` is being called.
+- Check Caddy logs: `docker compose logs caddy | grep cert-ask` (or `sudo journalctl -t pwa-portal-caddy -f` on Linux hosts with the journald log driver) to see whether `/api/v1/internal/cert-ask` is being called.
 - If you don't want subdomain isolation, set `CHILD_APPS_SAME_ORIGIN=true` and rebuild.
 
 **Portal returns 500 on the dashboard, logs show WeasyPrint import error**
@@ -463,7 +480,8 @@ The reset command prompts you for the new password.
 - Hard-refresh once (Cmd+Shift+R / Ctrl+Shift+R). The portal SW is network-first, so the next reload picks up the new version automatically.
 
 **iPhone Add-to-Home-Screen icon is wrong / blurry**
-- Replace `portal/static/icons/apple-touch-icon.png` with your own 180×180 PNG, rebuild the container.
+- Upload a 180×180 PNG (or larger square) as your favicon via **Admin → Settings → Branding**. The portal uses the favicon for both browser tabs and the iOS home-screen tile.
+- (Building from source only) The shipped default lives at `portal/static/icons/apple-touch-icon.png` — replace and rebuild if you want to change the baked-in fallback.
 
 ## Hardening notes
 

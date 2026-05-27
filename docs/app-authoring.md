@@ -74,7 +74,9 @@ That's a valid app. Zip the folder so `portal.json` is at the root, upload it, a
 | `description` | no | up to 200 chars; shown on the admin app list |
 | `icon` | no | relative path inside the bundle; 192×192 PNG recommended |
 | `entry` | no | default `index.html`; must exist in the zip |
-| `services` | no | informational list of services your app uses; valid: `pdf`, `email`, `storage` |
+| `services` | no | **server-enforced** allowlist of SDK services this app may call. Valid: `pdf`, `email`, `storage`. Auto-approved on first upload; an admin can revoke any of them later from the apps admin page, and a revoked service returns 403 to the SDK at runtime. An empty list (or omitting the field) is treated as a legacy ungated app — all services callable. New apps should declare exactly what they use. |
+| `permissions.network` | no | array of external `connect-src` origins your app may fetch from (e.g. `["https://api.stripe.com"]`). Auto-approved on first upload; revocable per-origin. Anything not listed is blocked by the per-app Content-Security-Policy. |
+| `permissions.csp_strict` | no | if `true`, the portal serves the app under a strict CSP (no inline scripts/styles, no `eval`). Inline `<script>` tags must carry `nonce="{{NONCE}}"` — the portal substitutes the placeholder per response. |
 | `min_portal_version` | no | hint for future compatibility checks |
 
 The slug is the URL: an app with slug `expense-tracker` lives at `/apps/expense-tracker/`.
@@ -147,19 +149,32 @@ await portal.storage.delete("notes/today.json");
 
 ## Packaging and uploading
 
-The Claude skill bundles the tooling, but you can run the scripts directly without the skill:
+The Claude skill bundles the packaging + upload scripts. Install it once
+on your workstation (this writes the scripts to `~/.claude/skills/pwa-portal-app/scripts/`):
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/jacob-scheatzle/claude-pwa-portal/main/claude-skill/pwa-portal-app/install.sh)
+```
+
+Then package + upload:
 
 ```bash
 # Package (writes my-app-0.1.0.zip next to the source dir)
-python3 claude-skill/pwa-portal-app/scripts/package.py path/to/my-app
+python3 ~/.claude/skills/pwa-portal-app/scripts/package.py path/to/my-app
 
 # Upload
 PORTAL_URL=https://portal.example.com \
 PORTAL_TOKEN=<your token from /admin/tokens> \
-  python3 claude-skill/pwa-portal-app/scripts/upload.py path/to/my-app-0.1.0.zip
+  python3 ~/.claude/skills/pwa-portal-app/scripts/upload.py path/to/my-app-0.1.0.zip
+
+# Updating an existing app in place — preserves per-user storage:
+PORTAL_URL=... PORTAL_TOKEN=... \
+  python3 ~/.claude/skills/pwa-portal-app/scripts/upload.py path/to/my-app-0.2.0.zip --replace
 ```
 
-Both scripts are stdlib-only Python and run anywhere Python 3.11+ is installed.
+Both scripts are stdlib-only Python and run anywhere Python 3.11+ is
+installed. Working from a cloned repo? Substitute
+`claude-skill/pwa-portal-app/scripts/` for `~/.claude/skills/pwa-portal-app/scripts/`.
 
 Alternatively, upload via the web UI at **Apps → Upload**.
 
@@ -176,24 +191,36 @@ Alternatively, upload via the web UI at **Apps → Upload**.
 
 ## A worked example
 
-See [`examples/hello-receipt/`](../examples/hello-receipt/) — a single-file PWA that uses every SDK service:
+See [`examples/`](../examples/) for a gallery of seven reference apps —
+mileage log, time tracker, expense logger, customer directory, quote
+builder, invoice generator, and a minimal [`hello-receipt`](../examples/hello-receipt/)
+that exercises every SDK service in one file:
 
 - Loads the current user
 - Generates a styled PDF receipt with WeasyPrint
 - Emails the receipt to the customer
 - Stores receipts in per-user storage so you can re-download or delete past ones
 
+If you're browsing from a deployed portal without a repo checkout, the
+examples are at
+<https://github.com/jacob-scheatzle/claude-pwa-portal/tree/main/examples>.
+
 ## Updating an app
 
-The portal currently rejects uploads to an existing slug. To ship an update:
+Bump `version` in `portal.json`, repackage, and upload with `--replace`:
 
-1. Delete the existing app from **Apps** in the admin UI.
-2. Bump `version` in `portal.json`.
-3. Package and upload as usual.
+```bash
+PORTAL_URL=... PORTAL_TOKEN=... \
+  python3 ~/.claude/skills/pwa-portal-app/scripts/upload.py my-app-0.2.0.zip --replace
+```
 
-**Per-user storage is preserved** through delete-and-reupload because storage is keyed by slug, not by the app's database row id.
+The replace flow swaps the on-disk bundle atomically. The manifest
+`slug` must match the existing app. **Per-user storage is preserved**
+because storage is keyed by slug, not by the app row id. Admin
+service/origin approvals are also preserved.
 
-A non-destructive in-place update flow is on the roadmap.
+If you'd rather wipe the slate, delete the app from **Apps** in the
+admin UI and upload as a fresh install — that drops user storage too.
 
 ## Constraints
 

@@ -36,6 +36,7 @@ from portal.deps import (
 )
 from portal.models import App, AppLaunchToken, User
 from portal.security import check_csrf
+from portal.sessions import revoke_all_app_sessions_for_slug
 from portal.web import STATIC_DIR, flash, render
 
 # How long a launch token is honored. The token is single-use and is consumed
@@ -154,6 +155,11 @@ MAX_ZIP_BYTES = 50 * 1024 * 1024
 MAX_UNCOMPRESSED_BYTES = 100 * 1024 * 1024
 MAX_FILES = 1000
 MAX_COMPRESS_RATIO = 50
+# Ceiling on HTML files we'll read into memory for per-request ``{{NONCE}}``
+# substitution under csp_strict. Files larger than this stream as a normal
+# FileResponse — the strict CSP will reject the un-nonced inline script and
+# the symptom surfaces in DevTools so the app author knows to split the HTML.
+_MAX_NONCE_SUB_BYTES = 256 * 1024
 
 
 class UploadError(Exception):
@@ -437,13 +443,25 @@ async def install_bundle(
                 enabled=True,
                 uploaded_by=uploader.id,
             )
-            db.add(app_row)
-            db.flush()  # so app_row.id is assigned before we FK to it below
-            # Auto-grant access for every existing non-admin user under the
-            # configured default-access policy. Replacements (below) deliberately
-            # don't touch existing grants — admins reshape access manually.
-            grant_default_access_for_new_app(db, app_row)
-            db.commit()
+            try:
+                db.add(app_row)
+                db.flush()  # so app_row.id is assigned before we FK to it below
+                # Auto-grant access for every existing non-admin user under the
+                # configured default-access policy. Replacements (below)
+                # deliberately don't touch existing grants — admins reshape
+                # access manually.
+                grant_default_access_for_new_app(db, app_row)
+                db.commit()
+            except Exception:
+                # The on-disk bundle is already extracted at ``dest``. If the
+                # DB step fails (constraint violation, disk-full on the WAL,
+                # FK error), we'd otherwise leave an orphaned ``apps/<slug>/``
+                # directory that blocks the next upload with the "already
+                # exists on disk" guard above. Roll back the extraction so
+                # the next attempt can proceed.
+                db.rollback()
+                shutil.rmtree(dest, ignore_errors=True)
+                raise
             return InstallResult(
                 slug=app_row.slug,
                 name=app_row.name,
@@ -797,6 +815,12 @@ def admin_apps_toggle(
     db.add(app_row)
     db.commit()
     state = "enabled" if app_row.enabled else "disabled"
+    # When disabling, close out any open AppSessions so a user already in
+    # the app's iframe stops authenticating against the SDK at the moment
+    # of the admin action. The per-request access gate already 404s on a
+    # disabled app, so this is defense in depth / cleaner audit trail.
+    if not app_row.enabled:
+        revoke_all_app_sessions_for_slug(db, app_row.slug)
     record_event(
         db, actor=admin, action="app.toggle", request=request,
         target=f"app:{app_row.slug}",
@@ -833,6 +857,9 @@ def admin_apps_delete(
     slug_for_audit = app_row.slug
     if app_row.id is not None:
         delete_access_for_app(db, app_row.id)
+    # Close any open AppSessions before the App row goes away so the
+    # session table doesn't carry rows that FK at a deleted app slug.
+    revoke_all_app_sessions_for_slug(db, app_row.slug)
     db.delete(app_row)
     db.commit()
     record_event(
@@ -991,6 +1018,16 @@ def serve_app_file(
     # no-cookie path will bounce the browser to /apps/<slug>/ to mint a launch
     # token. Token isn't included here; the subdomain handler handles that.
     if not settings.child_apps_same_origin:
+        # Validate the slug against the kebab-case grammar BEFORE interpolating
+        # it into the Location header. Without this, a path like
+        # ``/apps/attacker.com%23/x`` decodes to ``slug = "attacker.com#"`` and
+        # Starlette's RedirectResponse keeps the ``#`` literal in the URL —
+        # browsers then parse Location as ``host=attacker.com,
+        # fragment=.apps.example.com/x`` and navigate to attacker.com.
+        # ``%5C`` (backslash) gives the same effect because Chrome/Firefox
+        # normalize ``\`` to ``/``. Reject anything outside the slug alphabet.
+        if not SLUG_RE.match(slug):
+            raise HTTPException(404)
         scheme = "https" if settings.cookies_secure else "http"
         host = request.headers.get("host", settings.site_url)
         port = ""
@@ -1092,13 +1129,22 @@ def _serve_app_subdomain_path(
     if not target.is_file():
         raise HTTPException(404)
 
-    # Nonce-substitute HTML responses for csp_strict apps.
+    # Nonce-substitute HTML responses for csp_strict apps. Only files under
+    # ``_MAX_NONCE_SUB_BYTES`` get the read-into-memory + replace treatment;
+    # an app that ships a multi-megabyte index.html (under the zip cap but
+    # well past anything reasonable) would otherwise amplify per-request
+    # memory N× under concurrency. Larger HTML falls through to FileResponse
+    # — the strict CSP will then reject the un-nonced inline script and the
+    # app author will see the symptom in DevTools, which is the correct
+    # signal to split the HTML or drop inline scripts.
     if bool(getattr(app_row, "csp_strict", False)):
         suffix = target.suffix.lower()
         if suffix in (".html", ".htm"):
             nonce = getattr(request.state, "csp_nonce", None)
             if nonce:
                 try:
+                    if target.stat().st_size > _MAX_NONCE_SUB_BYTES:
+                        return FileResponse(target)
                     body = target.read_text(encoding="utf-8")
                 except (OSError, UnicodeDecodeError):
                     # If the file isn't UTF-8 text after all, fall through
@@ -1167,13 +1213,12 @@ def _launch_bootstrap_html(request: Request, slug: str) -> Response:
     fresh token and render another iframe, looping forever inside
     nested iframes without ever exchanging the token.
     """
-    launcher_url = _launcher_url(request, slug)
-    # Both values are server-built (slug is regex-validated kebab-case,
-    # launcher_url is constructed from trusted config) so JSON-encoding
-    # is purely for safe quoting inside the inline JS.
-    import json as _json
-    slug_js = _json.dumps(slug)
-    launcher_js = _json.dumps(launcher_url)
+    # ``_launcher_url`` is still built so callers that diagnose this page in
+    # logs can see it, but the inline JS below doesn't actually navigate
+    # back — the iframe sandbox doesn't allow top-navigation, so the user
+    # recovers via the launcher chrome's ← Apps link. Keep this call so the
+    # validate-launcher-url-format invariant is exercised on every hit.
+    _launcher_url(request, slug)
 
     html = f"""<!doctype html>
 <html lang=\"en\">
@@ -1206,8 +1251,6 @@ body {{
 </p>
 <script>
 (function () {{
-  var slug = {slug_js};
-  var launcherUrl = {launcher_js};
   function fail() {{
     var msg = document.getElementById(\"msg\");
     var err = document.getElementById(\"err\");

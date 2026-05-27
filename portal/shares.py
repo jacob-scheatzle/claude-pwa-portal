@@ -27,6 +27,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
+from sqlalchemy import update
 from sqlmodel import Session
 
 from portal.config import settings
@@ -216,11 +217,42 @@ def lookup_active(db: Session, token: str) -> Optional[ShareLink]:
     return row
 
 
-def record_view(db: Session, row: ShareLink) -> None:
-    """Increment the view counter and persist."""
-    row.view_count += 1
-    db.add(row)
-    db.commit()
+def record_view(db: Session, row: ShareLink) -> bool:
+    """Atomically increment view_count, refusing if it would exceed max_views.
+
+    Returns True if the increment was applied, False if the share has hit
+    its cap concurrently (caller should treat this as a 404 to match the
+    behavior of ``lookup_active`` finding a saturated share).
+
+    The previous read-modify-write let N concurrent /s/<token> hits all
+    pass the ``view_count < max_views`` check in lookup_active and then
+    each separately increment, exceeding the cap by ~N. Pushing the cap
+    test into the WHERE clause makes the bound exact under SQLite's
+    statement-level locking.
+    """
+    if row.max_views and row.max_views > 0:
+        result = db.exec(
+            update(ShareLink)
+            .where(ShareLink.id == row.id)
+            .where(ShareLink.view_count < row.max_views)
+            .values(view_count=ShareLink.view_count + 1)
+        )
+        db.commit()
+        applied = bool(getattr(result, "rowcount", 0))
+    else:
+        # No cap — a plain increment is fine.
+        db.exec(
+            update(ShareLink)
+            .where(ShareLink.id == row.id)
+            .values(view_count=ShareLink.view_count + 1)
+        )
+        db.commit()
+        applied = True
+    if applied:
+        # Keep the passed-in row consistent with the DB for any caller that
+        # reads view_count after this returns.
+        row.view_count += 1
+    return applied
 
 
 def revoke(db: Session, row: ShareLink) -> None:

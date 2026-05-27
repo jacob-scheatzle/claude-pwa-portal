@@ -19,6 +19,29 @@ def verify_password(password: str, password_hash: str) -> bool:
         return False
 
 
+# Pre-computed bcrypt hash of a value no one will ever guess. Used to burn the
+# same ~100ms in the unknown-email login path that a real email + wrong-password
+# attempt costs, so an attacker can't enumerate registered users via timing.
+# Generated once at import time; the cost is amortized across the process.
+_DUMMY_PASSWORD_HASH = bcrypt.hashpw(
+    b"this-hash-is-never-matched-against-a-real-password",
+    bcrypt.gensalt(),
+).decode("utf-8")
+
+
+def verify_password_dummy(password: str) -> None:
+    """Run bcrypt against a dummy hash and discard the result.
+
+    Call this when the looked-up user doesn't exist so the response time
+    matches a real (user-found, wrong-password) check. Otherwise an attacker
+    can probe which emails are registered just by timing the login form.
+    """
+    try:
+        bcrypt.checkpw(password.encode("utf-8"), _DUMMY_PASSWORD_HASH.encode("utf-8"))
+    except (ValueError, TypeError):
+        pass
+
+
 def validate_password(password: str) -> list[str]:
     errors: list[str] = []
     if len(password) < MIN_PASSWORD_LEN:

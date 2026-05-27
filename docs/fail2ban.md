@@ -58,26 +58,30 @@ fail2ban configs).
 
 ## Install the configs
 
-Assuming this repo is checked out at `/home/ubuntu/my-portal`:
+The standard production deploy puts only `docker-compose.yml` + `.env` on
+the host, so pull each fail2ban config directly from raw GitHub:
 
 ```bash
-# Copy the two filter files
-sudo cp /home/ubuntu/my-portal/contrib/fail2ban/filter.d/pwa-portal-login.conf \
-        /etc/fail2ban/filter.d/
-sudo cp /home/ubuntu/my-portal/contrib/fail2ban/filter.d/pwa-portal-caddy.conf \
-        /etc/fail2ban/filter.d/
+RAW=https://raw.githubusercontent.com/jacob-scheatzle/claude-pwa-portal/main/contrib/fail2ban
 
-# Copy the jail definitions (portal jails + sshd)
-sudo cp /home/ubuntu/my-portal/contrib/fail2ban/jail.d/pwa-portal.conf \
-        /etc/fail2ban/jail.d/
-sudo cp /home/ubuntu/my-portal/contrib/fail2ban/jail.d/sshd.conf \
-        /etc/fail2ban/jail.d/
+# Filters (the regex definitions)
+sudo curl -fsSL $RAW/filter.d/pwa-portal-login.conf -o /etc/fail2ban/filter.d/pwa-portal-login.conf
+sudo curl -fsSL $RAW/filter.d/pwa-portal-caddy.conf -o /etc/fail2ban/filter.d/pwa-portal-caddy.conf
+
+# Jails (which filters are active + bantime/findtime)
+sudo curl -fsSL $RAW/jail.d/pwa-portal.conf -o /etc/fail2ban/jail.d/pwa-portal.conf
+sudo curl -fsSL $RAW/jail.d/sshd.conf       -o /etc/fail2ban/jail.d/sshd.conf
 ```
 
+If you cloned the repo for development instead, the equivalent
+`sudo install -m 0644 contrib/fail2ban/filter.d/*.conf /etc/fail2ban/filter.d/`
+(plus the jail.d copy) works.
+
 Open `/etc/fail2ban/jail.d/pwa-portal.conf` and **edit the `logpath`** in
-the `[pwa-portal-login]` block if your repo lives somewhere other than
-`/home/ubuntu/my-portal`. The path must be the host-side bind mount of
-the portal's data dir.
+the `[pwa-portal-login]` block if your `docker-compose.yml` lives
+somewhere other than `/home/ubuntu/my-portal`. The path must be the
+host-side bind mount of the portal's data dir (i.e. the directory
+containing `data/security.log`).
 
 If you run sshd on a non-standard port (highly recommended — cuts
 roughly 99% of brute-force noise on its own), edit

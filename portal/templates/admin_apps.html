@@ -125,7 +125,7 @@
 					</div>
 				</details>
 				<form method="post" action="/admin/apps/{{ app.slug }}/delete" style="display:inline;"
-					onsubmit="return confirm('Delete {{ app.name }}? This removes the app and its files on disk.');">
+					data-confirm="Delete {{ app.name }}? This removes the app and its files on disk.">
 					<input type="hidden" name="_csrf" value="{{ csrf_token }}">
 					<button class="action-chip danger" type="submit">Delete</button>
 				</form>

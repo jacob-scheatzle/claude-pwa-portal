@@ -161,6 +161,33 @@ def revoke_all_app_sessions_for_user(db: Session, user_id: int) -> int:
     return count
 
 
+def revoke_all_app_sessions_for_slug(db: Session, slug: str) -> int:
+    """Revoke every active AppSession for an app slug. Returns count revoked.
+
+    Called when an admin disables or deletes an app so any open browser
+    sessions in that app's iframe stop authenticating against the SDK.
+    The per-request access check already 404s on disabled/deleted apps,
+    so this is defense in depth — the impact of an unrevoked session is
+    that the session row outlives the admin's intent (cleaner audit trail
+    when the row is closed at the moment of the admin action).
+    """
+    rows = db.exec(
+        select(AppSession).where(
+            AppSession.slug == slug,
+            AppSession.revoked_at.is_(None),  # type: ignore[union-attr]
+        )
+    ).all()
+    now = _utcnow()
+    count = 0
+    for row in rows:
+        row.revoked_at = now
+        db.add(row)
+        count += 1
+    if count:
+        db.commit()
+    return count
+
+
 def touch_app_session(db: Session, session: AppSession) -> None:
     """Bump AppSession.last_seen_at if older than _LAST_SEEN_REFRESH."""
     now = _utcnow()

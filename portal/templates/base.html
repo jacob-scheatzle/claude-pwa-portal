@@ -1147,6 +1147,21 @@
 			apply(current());
 		})();
 
+		// Delegated submit-confirm for destructive admin actions. Forms
+		// opt in by adding ``data-confirm="message"``; we read the text via
+		// the dataset API so the message is HTML-decoded by the browser
+		// (safe — it can't escape the confirm() string context) instead of
+		// interpolating it into an inline JS handler, which was vulnerable
+		// to attribute-context entity bypass (`&#39;` decoding to `'` and
+		// closing the JS string).
+		document.addEventListener("submit", function (e) {
+			const form = e.target.closest("form[data-confirm]");
+			if (!form) return;
+			if (!window.confirm(form.dataset.confirm)) {
+				e.preventDefault();
+			}
+		});
+
 		// Mobile hamburger toggle. The nav itself is positioned absolutely
 		// below the topbar at narrow widths; the .open class flips it visible.
 		(function () {

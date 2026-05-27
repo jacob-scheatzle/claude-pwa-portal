@@ -25,7 +25,7 @@ The portal is designed so the apps inside it can be authored by someone who isn'
   - `portal.email.send()` — outgoing mail with per-user rate limit + optional recipient-domain allowlist
   - `portal.storage.{put,get,list,delete}` — per-app, per-user key/value storage
 - A **Claude skill** ([`claude-skill/pwa-portal-app/`](claude-skill/pwa-portal-app/)) so a non-developer can ask Claude to build an app and have it scaffolded, packaged, and uploaded automatically.
-- A **reference example** ([`examples/hello-receipt/`](examples/hello-receipt/)) — a working PWA that uses every SDK service.
+- A **reference gallery** at [`examples/`](https://github.com/jacob-scheatzle/claude-pwa-portal/tree/main/examples) — seven drop-in PWAs (mileage log, time tracker, expense logger, customer directory, quote builder, invoice generator) plus a minimal [`hello-receipt`](https://github.com/jacob-scheatzle/claude-pwa-portal/tree/main/examples/hello-receipt) that exercises every SDK service in one file.
 - **Pre-built container images on GHCR** + a GitHub Actions workflow that builds and publishes on every push to `main`. Deployers don't need to clone the repo.
 - **Drop in configs for Fail2Ban** It is HIGHLY suggested to use Fail2Ban or something similar to block unwanted connections if using on a VPS or standalone machine. If deploying in a cloud environment it is suggested to use the appropriate security groups, network firewalls, etc. 
 ## Quick start

@@ -32,6 +32,7 @@ from portal.security import (
     hash_password,
     validate_password,
     verify_password,
+    verify_password_dummy,
 )
 from portal.sessions import (
     create_session,
@@ -95,19 +96,21 @@ app.add_middleware(
     https_only=settings.cookies_secure,
     max_age=settings.session_max_age,
 )
-# HostDispatch goes after SessionMiddleware (so it executes first on each
-# request) and tags ``request.state.app_slug`` from the Host header before any
-# route handler runs. Per Starlette semantics, middleware added LATER runs
-# FIRST on the request path.
-app.add_middleware(HostDispatchMiddleware)
-# ChildAppCSP is added AFTER HostDispatch, making it the outermost layer:
-# on the request path it sees the bare request first and immediately calls
-# through; on the response path it runs last, by which point HostDispatch
-# has populated ``request.state.app_slug`` and the CSP can be stamped onto
-# the outgoing response. Per-app Content-Security-Policy lives in the
-# portal, not Caddy, because the allowed external ``connect-src`` origins
-# are per-app data sourced from ``App.allowed_origins``.
+# Middleware order matters here. Starlette's add_middleware prepends to the
+# user-middleware list, so the call made LAST becomes the OUTERMOST wrapper
+# and runs FIRST on each request. We need HostDispatch to set
+# ``request.state.app_slug`` from the Host header BEFORE ChildAppCSP reads
+# it (the strict-CSP nonce is stamped onto ``request.state`` pre-handler so
+# templates can substitute ``{{NONCE}}`` during render).
+#
+# Therefore: add ChildAppCSP first (innermost), then HostDispatch (outermost).
+# On request: HostDispatch → ChildAppCSP → handler. On response: handler →
+# ChildAppCSP (stamps the per-app Content-Security-Policy header) → HostDispatch.
+#
+# Per-app CSP lives in the portal, not Caddy, because the allowed external
+# ``connect-src`` origins are per-app data sourced from ``App.allowed_origins``.
 app.add_middleware(ChildAppCSPMiddleware, engine=engine)
+app.add_middleware(HostDispatchMiddleware)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.include_router(apps_module.router)
 app.include_router(api_module.router)
@@ -548,7 +551,14 @@ def login_submit(
         )
     normalized = email.strip().lower()
     user = db.exec(select(User).where(User.email == normalized)).first()
-    if user is None or not verify_password(password, user.password_hash):
+    if user is None:
+        # Burn the same bcrypt time a real-user lookup would, so an attacker
+        # can't enumerate registered emails by timing the response.
+        verify_password_dummy(password)
+        bad_password = True
+    else:
+        bad_password = not verify_password(password, user.password_hash)
+    if user is None or bad_password:
         _record_login_failure(key)
         record_login_attempt(
             db, ip=client_ip, email=email, success=False, reason="bad_credentials",
@@ -711,7 +721,11 @@ def share_view(token: str, db: DbDep):
             raise HTTPException(404)
         if not target.is_file():
             raise HTTPException(404)
-        record_view(db, row)
+        # Atomic claim against ``max_views``. If we lost the race to a
+        # concurrent viewer that pushed the count over the cap, treat this
+        # like any other saturated/expired share — 404.
+        if not record_view(db, row):
+            raise HTTPException(404)
         return _FileResponse(
             target,
             media_type="application/pdf",
@@ -746,14 +760,23 @@ def share_view(token: str, db: DbDep):
             raise HTTPException(404)
         if not target.is_file():
             raise HTTPException(404)
-        record_view(db, row)
-        import mimetypes
-
-        mt, _ = mimetypes.guess_type(str(target))
+        if not record_view(db, row):
+            raise HTTPException(404)
+        # Storage shares serve user-controlled bytes from the portal origin,
+        # where the session cookie lives. If we let the browser sniff this
+        # as text/html (or any renderable type) and render it inline, a
+        # malicious child app could upload ``xss.html`` to storage, mint a
+        # share link, phish an admin into clicking it, and run JS in the
+        # admin's session — same-origin token mint, settings change, etc.
+        # The matching SDK endpoint at /api/v1/storage/{key} already forces
+        # ``attachment`` for the same reason; this branch had regressed it.
+        # PDF shares (above) are safe to serve inline because they're
+        # pre-rendered by WeasyPrint on the server and always
+        # application/pdf.
         return FileResponse(
             target,
-            media_type=mt or "application/octet-stream",
-            headers={"Content-Disposition": f'inline; filename="{safe_name}"'},
+            media_type="application/octet-stream",
+            headers={"Content-Disposition": f'attachment; filename="{safe_name}"'},
         )
 
     raise HTTPException(404)

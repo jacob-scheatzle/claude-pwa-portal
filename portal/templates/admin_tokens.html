@@ -43,7 +43,7 @@
 			<td data-label="Created">{{ t.created_at.strftime("%Y-%m-%d") }}</td>
 			<td data-label="Last used">{% if t.last_used_at %}{{ t.last_used_at.strftime("%Y-%m-%d %H:%M UTC") }}{% else %}—{% endif %}</td>
 			<td class="actions">
-				<form method="post" action="/admin/tokens/{{ t.id }}/delete" style="display:inline;" onsubmit="return confirm('Revoke {{ t.name }}? Anyone using this token will be locked out.');">
+				<form method="post" action="/admin/tokens/{{ t.id }}/delete" style="display:inline;" data-confirm="Revoke {{ t.name }}? Anyone using this token will be locked out.">
 					<input type="hidden" name="_csrf" value="{{ csrf_token }}">
 					<button class="action-chip danger" type="submit">Revoke</button>
 				</form>

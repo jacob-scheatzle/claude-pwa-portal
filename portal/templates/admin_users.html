@@ -48,7 +48,7 @@
 					</div>
 				</details>
 				{% if u.id != user.id %}
-				<form method="post" action="/admin/users/{{ u.id }}/delete" style="display:inline;" onsubmit="return confirm('Delete {{ u.email }}?');">
+				<form method="post" action="/admin/users/{{ u.id }}/delete" style="display:inline;" data-confirm="Delete {{ u.email }}?">
 					<input type="hidden" name="_csrf" value="{{ csrf_token }}">
 					<button class="action-chip danger" type="submit">Delete</button>
 				</form>

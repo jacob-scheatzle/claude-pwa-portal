@@ -18,7 +18,7 @@ import anyio
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import EmailStr, TypeAdapter, ValidationError
-from sqlalchemy import func
+from sqlalchemy import delete, func
 from sqlmodel import Session, select
 from starlette.background import BackgroundTask
 
@@ -41,8 +41,9 @@ from portal.branding import (
 from portal.config import settings
 from portal.db import get_db
 from portal.deps import require_admin
-from portal.models import ApiToken, App, User, UserAppAccess
+from portal.models import ApiToken, App, AppLaunchToken, User, UserAppAccess
 from portal.security import check_csrf, hash_password, validate_password
+from portal.sessions import revoke_all_app_sessions_for_user, revoke_all_for_user
 from portal.settings_store import get_setting, set_secret, set_setting, smtp_config
 from portal.smtp import send_message
 from portal.web import flash, render
@@ -89,7 +90,15 @@ def settings_form(request: Request, db: DbDep, admin: AdminDep):
 # here so the form handler can validate the submitted value without crossing
 # into branding internals.
 _ACCENT_HEX_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
-_LOGO_BASENAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+# Character class of disallowed characters — applied via .sub("", stem) to
+# strip anything outside the safe whitelist. The previously-anchored
+# ``^[A-Za-z0-9_-]+$`` form was wrong: with re.sub, an anchored full-match
+# regex either matches the whole string (replaced by "") or doesn't match at
+# all, so a clean stem like "logo" got nuked and a bad stem like "foo!bar"
+# passed through untouched. The serve-side ``_safe_logo_name`` whitelist
+# then 404'd the orphaned file, so logo/favicon uploads with most non-trivial
+# filenames silently failed to display.
+_LOGO_BASENAME_RE = re.compile(r"[^A-Za-z0-9_-]+")
 
 
 def _store_logo(upload: UploadFile) -> Optional[str]:
@@ -582,9 +591,18 @@ def users_delete(
     email = target.email
     role = target.role
     # SQLite FKs are advisory here, so drop the access rows explicitly before
-    # the User row goes away to keep the table consistent.
+    # the User row goes away to keep the table consistent. We also have to
+    # cascade tokens and sessions: SQLite reuses INTEGER PRIMARY KEY rowids
+    # when the highest-id row is deleted, so any lingering ApiToken,
+    # UserSession, AppSession, or AppLaunchToken whose user_id points at the
+    # deleted row would silently re-authenticate as a future new user that
+    # inherits the same id.
     if target.id is not None:
         delete_access_for_user(db, target.id)
+        revoke_all_for_user(db, target.id)
+        revoke_all_app_sessions_for_user(db, target.id)
+        db.exec(delete(ApiToken).where(ApiToken.created_by == target.id))
+        db.exec(delete(AppLaunchToken).where(AppLaunchToken.user_id == target.id))
     db.delete(target)
     db.commit()
     record_event(

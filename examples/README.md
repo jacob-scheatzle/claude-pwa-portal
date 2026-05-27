@@ -16,11 +16,20 @@ directory is the raw bundle — zip it up (or use the Claude skill's
 
 ## Install one
 
+**No repo checkout?** Easiest path: open the app's folder on GitHub
+(e.g. <https://github.com/jacob-scheatzle/claude-pwa-portal/tree/main/examples/mileage-log>),
+download the three files into a directory, zip the directory so
+`portal.json` is at the root, and upload via **Admin → Apps** in the portal UI.
+
+**With the Claude skill installed** (see [`docs/app-authoring.md`](../docs/app-authoring.md)):
+
 ```bash
-# From a cloned repo:
-python3 claude-skill/pwa-portal-app/scripts/package.py examples/mileage-log
+git clone https://github.com/jacob-scheatzle/claude-pwa-portal.git
+cd claude-pwa-portal
+python3 ~/.claude/skills/pwa-portal-app/scripts/package.py examples/mileage-log
 PORTAL_URL=https://your-portal PORTAL_TOKEN=<admin-token> \
-  python3 claude-skill/pwa-portal-app/scripts/upload.py mileage-log-1.0.0.zip
+  python3 ~/.claude/skills/pwa-portal-app/scripts/upload.py mileage-log-1.0.0.zip
 ```
 
-Or zip the directory by hand and upload via the admin UI.
+**From a cloned repo without the skill** — the same scripts live at
+`claude-skill/pwa-portal-app/scripts/`.

@@ -3,7 +3,9 @@ for the Claude skill. Auth accepts either a session cookie or
 `Authorization: Bearer <token>`."""
 from __future__ import annotations
 
+import asyncio
 import io
+import logging
 import mimetypes
 import re
 import time
@@ -13,6 +15,8 @@ from email.message import EmailMessage
 from pathlib import Path
 from threading import Lock
 from typing import Annotated, Optional
+
+logger = logging.getLogger("portal.api")
 
 from fastapi import (
     APIRouter, Depends, File, Header, HTTPException, Request, Response, UploadFile,
@@ -273,7 +277,7 @@ _CERT_ASK_RE = re.compile(
 
 
 @router.get("/internal/cert-ask", include_in_schema=False)
-def cert_ask(domain: str, db: DbDep):
+def cert_ask(domain: str, request: Request, db: DbDep):
     """Approve TLS-certificate issuance for known app subdomains.
 
     Called by Caddy's ``on_demand_tls.ask`` hook BEFORE Caddy attempts to
@@ -294,10 +298,17 @@ def cert_ask(domain: str, db: DbDep):
         and wouldn't actually use on_demand)
       * Anything else                                            -> 404
 
-    No authentication: Caddy reaches the portal over the internal Docker
-    network. External callers can't learn anything they couldn't already
-    learn by attempting ``https://<slug>.apps.<SITE_URL>/`` directly.
+    No authentication, but gated to direct hits from the docker bridge:
+    Caddy's on_demand_tls.ask hook calls ``http://portal:8000/...`` directly,
+    bypassing the public Caddy proxy and so omitting X-Forwarded-For. Any
+    request reaching this handler WITH an X-Forwarded-For header came in
+    through the public site block and is rejected as 404 — keeps app-slug
+    enumeration off the public surface even though the impact is minimal
+    (attackers can probe ``<slug>.apps.<SITE_URL>/`` directly for the same
+    answer).
     """
+    if request.headers.get("X-Forwarded-For"):
+        raise HTTPException(404)
     host = (domain or "").strip().lower().rstrip(".")
     if not host:
         raise HTTPException(404)
@@ -423,8 +434,17 @@ def session_exchange(
 
 # ----- /pdf -----
 
+# 2 MiB ceiling on caller-supplied HTML. WeasyPrint renders linearly in
+# document size and a single big render can hold the worker thread for
+# multiple seconds; the cap turns a "tight-loop with big payload" DoS into
+# a per-user-rate-limited annoyance. 2 MiB comfortably fits multi-page
+# invoices with embedded base64 images.
+_MAX_PDF_HTML_BYTES = 2 * 1024 * 1024
+_MAX_EMAIL_BODY_BYTES = 1 * 1024 * 1024
+
+
 class PdfRequest(BaseModel):
-    html: str = Field(min_length=1)
+    html: str = Field(min_length=1, max_length=_MAX_PDF_HTML_BYTES)
     filename: str = "document.pdf"
     # When True, the portal injects a branding header (business name + logo
     # + accent border) into the rendered PDF before running WeasyPrint. The
@@ -432,6 +452,35 @@ class PdfRequest(BaseModel):
     # — so the app's HTML is otherwise untouched. Opt-in so existing apps
     # that fit content precisely aren't reflowed by the new header.
     branded: bool = False
+
+
+# Per-user, in-memory, rolling-hour render counter. Symmetric with
+# ``_check_email_rate`` below — see that function for the threading model
+# and the per-process caveat.
+_PDF_RATE_WINDOW_SECONDS = 3600
+_PDF_RATE_LIMIT_PER_HOUR = 120
+_pdf_render_log: dict[int, deque] = {}
+_pdf_rate_lock = Lock()
+
+
+def _check_pdf_rate(user_id: int) -> None:
+    """Raise 429 if ``user_id`` has exceeded the rolling-hour render limit."""
+    now = time.monotonic()
+    cutoff = now - _PDF_RATE_WINDOW_SECONDS
+    with _pdf_rate_lock:
+        dq = _pdf_render_log.get(user_id)
+        if dq is None:
+            dq = deque()
+            _pdf_render_log[user_id] = dq
+        while dq and dq[0] < cutoff:
+            dq.popleft()
+        if len(dq) >= _PDF_RATE_LIMIT_PER_HOUR:
+            raise HTTPException(
+                429,
+                f"PDF render rate limit exceeded "
+                f"({_PDF_RATE_LIMIT_PER_HOUR}/hour per user, per process).",
+            )
+        dq.append(now)
 
 
 def _no_external_fetcher(url, timeout=10, ssl_context=None):
@@ -461,12 +510,14 @@ def pdf_render(
     me = _require_user(user)
     _require_csrf_for_cookie(request, x_csrf)
     _require_service(_maybe_resolve_app(request, me, x_portal_app, db), "pdf")
+    _check_pdf_rate(me.id)
     try:
         from weasyprint import HTML  # lazy: avoid hard import at startup
     except ImportError:
         raise HTTPException(503, "PDF service unavailable: WeasyPrint not installed")
-    except OSError as e:
-        raise HTTPException(503, f"PDF service unavailable: {e}")
+    except OSError:
+        logger.exception("PDF service unavailable: WeasyPrint import failed")
+        raise HTTPException(503, "PDF service unavailable")
 
     html_to_render = req.html
     if req.branded:
@@ -490,8 +541,11 @@ def pdf_render(
     buf = io.BytesIO()
     try:
         HTML(string=html_to_render, url_fetcher=_no_external_fetcher).write_pdf(buf)
-    except Exception as e:
-        raise HTTPException(500, f"PDF render failed: {e}")
+    except Exception:
+        # WeasyPrint exceptions can carry internal paths and library versions.
+        # Log the detail server-side; return a generic message to the caller.
+        logger.exception("PDF render failed for user_id=%s", me.id)
+        raise HTTPException(500, "PDF render failed")
     buf.seek(0)
     safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", req.filename) or "document.pdf"
     return StreamingResponse(
@@ -506,8 +560,10 @@ def pdf_render(
 class EmailRequest(BaseModel):
     to: list[EmailStr] | EmailStr
     subject: str = Field(default="", max_length=200)
-    text: Optional[str] = None
-    html: Optional[str] = None
+    # 1 MiB caps on body to keep the SMTP submission bounded — and to keep
+    # a single user from holding the worker thread on a multi-megabyte send.
+    text: Optional[str] = Field(default=None, max_length=_MAX_EMAIL_BODY_BYTES)
+    html: Optional[str] = Field(default=None, max_length=_MAX_EMAIL_BODY_BYTES)
 
 
 # Per-user, in-memory, rolling-hour send counter. NOTE: this is per-process,
@@ -600,8 +656,12 @@ def email_send(
 
     try:
         send_message(msg, cfg)
-    except Exception as e:
-        raise HTTPException(502, f"Email send failed: {e}")
+    except Exception:
+        # smtplib exceptions can carry server hostnames, auth-error specifics,
+        # and library detail strings. Log the detail; respond with a generic
+        # message so child apps can't probe SMTP config from the response body.
+        logger.exception("Email send failed for user_id=%s", me.id)
+        raise HTTPException(502, "Email send failed")
 
     # Record to the rolling EmailSendLog so /admin/health can show recent
     # outbound mail. Resolve the source app from the request context so the
@@ -648,6 +708,25 @@ def _ns_dir(app_slug: str, user_id: int) -> Path:
 
 def _ns_usage(ns: Path) -> int:
     return sum(p.stat().st_size for p in ns.rglob("*") if p.is_file())
+
+
+# Per-(app_slug, user_id) asyncio locks serialize concurrent PUTs into the
+# same namespace. Without this, two near-simultaneous PUTs each ~cap-sized
+# can both pass the per-object check, both finish writing, and then both
+# observe an over-cap namespace and delete themselves — losing two
+# successful-looking writes. Holding the lock across the streaming +
+# cleanup means the namespace cap is checked against a stable on-disk
+# state. Single-threaded asyncio makes the dict access here race-free.
+_storage_locks: dict[tuple[str, int], asyncio.Lock] = {}
+
+
+def _get_storage_lock(app_slug: str, user_id: int) -> asyncio.Lock:
+    key = (app_slug, user_id)
+    lock = _storage_locks.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _storage_locks[key] = lock
+    return lock
 
 
 @router.get("/storage")
@@ -723,28 +802,29 @@ async def storage_put(
 
     target.parent.mkdir(parents=True, exist_ok=True)
     written = 0
-    try:
-        with open(target, "wb") as f:
-            async for chunk in request.stream():
-                written += len(chunk)
-                if written > MAX_OBJECT_BYTES:
-                    raise HTTPException(
-                        413,
-                        f"object exceeds {MAX_OBJECT_BYTES // (1024 * 1024)}MB limit",
-                    )
-                f.write(chunk)
-    except Exception:
-        # Disk error, oversized body, network drop — any path that leaves
-        # a partial file behind should clean up before re-raising.
-        target.unlink(missing_ok=True)
-        raise
+    async with _get_storage_lock(app_row.slug, me.id):
+        try:
+            with open(target, "wb") as f:
+                async for chunk in request.stream():
+                    written += len(chunk)
+                    if written > MAX_OBJECT_BYTES:
+                        raise HTTPException(
+                            413,
+                            f"object exceeds {MAX_OBJECT_BYTES // (1024 * 1024)}MB limit",
+                        )
+                    f.write(chunk)
+        except Exception:
+            # Disk error, oversized body, network drop — any path that leaves
+            # a partial file behind should clean up before re-raising.
+            target.unlink(missing_ok=True)
+            raise
 
-    if _ns_usage(ns) > MAX_NAMESPACE_BYTES:
-        target.unlink(missing_ok=True)
-        raise HTTPException(
-            507,
-            f"storage namespace exceeds {MAX_NAMESPACE_BYTES // (1024 * 1024)}MB limit",
-        )
+        if _ns_usage(ns) > MAX_NAMESPACE_BYTES:
+            target.unlink(missing_ok=True)
+            raise HTTPException(
+                507,
+                f"storage namespace exceeds {MAX_NAMESPACE_BYTES // (1024 * 1024)}MB limit",
+            )
 
     return {
         "key": key,
