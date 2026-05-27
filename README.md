@@ -4,6 +4,18 @@ An open-source, self-hosted **Progressive Web App portal** for small businesses.
 
 > **Status:** v1 beta. Single-tenant per deployment. All core building blocks shipped; pre-built container images on GHCR.
 
+## Screenshots
+
+User dashboard — same tiles, light and dark theme follow the system or a per-user toggle:
+
+| Light | Dark |
+|---|---|
+| ![Dashboard, light mode](docs/img/dashboard-light.png) | ![Dashboard, dark mode](docs/img/dashboard-dark.png) |
+
+Admin app management — upload bundles, reorder tiles, gate per-app service and network access, replace in place:
+
+![Admin → Apps](docs/img/admin-apps.png)
+
 ## Why
 
 Most small businesses have a handful of little internal tools — quote builders, receipt emailers, time loggers, lookup utilities — that would be useful if they lived behind a single login on every staff member's phone home screen. Building each tool standalone is heavy; building them on top of an opinionated portal that already handles auth, hosting, PDFs, email, and per-user storage is light.
