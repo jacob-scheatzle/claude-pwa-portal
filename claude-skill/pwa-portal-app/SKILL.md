@@ -48,39 +48,92 @@ When uploaded, the portal extracts to `data/apps/<slug>/` and serves the app.
 ### Icons (required for every app)
 
 Every app MUST ship a real icon. The dashboard tile and the iOS
-"Add-to-Home-Screen" badge both pull from `portal.json.icon`; an app with
-no icon falls back to the generic portal placeholder, which makes the
-home screen useless after the user installs more than one app.
+"Add-to-Home-Screen" badge both pull from `portal.json.icon`; an app
+with no icon falls back to the generic portal placeholder, which makes
+the home screen useless after the user installs more than one app.
 
-The scaffold ships a placeholder at `templates/basic/icon.png`. **You must
-replace it** before packaging — `package.py` refuses to build a zip whose
-icon byte-for-byte matches the placeholder. Two ways to do it:
+**Make a pictogram, not a letter.** A user with six or seven apps on
+their home screen reads icons by shape, not by initial. Six letter tiles
+all in the same accent green look identical at a glance. A speedometer
+for mileage, a receipt for expenses, a clock for time tracking — each is
+recognizable in a tenth of a second.
 
-1. **Recommended — generate one with a single accent-colored letter.**
-   Pick the app's initial (e.g. "Q" for a quote calculator, "R" for
-   receipts), generate a 192x192 PNG with that letter centered on the
-   portal's emerald accent (`#059669`) or a per-app accent of your
-   choice. Python + Pillow is the simplest path:
-   ```bash
-   python3 -c "
-   from PIL import Image, ImageDraw, ImageFont
-   im = Image.new('RGB', (192, 192), '#059669')
-   d = ImageDraw.Draw(im)
-   try:
-       f = ImageFont.truetype('/System/Library/Fonts/Helvetica.ttc', 110)
-   except OSError:
-       f = ImageFont.load_default()
-   d.text((96, 96), 'Q', fill='white', font=f, anchor='mm')
-   im.save('/path/to/<slug>/icon.png')
-   "
-   ```
-   On Linux containers without Helvetica, fall back to
-   `/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf`.
+The scaffold ships a placeholder at `templates/basic/icon.png`. **You
+must replace it** before packaging — `package.py` refuses to build a zip
+whose icon byte-for-byte matches the placeholder.
 
-2. **User supplied** — if the user attached their own PNG/SVG/JPEG/WebP,
-   save it to `<slug>/icon.png` (or update `portal.json.icon` to match
-   the actual filename). Keep it square; 192x192 PNG is the sweet spot
-   for both the dashboard tile and iOS.
+#### Drawing a pictogram with Pillow
+
+Pillow is stdlib-adjacent (one pip install, no other dependencies) and
+can compose simple shapes — rectangles, circles, polygons, lines, arcs
+— on a solid background. That's all a recognizable business-app icon
+needs. Aim for 192×192 PNG with the portal accent (`#059669`) as the
+background and a single white silhouette.
+
+A working template — replace the `# --- pictogram ---` body with shapes
+that represent your app:
+
+```python
+from PIL import Image, ImageDraw
+W = 192
+ACCENT = "#059669"  # portal default emerald; pick another hex if it fits the app better
+im = Image.new("RGB", (W, W), ACCENT)
+d = ImageDraw.Draw(im)
+
+# --- pictogram --- (replace this with shapes that match the app)
+# Example: a simple receipt outline for an expense logger
+margin = 36
+d.rounded_rectangle([margin, margin - 12, W - margin, W - margin + 12], radius=8, outline="white", width=6)
+for y in (72, 96, 120):
+    d.line([margin + 14, y, W - margin - 14, y], fill="white", width=4)
+# zig-zag bottom edge typical of receipts
+zigzag = [(margin, W - margin + 12)]
+step = 12
+x = margin
+while x < W - margin:
+    x += step
+    zigzag.append((x, W - margin))
+    x += step
+    zigzag.append((x, W - margin + 12))
+d.polygon(zigzag + [(W - margin, W - margin + 12)], fill=ACCENT, outline="white")
+
+im.save("/path/to/<slug>/icon.png")
+```
+
+Pillow primitives you'll reach for most:
+
+- `d.rectangle([x0, y0, x1, y1], fill=..., outline=..., width=N)` — bars, panels, frames
+- `d.rounded_rectangle(...)` — modern rounded panels
+- `d.ellipse(...)` — circles, dots, clock faces, gauges
+- `d.polygon([(x, y), ...], fill=..., outline=...)` — triangles, arrows, custom shapes
+- `d.line([(x0, y0), (x1, y1)], fill=..., width=N)` — clock hands, divider lines, axes
+- `d.arc(box, start, end, fill=..., width=N)` — gauges, progress rings
+- `d.pieslice(box, start, end, fill=..., outline=...)` — pie wedges, hour markers
+
+**Pictogram recipes for common app categories:**
+
+| App type | Pictogram approach |
+|---|---|
+| Receipt / expense logger | Rounded rect "paper" with horizontal lines for text and a zig-zag bottom edge |
+| Invoice / quote builder | Document outline + a `$` or check-mark in the lower-right corner |
+| Time tracker / clock-in | Circle (clock face) + two `line`s for hour and minute hands |
+| Mileage / odometer | Circle outline + arc for the gauge sweep + a single line for the needle |
+| Customer directory / CRM | Rounded rect + circle (head) + half-circle (shoulders) — contact card silhouette |
+| Calendar / scheduler | Rounded rect with a thicker top band and a 3×3 grid of dots inside |
+| Inventory / items | 3–4 stacked rectangles, slightly offset to suggest stacked boxes |
+| Forms / surveys | Document outline + a sequence of small filled circles down the left side (radio buttons) |
+| Photo / image gallery | Rounded rect frame + two diagonal lines forming a mountain + a circle for the sun |
+| Window / property cleaning | Rounded square frame split into 4 quadrants by a `+` (window pane) |
+
+**If you genuinely can't think of a pictogram** (purely abstract apps,
+miscellaneous utilities), fall back to a centered letter — but only as a
+last resort. Same Pillow recipe as the pictogram, just with `d.text((W/2,
+W/2), "X", fill="white", font=f, anchor="mm")` instead of shapes.
+
+**User-supplied icons:** if the user attached their own PNG / SVG / JPEG
+/ WebP, skip the Pillow step and save it to `<slug>/icon.png`. Keep it
+square — 192×192 PNG is the sweet spot for both the dashboard tile and
+iOS home-screen icons.
 
 Rules the portal enforces:
 
@@ -88,12 +141,12 @@ Rules the portal enforces:
   no leading `/`).
 - The file must exist in the zip.
 - `package.py` rejects the unmodified scaffold placeholder.
-- Supported formats: PNG, SVG, JPEG, WebP. PNG at 192x192 renders
+- Supported formats: PNG, SVG, JPEG, WebP. PNG at 192×192 renders
   cleanest across iOS, Android, and desktop browsers.
 
 **Authoring rule**: never `package.py` an app whose icon is still the
-scaffold default. Generate or copy in a real icon as part of the build
-workflow below — not as an afterthought.
+scaffold default. Draw the pictogram as part of the build workflow
+below — not as an afterthought.
 
 ### Where the app runs
 
@@ -366,11 +419,14 @@ Requires the corresponding service in your manifest's `services`
    ```
    Then edit `portal.json` (slug/name/version) and `index.html` (initial content).
 4. **Implement.** Edit `index.html`. Add CSS/JS inline or as separate files. Keep it minimal — non-coder users don't want elaborate code.
-5. **Generate an icon** — REQUIRED, see the "Icons" section above. The
-   simplest move is the Pillow one-liner that paints the app's initial on
-   the portal accent color. Overwrite `<slug>/icon.png` with the result.
-   `package.py` will refuse to build a zip whose icon is still the
-   scaffold placeholder, so this step is enforced, not optional.
+5. **Draw a pictogram icon** — REQUIRED, see the "Icons" section above.
+   Pick a shape from the recipe table that fits the app (receipt, clock,
+   gauge, contact card, etc.) and draw it with Pillow primitives on the
+   portal accent background. Save to `<slug>/icon.png`. A letter on a
+   colored square is the *last-resort* fallback, not the default —
+   pictograms are how a user with five apps on their home screen tells
+   them apart. `package.py` refuses to build a zip whose icon is still
+   the scaffold placeholder, so the step is enforced, not optional.
 6. **Package.**
    ```
    python3 ~/.claude/skills/pwa-portal-app/scripts/package.py /path/to/<slug>

@@ -201,7 +201,6 @@
 		.topbar {
 			display: flex;
 			align-items: center;
-			justify-content: space-between;
 			padding: 0.85rem 1.5rem;
 			border-bottom: 1px solid var(--border);
 			background: color-mix(in srgb, var(--surface) 80%, transparent);
@@ -211,6 +210,13 @@
 			top: 0;
 			z-index: 10;
 			gap: 0.75rem;
+		}
+		/* Brand pins to the left; everything after it groups to the right
+		   via the auto margin. Avoids ``justify-content: space-between``,
+		   which with 3+ flex children evenly distributes them — that put
+		   the theme toggle dead center instead of in the right-side cluster. */
+		.topbar .brand {
+			margin-right: auto;
 		}
 		.topbar .brand {
 			display: inline-flex;
@@ -695,6 +701,21 @@
 				font-weight: 600;
 				margin-right: 0.5rem;
 			}
+			/* ``data-label=""`` means the cell intentionally carries no label
+			   pseudo (e.g. a value cell paired with a kv-label cell, or a
+			   spacer in a multi-column "Total" row). Without this, the
+			   selector above renders a bare ``:`` glyph in front of every
+			   such cell. */
+			table.apps td[data-label=""]::before { content: none; }
+			/* Drop spacer cells entirely on mobile so multi-column summary
+			   rows (e.g. Health page's "Total" row spanning 4 cols) don't
+			   leave empty stripes between content. */
+			table.apps td:empty { display: none; }
+			/* ``kv-label`` marks a label cell in a 2-col label/value table
+			   (Health page DB/SMTP rows). On desktop it's the bold row
+			   header; on mobile the matching value cell already carries
+			   ``data-label="<Label>"`` so this one is redundant. */
+			table.apps td.kv-label { display: none; }
 			table.apps td.actions {
 				margin-top: 0.65rem;
 				white-space: normal;
@@ -1027,6 +1048,32 @@
 			{% endif %}
 			<span class="brand-text">{{ branding.business_name }}</span>
 		</a>
+		<nav id="primary-nav">
+			<a href="/" class="nav-link">Apps</a>
+			{% if user.role == "admin" %}
+			<details class="nav-menu">
+				<summary class="nav-link">Administrator</summary>
+				<div class="nav-menu-items">
+					<a href="/admin/apps" class="nav-link">Apps</a>
+					<a href="/admin/users" class="nav-link">Users</a>
+					<a href="/admin/settings" class="nav-link">Settings</a>
+					<a href="/admin/tokens" class="nav-link">API tokens</a>
+					<a href="/admin/shares" class="nav-link">Share links</a>
+					<a href="/admin/health" class="nav-link">Health</a>
+					<a href="/admin/audit" class="nav-link">Audit log</a>
+					<a href="/admin/backup" class="nav-link">Backup</a>
+				</div>
+			</details>
+			{% endif %}
+			<a href="/profile" class="nav-link">Profile</a>
+			<form method="post" action="/logout" style="margin:0;">
+				<input type="hidden" name="_csrf" value="{{ csrf_token }}">
+				<button type="submit" class="linkish">
+					<span class="nav-signout-text">Sign out</span>
+					<span class="nav-signout-email">({{ user.email }})</span>
+				</button>
+			</form>
+		</nav>
 		<div class="topbar-actions">
 			<button type="button" class="theme-toggle" id="theme-toggle"
 				aria-label="Toggle color theme" title="Toggle color theme">
@@ -1063,32 +1110,6 @@
 				</svg>
 			</button>
 		</div>
-		<nav id="primary-nav">
-			<a href="/" class="nav-link">Apps</a>
-			{% if user.role == "admin" %}
-			<details class="nav-menu">
-				<summary class="nav-link">Administrator</summary>
-				<div class="nav-menu-items">
-					<a href="/admin/apps" class="nav-link">Apps</a>
-					<a href="/admin/users" class="nav-link">Users</a>
-					<a href="/admin/settings" class="nav-link">Settings</a>
-					<a href="/admin/tokens" class="nav-link">API tokens</a>
-					<a href="/admin/shares" class="nav-link">Share links</a>
-					<a href="/admin/health" class="nav-link">Health</a>
-					<a href="/admin/audit" class="nav-link">Audit log</a>
-					<a href="/admin/backup" class="nav-link">Backup</a>
-				</div>
-			</details>
-			{% endif %}
-			<a href="/profile" class="nav-link">Profile</a>
-			<form method="post" action="/logout" style="margin:0;">
-				<input type="hidden" name="_csrf" value="{{ csrf_token }}">
-				<button type="submit" class="linkish">
-					<span class="nav-signout-text">Sign out</span>
-					<span class="nav-signout-email">({{ user.email }})</span>
-				</button>
-			</form>
-		</nav>
 	</div>
 	{% endif %}
 	{% endblock %}

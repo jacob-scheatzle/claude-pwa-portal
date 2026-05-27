@@ -9,12 +9,12 @@
 <table class="apps">
 	<tbody>
 		<tr>
-			<td data-label="Path"><strong>Path</strong></td>
-			<td data-label=""><code>{{ db_path }}</code></td>
+			<td class="kv-label"><strong>Path</strong></td>
+			<td data-label="Path"><code>{{ db_path }}</code></td>
 		</tr>
 		<tr>
-			<td data-label="Size"><strong>Total size</strong></td>
-			<td data-label="">{{ db_size_human }} <span class="hint">(includes -wal and -shm sidecar files)</span></td>
+			<td class="kv-label"><strong>Total size</strong></td>
+			<td data-label="Size">{{ db_size_human }} <span class="hint">(includes -wal and -shm sidecar files)</span></td>
 		</tr>
 	</tbody>
 </table>
@@ -46,9 +46,9 @@
 		</tr>
 		{% endfor %}
 		<tr>
-			<td data-label=""><strong>Total</strong></td>
-			<td data-label=""></td>
-			<td data-label=""></td>
+			<td class="kv-label"><strong>Total</strong></td>
+			<td></td>
+			<td></td>
 			<td data-label="Total"><strong>{{ total_storage_human }}</strong></td>
 		</tr>
 	</tbody>
@@ -61,12 +61,12 @@
 <table class="apps">
 	<tbody>
 		<tr>
-			<td data-label="When"><strong>When</strong></td>
-			<td data-label="">{% if smtp_last.at %}<code>{{ smtp_last.at }}</code>{% else %}<span class="muted">never run</span>{% endif %}</td>
+			<td class="kv-label"><strong>When</strong></td>
+			<td data-label="When">{% if smtp_last.at %}<code>{{ smtp_last.at }}</code>{% else %}<span class="muted">never run</span>{% endif %}</td>
 		</tr>
 		<tr>
-			<td data-label="Status"><strong>Status</strong></td>
-			<td data-label="">
+			<td class="kv-label"><strong>Status</strong></td>
+			<td data-label="Status">
 				{% if smtp_last.status == "ok" %}
 				<span class="pill on">ok</span>
 				{% elif smtp_last.status == "failed" %}
@@ -78,7 +78,7 @@
 			</td>
 		</tr>
 		<tr>
-			<td data-label=""></td>
+			<td></td>
 			<td data-label=""><a class="nav-link" href="/admin/settings">Run a test →</a></td>
 		</tr>
 	</tbody>
