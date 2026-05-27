@@ -2,13 +2,13 @@
 
 An open-source, self-hosted **Progressive Web App portal** for small businesses. Deploy it on a small VPS and give your staff a single, installable home for the internal tools they use every day. New tools can be scaffolded, packaged, and uploaded by a non-developer working with Claude.
 
-> **Status:** v1 beta. Single-tenant per deployment. All core building blocks shipped; pre-built container images on GHCR; three review rounds of fix sweeps. Real-VPS validation is the remaining unknown.
+> **Status:** v1 beta. Single-tenant per deployment. All core building blocks shipped; pre-built container images on GHCR.
 
 ## Why
 
 Most small businesses have a handful of little internal tools — quote builders, receipt emailers, time loggers, lookup utilities — that would be useful if they lived behind a single login on every staff member's phone home screen. Building each tool standalone is heavy; building them on top of an opinionated portal that already handles auth, hosting, PDFs, email, and per-user storage is light.
 
-The portal is designed so the apps inside it can be authored by someone who isn't a coder, working with Claude.
+The portal is designed so the apps inside it can be authored by someone who isn't a developer, working with Claude.
 
 ## What's included
 
