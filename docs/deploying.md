@@ -166,6 +166,52 @@ Caddy will fetch a Let's Encrypt cert for each subdomain on first access using H
 > dynamic-DNS service for the load-bearing piece of your security model is a
 > "works until it doesn't" arrangement.
 
+> ### ⚠️ Cloud-provider VPS hostnames have the same problem
+>
+> Most VPS providers hand you a hostname for the new machine — OVH gives
+> you something like `vps-afface1f.vps.ovh.us`, Linode gives you
+> `<id>.ip.linodeusercontent.com`, DigitalOcean droplets get
+> `<region>.cluster.digitalocean.com` aliases, and so on. **These look
+> like usable domain names but they're not yours.** The provider owns
+> the parent zone (`vps.ovh.us`, `ip.linodeusercontent.com`, etc.) and
+> publishes exactly one A record — the bare hostname pointing at your
+> machine.
+>
+> You **cannot** add a wildcard `*.apps.<provider-hostname>` record
+> because you don't control the DNS zone. So per-app subdomains like
+> `<slug>.apps.vps-afface1f.vps.ovh.us` return **NXDOMAIN**, the iframe
+> wrapper fails to connect, and the browser shows "the content is
+> blocked" / "this site can't be reached" inside the app launcher.
+>
+> Quick check from anywhere:
+>
+> ```bash
+> dig +short <slug>.apps.<your-vps-hostname>
+> ```
+>
+> If that comes back empty (compare to a `dig +short <your-vps-hostname>`
+> which returns the IP), per-app-origin mode can't work on this hostname.
+>
+> **Same two ways out as the sslip.io case:**
+>
+> 1. **Flip to same-origin mode** — works immediately, no domain needed:
+>    ```bash
+>    echo "CHILD_APPS_SAME_ORIGIN=true" >> .env
+>    sudo docker compose up -d
+>    ```
+>
+> 2. **Buy a real domain (~$10/year)** at any registrar
+>    (Cloudflare Registrar, Porkbun, Namecheap), point an A record at the
+>    VPS IP, add a wildcard `*.apps.<your-domain>` to the same IP, and
+>    set `SITE_URL=portal.<your-domain>`. That's the only path that keeps
+>    per-app-origin isolation working long-term — and it gets you your own
+>    Let's Encrypt quota into the bargain.
+>
+> Provider-issued hostnames are fine for the **portal itself** (you only
+> need one A record there), so a stack running entirely in same-origin
+> mode is perfectly viable on the free hostname. The wildcard requirement
+> only kicks in when you want per-app-origin isolation.
+
 If you'd rather skip this step entirely, set `CHILD_APPS_SAME_ORIGIN=true` in `.env`. The portal will then serve apps at `<SITE_URL>/apps/<slug>/` (same origin) with a security warning in the admin UI.
 
 ## 2.7. Optional: HTTP-only mode
