@@ -31,6 +31,7 @@ from portal.access import (
 )
 from portal.audit import record_event, recent_events
 from portal.branding import (
+    ALLOWED_FAVICON_TYPES,
     ALLOWED_LOGO_TYPES,
     DEFAULT_ACCENT_COLOR,
     MAX_LOGO_BYTES,
@@ -78,6 +79,7 @@ def settings_form(request: Request, db: DbDep, admin: AdminDep):
         branding_business_name=brand["business_name"],
         branding_accent_color=brand["accent_color"],
         branding_logo_url=brand["logo_url"],
+        branding_favicon_url=brand["favicon_url"],
         default_accent_color=DEFAULT_ACCENT_COLOR,
         max_logo_kb=MAX_LOGO_BYTES // 1024,
     )
@@ -166,6 +168,72 @@ def _clear_existing_logo(db: Session) -> None:
     set_setting(db, "branding_logo_path", None)
 
 
+def _store_favicon(upload: UploadFile) -> Optional[str]:
+    """Validate, persist, and return the filename of an uploaded favicon.
+
+    Parallel to ``_store_logo`` but accepts ``.ico`` in addition to the
+    logo-format set. Same 512 KiB cap, same SVG sniff, same sanitized
+    basename + random suffix to avoid CDN-cache collisions on replace.
+    Empty upload returns ``None``; validation failures raise HTTPException
+    so the caller can surface them as flash messages.
+    """
+    if upload is None or not (upload.filename or "").strip():
+        return None
+    blob = upload.file.read(MAX_LOGO_BYTES + 1)
+    if not blob:
+        return None
+    if len(blob) > MAX_LOGO_BYTES:
+        raise HTTPException(
+            413,
+            f"Favicon exceeds {MAX_LOGO_BYTES // 1024} KB limit",
+        )
+
+    ct = (upload.content_type or "").lower().split(";")[0].strip()
+    if ct not in ALLOWED_FAVICON_TYPES:
+        guessed, _ = mimetypes.guess_type(upload.filename or "")
+        if guessed and guessed.lower() in ALLOWED_FAVICON_TYPES:
+            ct = guessed.lower()
+        else:
+            raise HTTPException(
+                400,
+                "Favicon must be PNG, JPEG, SVG, WebP, or ICO",
+            )
+
+    if ct == "image/svg+xml":
+        head = blob.lstrip()[:200].lower()
+        if b"<svg" not in head:
+            raise HTTPException(400, "Favicon does not look like a valid SVG")
+
+    ext = ALLOWED_FAVICON_TYPES[ct]
+    stem = Path(upload.filename or "favicon").stem
+    safe_stem = _LOGO_BASENAME_RE.sub("", stem.replace(" ", "-"))[:40] or "favicon"
+    final_name = f"{safe_stem}-{secrets.token_hex(4)}{ext}"
+
+    target = branding_dir() / final_name
+    target.write_bytes(blob)
+    return final_name
+
+
+def _clear_existing_favicon(db: Session) -> None:
+    """Delete the on-disk favicon (if any) and clear the Setting row.
+
+    Same lenient semantics as ``_clear_existing_logo``: no-op if nothing's
+    configured, swallows filesystem errors (orphaned file is tolerable),
+    and uses the shared ``_safe_logo_name`` whitelist to guard the unlink.
+    """
+    existing = (get_setting(db, "branding_favicon_path") or "").strip()
+    if existing:
+        from portal.branding import _safe_logo_name
+
+        if _safe_logo_name(existing):
+            path = branding_dir() / existing
+            try:
+                path.unlink()
+            except OSError:
+                pass
+    set_setting(db, "branding_favicon_path", None)
+
+
 @router.post("/admin/settings")
 async def settings_save(
     request: Request,
@@ -182,6 +250,8 @@ async def settings_save(
     branding_accent_color: Annotated[str, Form()] = "",
     branding_logo: Optional[UploadFile] = File(default=None),
     branding_logo_clear: Annotated[Optional[str], Form()] = None,
+    branding_favicon: Optional[UploadFile] = File(default=None),
+    branding_favicon_clear: Annotated[Optional[str], Form()] = None,
     csrf: Annotated[str, Form(alias="_csrf")] = "",
 ):
     check_csrf(request, csrf)
@@ -229,6 +299,22 @@ async def settings_save(
                 _clear_existing_logo(db)
                 set_setting(db, "branding_logo_path", stored)
 
+    # Favicon: same control flow as the logo above. Cleared if the
+    # ``branding_favicon_clear`` checkbox is on; otherwise a fresh upload
+    # replaces the previously-stored file (if any). Validation errors
+    # flash without rolling back the other settings that already staged.
+    if branding_favicon_clear == "on":
+        _clear_existing_favicon(db)
+    elif branding_favicon is not None:
+        try:
+            stored = _store_favicon(branding_favicon)
+        except HTTPException as e:
+            flash(request, str(e.detail), level="error")
+        else:
+            if stored is not None:
+                _clear_existing_favicon(db)
+                set_setting(db, "branding_favicon_path", stored)
+
     db.commit()
     # Capture the high-signal subset of what changed in details — full diffs
     # would be too noisy for the audit table given how many settings ride
@@ -244,6 +330,7 @@ async def settings_save(
             "branding_name_set": bool(business_name),
             "branding_accent_set": bool(accent),
             "branding_logo_cleared": branding_logo_clear == "on",
+            "branding_favicon_cleared": branding_favicon_clear == "on",
             "default_user_app_access": default_user_app_access,
         },
     )

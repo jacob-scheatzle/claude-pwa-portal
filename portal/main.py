@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from typing import Annotated, Optional
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import EmailStr, TypeAdapter, ValidationError
 from sqlmodel import Session, select
@@ -219,10 +219,77 @@ def index(request: Request, db: DbDep, user: UserDep):
 # ----- PWA endpoints -----
 
 @app.get("/manifest.webmanifest", include_in_schema=False)
-def manifest():
-    return FileResponse(
-        STATIC_DIR / "manifest.webmanifest",
+def manifest(db: DbDep):
+    """Render the PWA manifest from current branding settings.
+
+    Was a static file in earlier versions; now generated so the
+    business name, theme color, and uploaded favicon (added in v0.6.0)
+    flow into the iOS / Android install experience.
+
+    When a custom favicon is configured we emit a single icon entry
+    with ``sizes: "any"`` and ``purpose: "any maskable"``. Browsers
+    handle the scaling — that's simpler than asking admins to upload
+    five separate sized PNGs, and keeps SVG uploads working with the
+    same code path. When no favicon is configured we fall back to the
+    bundled emerald default at three explicit sizes so older browsers
+    that don't understand ``sizes: "any"`` still find a usable icon.
+    """
+    from portal.branding import get_branding
+
+    brand = get_branding(db)
+    if brand["favicon_url"]:
+        icon_entry = {
+            "src": brand["favicon_url"],
+            "sizes": "any",
+            "purpose": "any maskable",
+        }
+        if brand["favicon_mime"]:
+            icon_entry["type"] = brand["favicon_mime"]
+        icons = [icon_entry]
+    else:
+        icons = [
+            {"src": "/static/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+            {"src": "/static/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+            {"src": "/static/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"},
+        ]
+
+    return JSONResponse(
+        {
+            "name": brand["business_name"],
+            # iOS clips short_name aggressively; 12 chars keeps the
+            # branded label readable on the home screen instead of
+            # truncating to an ellipsis mid-word.
+            "short_name": brand["business_name"][:12],
+            "description": "Your business app portal.",
+            "start_url": "/",
+            "scope": "/",
+            "display": "standalone",
+            "orientation": "any",
+            "background_color": "#fafaf9",
+            "theme_color": brand["accent_color"],
+            "icons": icons,
+        },
         media_type="application/manifest+json",
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+# Conventional ``/favicon.ico`` — many tools (RSS readers, link previews,
+# scanners) request this path verbatim even though base.html advertises
+# the actual icon via ``<link rel="icon">``. Redirect to the configured
+# branding favicon when set; serve the bundled PNG default otherwise so
+# the request stops 404'ing in the access log.
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon(db: DbDep):
+    from portal.branding import get_branding
+
+    brand = get_branding(db)
+    if brand["favicon_url"]:
+        return RedirectResponse(brand["favicon_url"], status_code=302)
+    return FileResponse(
+        STATIC_DIR / "icons" / "favicon.png",
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=300"},
     )
 
 

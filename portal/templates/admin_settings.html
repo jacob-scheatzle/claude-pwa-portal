@@ -53,6 +53,25 @@
 				{% endif %}
 			</div>
 		</div>
+		<div style="margin-top:1rem;">
+			<label for="branding_favicon">Favicon (PNG / SVG / ICO / JPEG / WebP, ≤ {{ max_logo_kb }} KB)</label>
+			<input type="file" name="branding_favicon" id="branding_favicon"
+				accept="image/png,image/svg+xml,image/x-icon,image/vnd.microsoft.icon,image/jpeg,image/webp,.ico">
+			<div class="hint">Used for the browser tab, the iOS Add-to-Home-Screen icon, and the PWA install image. Square, ≥ 192×192 PNG (or any SVG) renders cleanest across all three surfaces.</div>
+			{% if branding_favicon_url %}
+			<div class="hint" style="display:flex; align-items:center; gap:0.75rem; margin-top:0.5rem; flex-wrap:wrap;">
+				<img src="{{ branding_favicon_url }}" alt="current favicon"
+					style="height:2.4rem; width:2.4rem; object-fit:contain;
+						background:var(--surface-2); border:1px solid var(--border);
+						border-radius:var(--radius-sm); padding:0.2rem;">
+				<label style="font-weight:500; margin:0;">
+					<input type="checkbox" name="branding_favicon_clear"> Remove existing favicon
+				</label>
+			</div>
+			{% else %}
+			<div class="hint" style="margin-top:0.3rem;">No favicon set — the bundled default emerald square is used.</div>
+			{% endif %}
+		</div>
 	</fieldset>
 
 	<fieldset>

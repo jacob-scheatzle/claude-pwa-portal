@@ -1,7 +1,7 @@
-"""Helpers for portal branding (business name, accent color, uploaded logo).
+"""Helpers for portal branding (business name, accent color, uploaded logo, favicon).
 
-Three Setting keys drive the look of the portal shell and the optional PDF
-header:
+Four Setting keys drive the look of the portal shell, the optional PDF
+header, and the browser tab + iOS home-screen icon:
 
 - ``branding_business_name`` — shown in the topbar, login page, dashboard,
   and (if requested) the PDF header. Empty → default ``PWA Portal``.
@@ -10,6 +10,12 @@ header:
 - ``branding_logo_path`` — filename of an uploaded image inside
   ``data/branding/``. Served at ``/branding/<name>`` and inlined into PDF
   headers as a ``data:`` URI. Empty → fall back to the brand-mark letter.
+- ``branding_favicon_path`` — filename of an uploaded favicon inside
+  ``data/branding/`` (same directory as the logo; the safe-name whitelist
+  is shared). Drives ``<link rel="icon">``, ``<link rel="apple-touch-icon">``,
+  the dynamic ``/manifest.webmanifest`` icon entries (so PWA install on
+  iOS / Android picks up the brand), and the conventional ``/favicon.ico``
+  redirect. Empty → fall back to the bundled emerald default.
 
 The branding dict is auto-injected into every template render by
 ``portal.web.render`` and read on PDF render when the SDK passes
@@ -52,11 +58,26 @@ ALLOWED_LOGO_TYPES = {
     "image/webp": ".webp",
 }
 
+# Favicons can additionally be ``.ico`` (a Windows / legacy format that's
+# still served as the default fallback for ``/favicon.ico`` requests).
+# Both common mimetypes are accepted because browsers and toolchains
+# disagree on which one to send.
+ALLOWED_FAVICON_TYPES = {
+    **ALLOWED_LOGO_TYPES,
+    "image/x-icon": ".ico",
+    "image/vnd.microsoft.icon": ".ico",
+}
+
 
 class Branding(TypedDict):
     business_name: str
     accent_color: str
     logo_url: Optional[str]
+    favicon_url: Optional[str]
+    # MIME type of the configured favicon, for emitting an accurate
+    # ``type`` attribute on the ``<link rel="icon">`` and in the
+    # webmanifest icon entries. ``None`` when no custom favicon is set.
+    favicon_mime: Optional[str]
 
 
 def branding_dir() -> Path:
@@ -90,10 +111,25 @@ def get_branding(db: Session) -> Branding:
         if (branding_dir() / logo_name).is_file():
             logo_url = f"/branding/{logo_name}"
 
+    favicon_name = (get_setting(db, "branding_favicon_path") or "").strip()
+    favicon_url: Optional[str] = None
+    favicon_mime: Optional[str] = None
+    if favicon_name and _safe_logo_name(favicon_name):
+        favicon_path = branding_dir() / favicon_name
+        if favicon_path.is_file():
+            favicon_url = f"/branding/{favicon_name}"
+            # mimetypes.guess_type uses the filename's suffix; the upload
+            # handler enforces an extension from ALLOWED_FAVICON_TYPES, so
+            # this lookup always resolves to a known image type.
+            mt, _ = mimetypes.guess_type(str(favicon_path))
+            favicon_mime = mt if mt and mt.startswith("image/") else None
+
     return Branding(
         business_name=name,
         accent_color=accent,
         logo_url=logo_url,
+        favicon_url=favicon_url,
+        favicon_mime=favicon_mime,
     )
 
 

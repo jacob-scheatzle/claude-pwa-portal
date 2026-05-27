@@ -6,8 +6,13 @@
 	<title>{% block title %}{{ branding.business_name }}{% endblock %}</title>
 
 	<link rel="manifest" href="/manifest.webmanifest">
+	{% if branding.favicon_url %}
+	<link rel="icon"{% if branding.favicon_mime %} type="{{ branding.favicon_mime }}"{% endif %} href="{{ branding.favicon_url }}">
+	<link rel="apple-touch-icon" href="{{ branding.favicon_url }}">
+	{% else %}
 	<link rel="icon" type="image/png" href="/static/icons/favicon.png">
 	<link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
+	{% endif %}
 	<meta name="theme-color" content="{{ branding.accent_color }}">
 	<meta name="apple-mobile-web-app-capable" content="yes">
 	<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
