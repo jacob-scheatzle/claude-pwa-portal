@@ -15,9 +15,13 @@
 #     before swapping — the previous list keeps protecting you.
 #   - All output goes to syslog so it shows up in journalctl.
 #
-# Install (run as root once):
+# Install (run as root once). The standard VPS deploy doesn't check out the
+# repo on the host, so pull the script from raw GitHub:
 #   sudo apt-get install -y ipset curl
-#   sudo install -m 0755 contrib/scripts/spamhaus-drop.sh /usr/local/sbin/
+#   sudo curl -fsSL \
+#     https://raw.githubusercontent.com/jacob-scheatzle/claude-pwa-portal/main/contrib/scripts/spamhaus-drop.sh \
+#     -o /usr/local/sbin/spamhaus-drop.sh
+#   sudo chmod 0755 /usr/local/sbin/spamhaus-drop.sh
 #   sudo /usr/local/sbin/spamhaus-drop.sh           # populate immediately
 #   sudo tee /etc/cron.d/spamhaus-drop > /dev/null <<'EOF'
 #   # Refresh Spamhaus DROP list daily at 04:17 (offset from the hour to

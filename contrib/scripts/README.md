@@ -10,11 +10,16 @@ block-list, applied at the kernel firewall via ipset + iptables. Traffic
 from listed netblocks (botnet C2, hijacked ranges, well-known spammers)
 is dropped before it ever reaches Caddy.
 
-### Install
+### Install (production VPS, no repo checkout)
+
+The standard VPS deploy only has `docker-compose.yml` + `.env` on the host,
+so pull the script directly from raw GitHub:
 
 ```bash
 sudo apt-get install -y ipset curl
-sudo install -m 0755 contrib/scripts/spamhaus-drop.sh /usr/local/sbin/
+sudo curl -fsSL https://raw.githubusercontent.com/jacob-scheatzle/claude-pwa-portal/main/contrib/scripts/spamhaus-drop.sh \
+  -o /usr/local/sbin/spamhaus-drop.sh
+sudo chmod 0755 /usr/local/sbin/spamhaus-drop.sh
 
 # Populate immediately
 sudo /usr/local/sbin/spamhaus-drop.sh
@@ -23,6 +28,15 @@ sudo /usr/local/sbin/spamhaus-drop.sh
 sudo tee /etc/cron.d/spamhaus-drop > /dev/null <<'EOF'
 17 4 * * * root /usr/local/sbin/spamhaus-drop.sh
 EOF
+```
+
+### Install (from a cloned repo)
+
+```bash
+sudo apt-get install -y ipset curl
+sudo install -m 0755 contrib/scripts/spamhaus-drop.sh /usr/local/sbin/
+sudo /usr/local/sbin/spamhaus-drop.sh
+echo '17 4 * * * root /usr/local/sbin/spamhaus-drop.sh' | sudo tee /etc/cron.d/spamhaus-drop
 ```
 
 ### Verify
