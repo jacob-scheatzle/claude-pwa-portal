@@ -27,6 +27,7 @@ The portal is designed so the apps inside it can be authored by someone who isn'
 - A **Claude skill** ([`claude-skill/pwa-portal-app/`](claude-skill/pwa-portal-app/)) so a non-developer can ask Claude to build an app and have it scaffolded, packaged, and uploaded automatically.
 - A **reference example** ([`examples/hello-receipt/`](examples/hello-receipt/)) — a working PWA that uses every SDK service.
 - **Pre-built container images on GHCR** + a GitHub Actions workflow that builds and publishes on every push to `main`. Deployers don't need to clone the repo.
+- **Drop in configs for Fail2Ban** + Configs for Fail2Ban if you decide to use for protection
 
 ## Quick start
 
