@@ -183,7 +183,9 @@ def index(request: Request, db: DbDep, user: UserDep):
     if user is None:
         return RedirectResponse("/login", status_code=303)
     visible = db.exec(
-        select(App).where(App.enabled == True).order_by(App.name)  # noqa: E712
+        select(App)
+        .where(App.enabled == True)  # noqa: E712
+        .order_by(App.display_order, App.name)
     ).all()
     # Filter to apps the user is allowed to launch. Admins see everything;
     # for non-admins the helper consults the UserAppAccess m2m.

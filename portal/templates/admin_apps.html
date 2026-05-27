@@ -8,9 +8,11 @@
 </div>
 
 {% if apps %}
+<p class="hint">Drag is not supported here — use the ↑/↓ chips on each row to reshuffle the tile order. The order applies to the user-facing dashboard.</p>
 <table class="apps">
 	<thead>
 		<tr>
+			<th>Order</th>
 			<th>Name</th>
 			<th>Slug</th>
 			<th>Version</th>
@@ -21,6 +23,20 @@
 	<tbody>
 		{% for app in apps %}
 		<tr>
+			<td data-label="Order" class="reorder-cell">
+				<form method="post" action="/admin/apps/{{ app.slug }}/move" style="display:inline;">
+					<input type="hidden" name="_csrf" value="{{ csrf_token }}">
+					<input type="hidden" name="direction" value="up">
+					<button class="action-chip" type="submit" aria-label="Move up"
+						{% if loop.first %}disabled title="Already at the top"{% else %}title="Move up"{% endif %}>↑</button>
+				</form>
+				<form method="post" action="/admin/apps/{{ app.slug }}/move" style="display:inline;">
+					<input type="hidden" name="_csrf" value="{{ csrf_token }}">
+					<input type="hidden" name="direction" value="down">
+					<button class="action-chip" type="submit" aria-label="Move down"
+						{% if loop.last %}disabled title="Already at the bottom"{% else %}title="Move down"{% endif %}>↓</button>
+				</form>
+			</td>
 			<td data-label="Name"><strong>{{ app.name }}</strong>{% if app.description %}<div class="hint">{{ app.description }}</div>{% endif %}</td>
 			<td data-label="Slug"><code>{{ app.slug }}</code></td>
 			<td data-label="Version">{{ app.version }}</td>

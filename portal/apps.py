@@ -333,7 +333,10 @@ RequireUserDep = Annotated[User, Depends(require_user)]
 
 @router.get("/admin/apps")
 def admin_apps_list(request: Request, db: DbDep, admin: AdminDep):
-    apps = db.exec(select(App).order_by(App.uploaded_at.desc())).all()
+    # Sorted by the admin-controlled display_order so this list matches the
+    # tile order on the user-facing dashboard. The up/down chips in the
+    # template reshuffle display_order in spaced increments.
+    apps = db.exec(select(App).order_by(App.display_order, App.name)).all()
     return render(request, "admin_apps.html", user=admin, apps=apps)
 
 
@@ -701,6 +704,49 @@ def admin_apps_services_update(
     db.add(app_row)
     db.commit()
     flash(request, f"Service access updated for {app_row.name}.")
+    return RedirectResponse("/admin/apps", status_code=303)
+
+
+@router.post("/admin/apps/{slug}/move")
+def admin_apps_move(
+    slug: str,
+    request: Request,
+    db: DbDep,
+    admin: AdminDep,
+    direction: Annotated[str, Form()] = "",
+    csrf: str = Form(default="", alias="_csrf"),
+):
+    """Nudge an app one slot up or down in the dashboard tile order.
+
+    On every move we fetch the full ordered list, swap the moved app with
+    its neighbour, and renumber the whole list in spaced increments. A full
+    renumber is O(N) writes but N is the number of apps installed in this
+    portal — a handful for a typical small business — so we trade a tiny
+    bit of churn for never having to reason about colliding display_order
+    values, gaps, or off-by-one slot math.
+
+    No-ops silently if the app is already at the boundary; the up chip is
+    rendered ``disabled`` on the first row and the down chip on the last,
+    but a stale tab POSTing anyway shouldn't 500.
+    """
+    check_csrf(request, csrf)
+    if direction not in ("up", "down"):
+        raise HTTPException(400, "direction must be 'up' or 'down'")
+
+    apps = db.exec(select(App).order_by(App.display_order, App.name)).all()
+    idx = next((i for i, a in enumerate(apps) if a.slug == slug), None)
+    if idx is None:
+        raise HTTPException(404)
+
+    target_idx = idx - 1 if direction == "up" else idx + 1
+    if target_idx < 0 or target_idx >= len(apps):
+        return RedirectResponse("/admin/apps", status_code=303)
+
+    apps[idx], apps[target_idx] = apps[target_idx], apps[idx]
+    for i, app in enumerate(apps):
+        app.display_order = (i + 1) * 10
+        db.add(app)
+    db.commit()
     return RedirectResponse("/admin/apps", status_code=303)
 
 

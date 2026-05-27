@@ -66,6 +66,13 @@ class App(SQLModel, table=True):
     # made through the admin UI persist across re-uploads of the same slug.
     allowed_origins: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     enabled: bool = Field(default=True)
+    # Admin-controlled sort key for the user-facing dashboard tile grid AND
+    # the /admin/apps table. Lower values render first. New apps default to
+    # 0; the migration backfills existing rows in spaced increments (10, 20,
+    # …) by name so the visual order doesn't change on upgrade and there's
+    # headroom for re-inserts without a full renumber. Admins reshuffle via
+    # the up/down chips on /admin/apps, which renumber the whole list.
+    display_order: int = Field(default=0, index=True)
     uploaded_by: Optional[int] = Field(default=None, foreign_key="user.id")
     uploaded_at: datetime = Field(default_factory=_utcnow)
 

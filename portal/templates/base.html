@@ -165,6 +165,18 @@
 
 		* { box-sizing: border-box; }
 
+		html, body {
+			/* Defense-in-depth against an inner element pushing the page wider
+			   than the viewport on phones — a single ``<code>`` with a long
+			   token or an unwrapped URL has been enough to introduce a
+			   sideways scroll otherwise. Individual elements still get their
+			   own ``overflow-wrap`` rules below so the content remains
+			   visible; this just makes sure the document itself can't
+			   overflow horizontally. */
+			max-width: 100%;
+			overflow-x: hidden;
+		}
+
 		body {
 			font-family: var(--font-sans);
 			font-feature-settings: "cv02", "cv03", "cv04", "cv11";
@@ -509,6 +521,20 @@
 			cursor: pointer;
 		}
 
+		/* Two-column form row that collapses to a single column on narrow
+		   viewports. Use this in place of inline
+		   ``style="display:grid; grid-template-columns:1fr 1fr"`` — the
+		   inline form was producing two cramped columns on phones where
+		   the file input + color picker simply didn't fit. */
+		.form-row-2col {
+			display: grid;
+			grid-template-columns: 1fr 1fr;
+			gap: 0.75rem;
+		}
+		@media (max-width: 640px) {
+			.form-row-2col { grid-template-columns: 1fr; }
+		}
+
 		/* fieldset */
 		fieldset {
 			border: 1px solid var(--border);
@@ -539,7 +565,17 @@
 			line-height: 1.5;
 			font-family: var(--font-mono);
 		}
-		code { font-family: var(--font-mono); font-size: 0.88em; }
+		code {
+			font-family: var(--font-mono);
+			font-size: 0.88em;
+			/* Long unbreakable tokens (DB paths, full URLs, share-link IDs)
+			   used to push the page off the right edge on a 375px iPhone
+			   viewport. Allow wrapping inside any ``<code>`` whenever the
+			   content is wider than its container; short inline references
+			   are unaffected because the rule only kicks in on overflow. */
+			overflow-wrap: anywhere;
+			word-break: break-word;
+		}
 
 		/* pills */
 		.pill {
@@ -587,6 +623,33 @@
 		}
 		td.actions { white-space: nowrap; display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap; }
 
+		/* Up/down move chips on the admin apps table. Keeps the two arrow
+		   chips packed tight on a single line at all widths — long enough
+		   that the column doesn't stretch the whole row out, short enough
+		   to stay tap-target friendly on a phone. */
+		.reorder-cell {
+			display: flex;
+			gap: 0.3rem;
+			align-items: center;
+			flex-wrap: nowrap;
+		}
+		.reorder-cell .action-chip {
+			padding: 0.32rem 0.5rem;
+			min-width: 2rem;
+			justify-content: center;
+		}
+		.reorder-cell .action-chip:disabled,
+		.reorder-cell .action-chip[disabled] {
+			opacity: 0.4;
+			cursor: not-allowed;
+		}
+		.reorder-cell .action-chip:disabled:hover,
+		.reorder-cell .action-chip[disabled]:hover {
+			background: var(--surface-2);
+			color: var(--text);
+			border-color: var(--border-strong);
+		}
+
 		/* Mobile: convert ``table.apps`` rows into stacked cards so the
 		   admin pages stop requiring horizontal scrolling on a phone. The
 		   column headers are hidden (the cell content is self-describing
@@ -614,6 +677,7 @@
 				border-bottom: 0;
 				white-space: normal;
 				word-break: break-word;
+				overflow-wrap: anywhere;
 			}
 			table.apps td[data-label]::before {
 				content: attr(data-label) ":";

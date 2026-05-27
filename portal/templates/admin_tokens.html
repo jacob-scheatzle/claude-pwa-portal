@@ -15,8 +15,8 @@
 
 <form method="post" action="/admin/tokens" style="margin-top:1.5rem;">
 	<input type="hidden" name="_csrf" value="{{ csrf_token }}">
-	<div style="display:flex; gap:0.5rem; align-items:end;">
-		<div style="flex:1;">
+	<div style="display:flex; gap:0.5rem; align-items:end; flex-wrap:wrap;">
+		<div style="flex:1 1 14rem; min-width:0;">
 			<label for="name">Token name</label>
 			<input type="text" name="name" id="name" required placeholder="e.g. claude-skill" maxlength="80">
 		</div>

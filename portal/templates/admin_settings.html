@@ -26,7 +26,7 @@
 				value="{{ branding_business_name }}" maxlength="60"
 				placeholder="e.g. Acme Plumbing">
 		</div>
-		<div style="display:grid; grid-template-columns:1fr 1fr; gap:0.75rem; align-items:end;">
+		<div class="form-row-2col" style="align-items:end;">
 			<div>
 				<label for="branding_accent_color">Accent color</label>
 				<input type="color" name="branding_accent_color" id="branding_accent_color"
@@ -39,7 +39,7 @@
 				<input type="file" name="branding_logo" id="branding_logo"
 					accept="image/png,image/jpeg,image/svg+xml,image/webp">
 				{% if branding_logo_url %}
-				<div class="hint" style="display:flex; align-items:center; gap:0.75rem; margin-top:0.5rem;">
+				<div class="hint" style="display:flex; align-items:center; gap:0.75rem; margin-top:0.5rem; flex-wrap:wrap;">
 					<img src="{{ branding_logo_url }}" alt="current logo"
 						style="height:2.4rem; max-width:6rem; object-fit:contain;
 							background:var(--surface-2); border:1px solid var(--border);
@@ -75,7 +75,7 @@
 			<label for="smtp_host">Host</label>
 			<input type="text" name="smtp_host" id="smtp_host" value="{{ smtp_host }}" placeholder="e.g. smtp.gmail.com">
 		</div>
-		<div style="display:grid; grid-template-columns:1fr 1fr; gap:0.75rem;">
+		<div class="form-row-2col">
 			<div>
 				<label for="smtp_port">Port</label>
 				<input type="number" name="smtp_port" id="smtp_port" value="{{ smtp_port }}" placeholder="587">

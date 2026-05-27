@@ -3,12 +3,29 @@
 {% block content %}
 <h1>Your profile</h1>
 
-<dl style="display:grid; grid-template-columns:auto 1fr; gap:0.35rem 1rem; margin:1rem 0 2rem;">
-	<dt style="font-weight:600; opacity:0.75;">Email</dt>
-	<dd style="margin:0;">{{ user.email }}</dd>
-	<dt style="font-weight:600; opacity:0.75;">Role</dt>
-	<dd style="margin:0;">{{ user.role }}</dd>
+<dl class="profile-dl">
+	<dt>Email</dt>
+	<dd>{{ user.email }}</dd>
+	<dt>Role</dt>
+	<dd>{{ user.role }}</dd>
 </dl>
+<style>
+	/* `auto 1fr` with a long email forced the dd off the right edge on
+	   narrow viewports — stack key/value vertically once we're below the
+	   tablet breakpoint. */
+	.profile-dl {
+		display: grid;
+		grid-template-columns: auto 1fr;
+		gap: 0.35rem 1rem;
+		margin: 1rem 0 2rem;
+	}
+	.profile-dl dt { font-weight: 600; opacity: 0.75; }
+	.profile-dl dd { margin: 0; overflow-wrap: anywhere; }
+	@media (max-width: 640px) {
+		.profile-dl { grid-template-columns: 1fr; gap: 0.15rem; }
+		.profile-dl dd { margin-bottom: 0.6rem; }
+	}
+</style>
 
 {% if errors %}
 <div class="error" style="margin-top:2rem;"><ul>{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul></div>

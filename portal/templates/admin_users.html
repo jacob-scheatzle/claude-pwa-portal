@@ -37,9 +37,9 @@
 				<details>
 					<summary class="action-chip">Reset password</summary>
 					<div class="action-chip-panel">
-						<form method="post" action="/admin/users/{{ u.id }}/reset-password" style="display:flex; gap:0.5rem; align-items:flex-end;">
+						<form method="post" action="/admin/users/{{ u.id }}/reset-password" style="display:flex; gap:0.5rem; align-items:flex-end; flex-wrap:wrap;">
 							<input type="hidden" name="_csrf" value="{{ csrf_token }}">
-							<div style="flex:1;">
+							<div style="flex:1 1 12rem; min-width:0;">
 								<label for="reset_pw_{{ u.id }}" style="margin-bottom:0.25rem;">New password</label>
 								<input type="password" id="reset_pw_{{ u.id }}" name="password" required minlength="8" placeholder="At least 8 characters" autocomplete="new-password">
 							</div>
