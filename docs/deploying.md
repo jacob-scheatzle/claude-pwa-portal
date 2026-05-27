@@ -316,17 +316,72 @@ scanner traffic start within minutes. The repo ships drop-in
 [`fail2ban`](https://www.fail2ban.org/) configs that ban offenders at
 the host firewall — see [fail2ban.md](fail2ban.md) for the full walkthrough.
 
-Two layers, both safe to enable:
+Three layers, all safe to enable together:
 
 - **Portal login jail** — reads `./data/security.log` (the focused
   fail2ban-friendly text log written by `portal/audit.py`); bans IPs
-  after 5 failed `/login` POSTs in 10 minutes.
+  after 5 failed `/login` POSTs in 10 minutes. Scoped to `http,https` so
+  it doesn't lock SSH out.
 - **Caddy scanner jail** — reads Caddy's JSON access log from journald;
-  bans IPs probing for `/.env`, `/.git/`, `/wp-admin/`, etc.
+  bans IPs probing for `/.env`, `/.git/`, `/wp-admin/`, `/actuator/`,
+  `/boaform/`, etc. 60+ bait paths covering observed real-world
+  scanner traffic.
+- **sshd jail** — package-shipped filter watches the sshd journal;
+  bans IPs after 5 failed auth attempts. Default `port = 22`; override
+  in `jail.local` if you're running sshd on a non-standard port (which
+  cuts roughly 99% of brute-force noise on its own).
 
 The portal log is the high-value one (it's the only thing standing
 between an attacker and an admin account); the Caddy layer is easy
-hygiene that keeps scanner garbage out of your logs.
+hygiene that keeps scanner garbage out of your logs; the sshd layer is
+table stakes.
+
+> ### ⚠️ Required: `userland-proxy: false` for real client IPs
+>
+> All three jails depend on Caddy and the portal seeing the **real client
+> IP**, not Docker's bridge gateway (`172.18.0.1`). When Docker's
+> ``userland-proxy`` mode is enabled (the default on some installs),
+> incoming connections to a published port get accepted by a
+> ``docker-proxy`` process on the host and **then** re-opened to the
+> container from the bridge gateway — the real client IP is lost
+> before Caddy ever sees it, so X-Forwarded-For is set to
+> `172.18.0.1`, fail2ban bans the bridge gateway (i.e. nothing useful),
+> and the audit log records every login as coming from inside.
+>
+> Symptom: `data/security.log` shows `ip=172.18.0.1` for every entry
+> even though you can reach the portal from the public internet.
+>
+> **Fix:** create or edit `/etc/docker/daemon.json` on the VPS:
+>
+> ```bash
+> sudo tee /etc/docker/daemon.json > /dev/null <<'EOF'
+> {
+>   "userland-proxy": false
+> }
+> EOF
+>
+> sudo systemctl restart docker
+> ```
+>
+> This makes Docker rely on iptables DNAT alone, which preserves source
+> IPs end-to-end. Side effects: slightly different IPv6 behaviour, no
+> ability to publish two processes on the same host port (neither
+> matters for this stack).
+>
+> Verify after restart with one external request from your laptop:
+>
+> ```bash
+> curl https://<your-portal>/health
+> ```
+>
+> Then on the VPS:
+>
+> ```bash
+> sudo journalctl -t pwa-portal-caddy --since "1 min ago" | \
+>   grep -oP '"client_ip":"[^"]*"' | head -1
+> ```
+>
+> Should print your laptop's real public IP, not `172.18.0.1`.
 
 ## Backups
 

@@ -5,7 +5,13 @@ from contextlib import asynccontextmanager
 from typing import Annotated, Optional
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    PlainTextResponse,
+    RedirectResponse,
+)
 from fastapi.staticfiles import StaticFiles
 from pydantic import EmailStr, TypeAdapter, ValidationError
 from sqlmodel import Session, select
@@ -290,6 +296,96 @@ def favicon(db: DbDep):
         STATIC_DIR / "icons" / "favicon.png",
         media_type="image/png",
         headers={"Cache-Control": "public, max-age=300"},
+    )
+
+
+# ``robots.txt`` disallows every crawler — the portal is a private
+# small-business tool, not something that should be indexed in search
+# engines or harvested for LLM training. Both anonymous and pseudonymous
+# crawlers honor this file (Google, OpenAI's GPTBot, Anthropic's
+# ClaudeBot, Perplexity, Bytedance, Amazon, etc. all explicitly support
+# the ``User-agent: <bot>`` syntax). Crawlers that ignore robots.txt
+# would also ignore a portal-side block list, so the wildcard ``*``
+# disallow plus the named-bot explicit blocks is what we can do
+# without sliding into request-fingerprinting territory.
+_ROBOTS_TXT = (
+    "# This is a private business portal. Please don't index or train on it.\n"
+    "\n"
+    "User-agent: *\n"
+    "Disallow: /\n"
+    "\n"
+    "# Named blocks below: some crawlers honor a specific User-agent line\n"
+    "# more reliably than the wildcard. Listed alphabetically so this stays\n"
+    "# easy to audit and extend.\n"
+    "\n"
+    "User-agent: AhrefsBot\n"
+    "Disallow: /\n"
+    "\n"
+    "User-agent: Amazonbot\n"
+    "Disallow: /\n"
+    "\n"
+    "User-agent: anthropic-ai\n"
+    "Disallow: /\n"
+    "\n"
+    "User-agent: Applebot-Extended\n"
+    "Disallow: /\n"
+    "\n"
+    "User-agent: Bytespider\n"
+    "Disallow: /\n"
+    "\n"
+    "User-agent: CCBot\n"
+    "Disallow: /\n"
+    "\n"
+    "User-agent: ChatGPT-User\n"
+    "Disallow: /\n"
+    "\n"
+    "User-agent: ClaudeBot\n"
+    "Disallow: /\n"
+    "\n"
+    "User-agent: cohere-ai\n"
+    "Disallow: /\n"
+    "\n"
+    "User-agent: DataForSeoBot\n"
+    "Disallow: /\n"
+    "\n"
+    "User-agent: Diffbot\n"
+    "Disallow: /\n"
+    "\n"
+    "User-agent: FacebookBot\n"
+    "Disallow: /\n"
+    "\n"
+    "User-agent: Google-Extended\n"
+    "Disallow: /\n"
+    "\n"
+    "User-agent: GPTBot\n"
+    "Disallow: /\n"
+    "\n"
+    "User-agent: ImagesiftBot\n"
+    "Disallow: /\n"
+    "\n"
+    "User-agent: meta-externalagent\n"
+    "Disallow: /\n"
+    "\n"
+    "User-agent: OAI-SearchBot\n"
+    "Disallow: /\n"
+    "\n"
+    "User-agent: PerplexityBot\n"
+    "Disallow: /\n"
+    "\n"
+    "User-agent: SemrushBot\n"
+    "Disallow: /\n"
+    "\n"
+    "User-agent: YouBot\n"
+    "Disallow: /\n"
+)
+
+
+@app.get("/robots.txt", include_in_schema=False)
+def robots():
+    return PlainTextResponse(
+        _ROBOTS_TXT,
+        media_type="text/plain; charset=utf-8",
+        headers={"Cache-Control": "public, max-age=3600"},
     )
 
 

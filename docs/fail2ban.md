@@ -12,17 +12,24 @@ reference for writing your own.
 
 ## TL;DR
 
-Two layers, independently useful:
+Three layers, independently useful:
 
 | Layer | What it bans | Reads | Latency to ban |
 |---|---|---|---|
 | **Portal login** | 5 failed `/login` POSTs in 10 min from the same IP | `data/security.log` written by `portal/audit.py` | Instant (fail2ban tails the file) |
-| **Caddy scanner sweep** | IPs hitting `/.env`, `/.git/`, `/wp-admin/`, etc. via Caddy | Caddy JSON access log in journald | Instant |
+| **Caddy scanner sweep** | IPs hitting `/.env`, `/.git/`, `/wp-admin/`, `/actuator/`, `/boaform/`, etc. (60+ patterns) | Caddy JSON access log in journald | Instant |
+| **sshd** | 5 failed SSH auth attempts in 10 min | systemd's sshd journal | Instant |
 
-Both work with the default Docker compose stack. The portal login jail
-is the high-value one — it's the only thing standing between an attacker
-and an admin account. The Caddy sweep is icing: it costs nothing and
-keeps scanner garbage out of your logs.
+All three work with the default Docker compose stack. The portal login
+jail is the high-value one — it's the only thing standing between an
+attacker and an admin account. The Caddy sweep is icing: it costs
+nothing and keeps scanner garbage out of your logs. The sshd jail is
+table stakes for any internet-facing VPS.
+
+**Each portal jail is scoped to `port = http,https` so a portal ban
+doesn't lock you out of SSH.** The sshd jail is scoped to `port = 22`
+by default — if you run sshd on a non-standard port, adjust as
+documented below.
 
 ---
 
@@ -35,11 +42,17 @@ keeps scanner garbage out of your logs.
   firewall, and the host has the journal + the bind-mounted data dir.
 - systemd-journald running (default on Ubuntu/Debian) so fail2ban can
   read Caddy's access logs via `journalmatch`.
+- **`userland-proxy: false` in `/etc/docker/daemon.json`** (see
+  [`deploying.md`](deploying.md) for the reasoning + fix). Without this,
+  Docker NATs the source IP away and every fail2ban ban targets the
+  bridge gateway `172.18.0.1` — i.e., useless.
 
 The portal stack since **v0.5.1** writes a fail2ban-friendly text log to
 `./data/security.log` and tags container logs with stable journald
-identifiers (`pwa-portal`, `pwa-portal-caddy`). Earlier versions don't
-emit those signals — upgrade before configuring fail2ban.
+identifiers (`pwa-portal`, `pwa-portal-caddy`). v0.6.2+ ships the
+corrected contrib filters (the v0.5.1/v0.6.x filters had a date-prefix
+bug that prevented any matches — upgrade to v0.6.2 before deploying
+fail2ban configs).
 
 ---
 
@@ -54,8 +67,10 @@ sudo cp /home/ubuntu/my-portal/contrib/fail2ban/filter.d/pwa-portal-login.conf \
 sudo cp /home/ubuntu/my-portal/contrib/fail2ban/filter.d/pwa-portal-caddy.conf \
         /etc/fail2ban/filter.d/
 
-# Copy the jail definitions
+# Copy the jail definitions (portal jails + sshd)
 sudo cp /home/ubuntu/my-portal/contrib/fail2ban/jail.d/pwa-portal.conf \
+        /etc/fail2ban/jail.d/
+sudo cp /home/ubuntu/my-portal/contrib/fail2ban/jail.d/sshd.conf \
         /etc/fail2ban/jail.d/
 ```
 
@@ -63,6 +78,19 @@ Open `/etc/fail2ban/jail.d/pwa-portal.conf` and **edit the `logpath`** in
 the `[pwa-portal-login]` block if your repo lives somewhere other than
 `/home/ubuntu/my-portal`. The path must be the host-side bind mount of
 the portal's data dir.
+
+If you run sshd on a non-standard port (highly recommended — cuts
+roughly 99% of brute-force noise on its own), edit
+`/etc/fail2ban/jail.d/sshd.conf` and update the `port` line, e.g.:
+
+```ini
+port = 22,42069
+```
+
+The sshd FILTER doesn't care which port sshd actually listens on (it
+reads the journal). The PORT directive only controls which port the
+firewall rule blocks when a ban fires. Listing both means a banned IP
+can't probe either port.
 
 Then:
 
