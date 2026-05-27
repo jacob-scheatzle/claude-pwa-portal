@@ -122,6 +122,7 @@ def build_child_app_csp(
     allowed_origins: Iterable[str],
     *,
     frame_ancestors: str,
+    frame_src: Optional[str] = None,
     strict: bool = False,
     nonce: Optional[str] = None,
 ) -> str:
@@ -135,6 +136,15 @@ def build_child_app_csp(
     or one or more ``https://...`` / ``http://...`` origins (subdomain app
     embedded by the portal shell).
 
+    ``frame_src`` is emitted verbatim if non-empty. Required on the
+    *launcher* response in per-app-origin mode: the launcher at
+    ``/apps/<slug>/`` on the portal origin embeds an iframe pointing at
+    ``<slug>.apps.<SITE_URL>`` (a different origin), so without an
+    explicit ``frame-src`` directive the CSP falls back to ``default-src
+    'self'`` and the browser refuses to load the iframe. Same-origin
+    mode doesn't need it (the iframe target is same-origin, matched by
+    the default).
+
     ``strict=True`` drops ``'unsafe-inline'`` / ``'unsafe-eval'`` and emits
     ``script-src``/``style-src`` with the given nonce (required when strict).
     Apps opt into this via the manifest's ``permissions.csp_strict``; the
@@ -146,6 +156,13 @@ def build_child_app_csp(
         if isinstance(o, str) and o.startswith("https://"):
             origins.append(o)
     connect = " ".join(origins)
+
+    # Optional directive — rendered only when the caller supplies a value,
+    # so existing CSP semantics for subdomain responses (no frame-src,
+    # default-src governs) stay byte-for-byte unchanged.
+    frame_src_directive = (
+        f"frame-src {frame_src}; " if frame_src else ""
+    )
 
     if strict:
         if not nonce:
@@ -163,6 +180,7 @@ def build_child_app_csp(
             f"img-src {img_src}; "
             "font-src 'self' data:; "
             f"connect-src {connect}; "
+            f"{frame_src_directive}"
             f"frame-ancestors {frame_ancestors}; "
             "base-uri 'self'; "
             "form-action 'self'; "
@@ -172,6 +190,7 @@ def build_child_app_csp(
     return (
         "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; "
         f"connect-src {connect}; "
+        f"{frame_src_directive}"
         f"frame-ancestors {frame_ancestors}; "
         "base-uri 'self'; "
         "form-action 'self'"
@@ -190,6 +209,27 @@ def _subdomain_frame_ancestors(site_url: str, http_only: bool) -> str:
     if http_only:
         return f"http://{site_url} https://{site_url}"
     return f"https://{site_url}"
+
+
+def _launcher_frame_src(
+    slug: str, site_url: str, cookies_secure: bool, http_only: bool
+) -> str:
+    """frame-src value for the launcher embedding a child-app subdomain.
+
+    Mirrors how ``portal.apps.serve_app_index`` constructs the iframe
+    URL. Scoped to the specific slug (not a wildcard) so an HTML-injection
+    bug in the launcher template can't pivot to embedding a sibling app's
+    subdomain. Under HTTP_ONLY mode the iframe is reachable as either
+    ``http://`` (local testing) or ``https://`` (behind a TLS-terminating
+    LB), so both schemes are listed to keep the wrapper working in either
+    deployment shape.
+    """
+    origin = f"{slug}.apps.{site_url}"
+    if http_only:
+        return f"http://{origin} https://{origin}"
+    if cookies_secure:
+        return f"https://{origin}"
+    return f"http://{origin}"
 
 
 class ChildAppCSPMiddleware(BaseHTTPMiddleware):
@@ -275,15 +315,33 @@ class ChildAppCSPMiddleware(BaseHTTPMiddleware):
         if not slug:
             return response
 
+        frame_src: Optional[str] = None
         if on_subdomain:
             frame_ancestors = _subdomain_frame_ancestors(
                 settings.site_url, bool(settings.http_only)
             )
         else:
             frame_ancestors = "'self'"
+            # The launcher (portal-origin ``/apps/<slug>/...``) in
+            # per-app-origin mode embeds the child app via an iframe to
+            # ``<slug>.apps.<SITE_URL>`` — a DIFFERENT origin. Without a
+            # ``frame-src`` directive the browser falls back to
+            # ``default-src 'self'`` and refuses to load the iframe with
+            # a CSP violation, surfacing in DevTools as "content is
+            # blocked" / "blocks some resources". Same-origin mode
+            # doesn't need this because the iframe target is same-origin
+            # and matches ``default-src 'self'`` already.
+            if not bool(settings.child_apps_same_origin):
+                frame_src = _launcher_frame_src(
+                    slug,
+                    settings.site_url,
+                    bool(settings.cookies_secure),
+                    bool(settings.http_only),
+                )
         response.headers["Content-Security-Policy"] = build_child_app_csp(
             allowed,
             frame_ancestors=frame_ancestors,
+            frame_src=frame_src,
             strict=csp_strict,
             nonce=nonce,
         )
