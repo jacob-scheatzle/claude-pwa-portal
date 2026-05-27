@@ -23,11 +23,7 @@ chmod 600 .env
 # 3. Pre-create the data dir owned by the container's runtime uid
 mkdir -p data && sudo chown -R 1001:1001 data
 
-# 4. If the image is private (default while the repo is private),
-#    log in to GHCR once. Skip this step if the images are public.
-echo $GH_PAT | docker login ghcr.io -u <your-github-username> --password-stdin
-
-# 5. Pull and run
+# 4. Pull and run
 docker compose pull
 docker compose up -d
 docker compose logs -f
