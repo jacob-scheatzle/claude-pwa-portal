@@ -1,4 +1,4 @@
-# ProgressiveWebAppPortal
+# Progressive WebApp Portal
 
 An open-source, self-hosted **Progressive Web App portal** for small businesses. Deploy it on a small VPS and give your staff a single, installable home for the internal tools they use every day. New tools can be scaffolded, packaged, and uploaded by a non-developer working with Claude.
 
@@ -27,8 +27,7 @@ The portal is designed so the apps inside it can be authored by someone who isn'
 - A **Claude skill** ([`claude-skill/pwa-portal-app/`](claude-skill/pwa-portal-app/)) so a non-developer can ask Claude to build an app and have it scaffolded, packaged, and uploaded automatically.
 - A **reference example** ([`examples/hello-receipt/`](examples/hello-receipt/)) — a working PWA that uses every SDK service.
 - **Pre-built container images on GHCR** + a GitHub Actions workflow that builds and publishes on every push to `main`. Deployers don't need to clone the repo.
-- **Drop in configs for Fail2Ban** + Configs for Fail2Ban if you decide to use for protection
-
+- **Drop in configs for Fail2Ban** It is HIGHLY suggested to use Fail2Ban or something similar to block unwanted connections if using on a VPS or standalone machine. If deploying in a cloud environment it is suggested to use the appropriate security groups, network firewalls, etc. 
 ## Quick start
 
 Requires a host with **Docker** and **Docker Compose**. The portal ships as two pre-built container images on GitHub Container Registry; you don't need to clone this repo to deploy.
