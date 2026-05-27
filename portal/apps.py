@@ -844,6 +844,60 @@ def admin_apps_delete(
     return RedirectResponse("/admin/apps", status_code=303)
 
 
+# ----- Dashboard tile icons (portal origin) -----
+#
+# Why this exists as a dedicated endpoint: in per-app-origin mode the
+# obvious URL ``/apps/<slug>/icon.png`` would 308-redirect to the app's
+# subdomain (see ``serve_app_file`` below), where the lack of an
+# AppSession cookie bounces the request back to the portal-origin
+# launcher (HTML, not an image) — broken-image glyph on every tile.
+#
+# Routing dashboard icons through their own portal-origin endpoint
+# sidesteps the redirect entirely. Same per-user access gate as the
+# launcher; same uniform 404 response for "doesn't exist" /
+# "exists but blocked" / "exists but no icon configured" so a curious
+# user can't enumerate slugs they don't have access to.
+
+@router.get("/app-icons/{slug}", include_in_schema=False)
+def app_icon(
+    slug: str,
+    db: DbDep,
+    user: UserDep,
+):
+    if user is None:
+        raise HTTPException(404)
+    app_row = db.exec(select(App).where(App.slug == slug)).first()
+    if app_row is None or not app_row.enabled or not app_row.icon:
+        raise HTTPException(404)
+    if not user_can_access_app(db, user, app_row):
+        raise HTTPException(404)
+
+    apps_root = _apps_root()
+    app_dir = (apps_root / slug).resolve()
+    try:
+        app_dir.relative_to(apps_root)
+    except ValueError:
+        raise HTTPException(404)
+
+    target = (app_dir / app_row.icon).resolve()
+    try:
+        target.relative_to(app_dir)
+    except ValueError:
+        raise HTTPException(404)
+    if not target.is_file():
+        raise HTTPException(404)
+
+    # Short cache: icons rarely change but DO change on app replace, so
+    # five minutes is the floor where a re-uploaded icon shows up quickly
+    # without re-fetching on every dashboard render. Starlette's
+    # FileResponse adds ETag/Last-Modified automatically, so the browser
+    # 304s on the conditional revalidation after max-age expires.
+    return FileResponse(
+        target,
+        headers={"Cache-Control": "public, max-age=300"},
+    )
+
+
 # ----- Child app serving -----
 
 @router.get("/apps/{slug}", include_in_schema=False)

@@ -123,7 +123,50 @@ Most DNS providers support wildcards. If you're using sslip.io (`<ip>.sslip.io`)
 
 Caddy will fetch a Let's Encrypt cert for each subdomain on first access using HTTP-01 challenges; no DNS provider credentials needed. The portal protects against cert-issuance probing via an `/internal/cert-ask` endpoint that only approves real app slugs.
 
-If you'd rather skip this step, set `CHILD_APPS_SAME_ORIGIN=true` in `.env`. The portal will then serve apps at `<SITE_URL>/apps/<slug>/` (same origin) with a security warning in the admin UI.
+> ### ⚠️ sslip.io's Let's Encrypt rate limit
+>
+> Let's Encrypt enforces a **250,000 certificates per registered domain
+> per 168 hours** rate limit. For `sslip.io`, the "registered domain" is
+> `sslip.io` itself — **shared across every user of the service**. When
+> the global pool is exhausted, Caddy can't get new certs for any
+> `*.sslip.io` subdomain, and child-app subdomains fail to load with a
+> browser "the content is blocked" / "your connection is not secure"
+> error. You'll see this in the `caddy-1` logs as:
+>
+> ```
+> HTTP 429 urn:ietf:params:acme:error:rateLimited — too many certificates
+> (250000) already issued for "sslip.io" in the last 168h0m0s
+> ```
+>
+> It's not something you've done wrong — somebody else (or many somebodies)
+> burned the shared quota that week. The status is at
+> [letsencrypt.status.io](https://letsencrypt.status.io/) but the
+> per-domain counter isn't public.
+>
+> **If this happens to you**, you have two options:
+>
+> 1. **Flip to same-origin mode** (immediate, no DNS change):
+>    ```bash
+>    echo "CHILD_APPS_SAME_ORIGIN=true" >> .env
+>    sudo docker compose up -d
+>    ```
+>    Apps then serve from `<SITE_URL>/apps/<slug>/` on the portal origin,
+>    sharing one cert with the portal shell. The admin dashboard shows a
+>    banner reminding you isolation is off; for a single-tenant portal
+>    where you upload every app yourself, that trade-off is usually fine.
+>
+> 2. **Point a real domain at the VPS** (proper fix). Any domain you
+>    control gets its own 250k/week quota that nobody else can exhaust.
+>    Set `SITE_URL` in `.env` to that domain, add a wildcard A record for
+>    `*.apps.<your-domain>`, and you can stay in per-app-origin mode with
+>    full isolation.
+>
+> For non-toy production deployments, option 2 is the right answer regardless
+> of whether sslip.io is currently rate-limited — relying on a shared free
+> dynamic-DNS service for the load-bearing piece of your security model is a
+> "works until it doesn't" arrangement.
+
+If you'd rather skip this step entirely, set `CHILD_APPS_SAME_ORIGIN=true` in `.env`. The portal will then serve apps at `<SITE_URL>/apps/<slug>/` (same origin) with a security warning in the admin UI.
 
 ## 2.7. Optional: HTTP-only mode
 

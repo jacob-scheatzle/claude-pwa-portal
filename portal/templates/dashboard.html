@@ -18,7 +18,7 @@
 	{% for app in apps %}
 	<a class="tile" href="/apps/{{ app.slug }}/">
 		{% if app.icon %}
-		<img src="/apps/{{ app.slug }}/{{ app.icon }}" alt="">
+		<img src="/app-icons/{{ app.slug }}" alt="">
 		{% else %}
 		<img src="/static/icons/icon-192.png" alt="">
 		{% endif %}
