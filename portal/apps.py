@@ -1114,24 +1114,131 @@ def _serve_app_subdomain_path(
     return FileResponse(target)
 
 
-def _launch_redirect_response(request: Request, slug: str) -> RedirectResponse:
-    """Bounce a no-cookie subdomain hit back to the portal-origin launcher.
+def _launcher_url(request: Request, slug: str) -> str:
+    """Server-build the portal-origin launcher URL for this slug.
 
-    The launcher at ``/apps/<slug>/`` is the iframe wrapper page that mints a
-    fresh launch token and reloads the subdomain with it in the fragment.
-
-    Preserves whatever port the request arrived on. In dev (uvicorn on 8000,
-    lvh.me) that's how the bounce can land back on the same port; in prod
-    (Caddy on 443 with cookies_secure=True) the port is implicit in the
-    scheme.
+    Preserves whatever port the request arrived on (matters for dev where
+    uvicorn binds an arbitrary port; in prod the port is implicit in the
+    scheme).
     """
     scheme = "https" if settings.cookies_secure else "http"
     host = request.headers.get("host", settings.site_url)
     port = ""
     if ":" in host and not host.startswith("["):
         port = ":" + host.rsplit(":", 1)[1]
-    target = f"{scheme}://{settings.site_url}{port}/apps/{slug}/"
-    return RedirectResponse(target, status_code=303)
+    return f"{scheme}://{settings.site_url}{port}/apps/{slug}/"
+
+
+def _launch_redirect_response(request: Request, slug: str) -> RedirectResponse:
+    """303 to the portal-origin launcher.
+
+    Used as a fallback for non-bootstrap paths that need to mint a fresh
+    launch token (currently the legacy ``/apps/<slug>/<file>`` redirects in
+    per-app-origin mode). For first-hit subdomain loads the bootstrap HTML
+    handles the token exchange in-place — see ``_launch_bootstrap_html``.
+    """
+    return RedirectResponse(_launcher_url(request, slug), status_code=303)
+
+
+def _launch_bootstrap_html(request: Request, slug: str) -> Response:
+    """HTML page served on the subdomain when there's no AppSession cookie.
+
+    The per-app-origin handshake parks a single-use launch token in the
+    URL fragment (``#token=<...>``) of the iframe src constructed by the
+    portal-origin launcher. Fragments don't survive HTTP round trips, so
+    the FIRST GET to the subdomain root arrives without the token — only
+    client-side JS can see it. This page is that client-side step:
+
+      1. Read ``#token=<token>`` from ``window.location.hash``
+      2. POST it to ``/api/v1/session/exchange`` (same-origin → the
+         ``Set-Cookie: app_session=...`` response actually sticks)
+      3. ``window.location.replace(window.location.pathname)`` — drops
+         the fragment and reloads, which now serves the real app HTML
+         because the AppSession cookie is set
+
+    On any failure (no token, expired token, network error), shows a
+    clear message pointing users at the launcher chrome's ← Apps link.
+    The iframe sandbox doesn't grant ``allow-top-navigation``, so
+    auto-bouncing the top window isn't an option — the recovery has to
+    be user-driven from outside the iframe.
+
+    This replaces the prior ``303 → launcher`` behaviour, which couldn't
+    actually complete the handshake: the launcher would just mint a
+    fresh token and render another iframe, looping forever inside
+    nested iframes without ever exchanging the token.
+    """
+    launcher_url = _launcher_url(request, slug)
+    # Both values are server-built (slug is regex-validated kebab-case,
+    # launcher_url is constructed from trusted config) so JSON-encoding
+    # is purely for safe quoting inside the inline JS.
+    import json as _json
+    slug_js = _json.dumps(slug)
+    launcher_js = _json.dumps(launcher_url)
+
+    html = f"""<!doctype html>
+<html lang=\"en\">
+<head>
+<meta charset=\"utf-8\">
+<title>Loading…</title>
+<style>
+body {{
+  font-family: -apple-system, BlinkMacSystemFont, \"Inter\", \"Segoe UI\",
+    Roboto, sans-serif;
+  padding: 2.5rem 1.5rem;
+  color: #57534e;
+  background: #fafaf9;
+  text-align: center;
+  margin: 0;
+}}
+.err {{ color: #b91c1c; }}
+.err a {{ color: inherit; }}
+@media (prefers-color-scheme: dark) {{
+  body {{ color: #a8a29e; background: #0c0a09; }}
+  .err {{ color: #f87171; }}
+}}
+</style>
+</head>
+<body>
+<p id=\"msg\">Loading…</p>
+<p id=\"err\" class=\"err\" hidden>
+  Couldn’t start the app. Use the <strong>← Apps</strong> link above
+  to return to the dashboard and try again.
+</p>
+<script>
+(function () {{
+  var slug = {slug_js};
+  var launcherUrl = {launcher_js};
+  function fail() {{
+    var msg = document.getElementById(\"msg\");
+    var err = document.getElementById(\"err\");
+    if (msg) msg.hidden = true;
+    if (err) err.hidden = false;
+  }}
+  var m = window.location.hash.match(/(?:^#|&)token=([^&]+)/);
+  if (!m) {{ fail(); return; }}
+  var token;
+  try {{ token = decodeURIComponent(m[1]); }}
+  catch (_) {{ fail(); return; }}
+  fetch(\"/api/v1/session/exchange\", {{
+    method: \"POST\",
+    headers: {{ \"Content-Type\": \"application/json\" }},
+    credentials: \"same-origin\",
+    body: JSON.stringify({{ token: token }})
+  }}).then(function (res) {{
+    if (!res.ok) throw new Error(\"HTTP \" + res.status);
+    // Cookie is set. Reload without the fragment to fetch the real app HTML.
+    window.location.replace(window.location.pathname || \"/\");
+  }}).catch(fail);
+}})();
+</script>
+</body>
+</html>
+"""
+    return Response(
+        content=html,
+        media_type="text/html; charset=utf-8",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 def serve_subdomain_request(
@@ -1159,6 +1266,19 @@ def serve_subdomain_request(
         from portal.sessions import get_active_app_session, touch_app_session
         session_row = get_active_app_session(db, sid)
         if session_row is None or session_row.slug != slug:
+            # No AppSession cookie. The handshake from the portal-origin
+            # launcher parked a single-use token in the URL fragment
+            # (#token=...) of the iframe src; fragments aren't sent in
+            # HTTP requests, so the server can't see it. Serve a small
+            # HTML page that reads the fragment client-side, calls
+            # /api/v1/session/exchange, and reloads — which fetches the
+            # real app HTML with the now-set cookie. Deep paths
+            # (asset GETs without a cookie) fall back to a 303 to the
+            # launcher; this normally only happens on cookie expiry
+            # mid-session, and the user will re-launch from the
+            # dashboard. See _launch_bootstrap_html for the full flow.
+            if path in ("", "/"):
+                return _launch_bootstrap_html(request, slug)
             return _launch_redirect_response(request, slug)
         # Re-check per-user access on every static-file hit so a revocation
         # propagates immediately to live tabs without waiting for the
