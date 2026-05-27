@@ -31,7 +31,21 @@ services:
       - "8000"
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
+    # read_only locks the container's root filesystem; the only writable paths
+    # are the explicit volume (./data) and the tmpfs below. Combined with
+    # PYTHONDONTWRITEBYTECODE=1 in the Dockerfile (otherwise Python tries to
+    # write .pyc into a read-only site-packages on every import), this means
+    # a code-exec exploit can't drop a webshell anywhere persistent.
+    read_only: true
     tmpfs: [/tmp]
+    # Resource caps prevent a single misbehaving child-app (or DoS attempt
+    # that gets past Caddy + fail2ban) from exhausting host RAM/CPU. The
+    # portal itself is tiny — WeasyPrint renders are the only memory spike
+    # path — so 768M is comfortable headroom. pids_limit blocks fork-bomb
+    # style attacks. Tune up if you host many concurrent users.
+    mem_limit: 768m
+    cpus: 1.0
+    pids_limit: 100
     # Tag the container's stdout/stderr with a stable journald identifier so
     # host-side tooling (``journalctl -t pwa-portal``, fail2ban for ad-hoc
     # log inspection) reads a predictable stream. The actual fail2ban ban
@@ -61,6 +75,14 @@ services:
     cap_drop: [ALL]
     cap_add: [NET_BIND_SERVICE]
     security_opt: [no-new-privileges:true]
+    # Same read_only + tmpfs treatment as portal. Caddy writes its on-demand
+    # TLS certs and ACME state to the named volumes (caddy_data, caddy_config)
+    # mounted above; /tmp covers transient scratch.
+    read_only: true
+    tmpfs: [/tmp]
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 50
     # journald tag for Caddy's JSON access log (emitted to stdout from the
     # Caddyfile ``log`` directive). fail2ban's pwa-portal-caddy filter reads
     # ``SYSLOG_IDENTIFIER=pwa-portal-caddy`` to ban scanners at the proxy

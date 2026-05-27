@@ -21,6 +21,18 @@ RUN pip install --no-cache-dir .
 WORKDIR /
 USER portal
 ENV PYTHONUNBUFFERED=1
+# Required so the container runs cleanly with ``read_only: true`` in
+# docker-compose.yml — Python would otherwise try to write .pyc files
+# into the read-only site-packages directory on every import. Disabling
+# bytecode generation costs a small one-time startup penalty (imports are
+# parsed from source) but matters once at boot, not per-request.
+ENV PYTHONDONTWRITEBYTECODE=1
+# Re-point $HOME at /tmp (which is a tmpfs in docker-compose.yml) so anything
+# that caches under ``$HOME/.cache`` — most notably fontconfig, which
+# WeasyPrint pulls in — has a writable scratch dir under read_only:true.
+# The runtime user has no real home (--no-create-home), so $HOME defaults
+# to ``/`` and writes would EROFS.
+ENV HOME=/tmp
 # Alembic config lives in /build alongside the source we COPY'd above. The
 # portal package itself gets pip-installed into site-packages, so
 # Path(__file__).parent.parent inside portal/db.py won't find these files —
