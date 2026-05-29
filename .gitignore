@@ -16,3 +16,8 @@ pwa-portal-app.zip
 .DS_Store
 .idea/
 .vscode/
+
+# Claude Code per-developer settings. Shared project config (e.g. a checked-in
+# .claude/settings.json or .claude/commands/) can still be committed explicitly.
+.claude/settings.local.json
+.claude/launch.json
