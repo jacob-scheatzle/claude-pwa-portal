@@ -22,6 +22,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from portal import admin as admin_module
 from portal import api as api_module
 from portal import apps as apps_module
+from portal import forms as forms_module
 from portal.access import accessible_app_ids_for
 from portal.audit import emit_security_line, record_anonymous, record_event
 from portal.config import settings
@@ -140,6 +141,7 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.include_router(apps_module.router)
 app.include_router(api_module.router)
 app.include_router(admin_module.router)
+app.include_router(forms_module.router)
 
 
 # MCP app-management server at /mcp (portal origin, admin-token auth). The

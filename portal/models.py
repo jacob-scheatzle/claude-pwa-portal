@@ -74,6 +74,12 @@ class App(SQLModel, table=True):
     # app code never runs server-side. Refreshed on every upload/replace; the
     # manifest is the source of truth. Existing pre-feature rows read as ``[]``.
     tools: list[dict] = Field(default_factory=list, sa_column=Column(JSON))
+    # Public intake forms this app declares (see ``portal.apps.PortalAppForm``).
+    # Served at ``/forms/<slug>/<form>`` with no sign-in; submissions land in the
+    # ``FormSubmission`` table for the owner to read + export. Like ``tools``, the
+    # manifest is the source of truth and this is refreshed on every upload /
+    # replace; pre-feature rows read as ``[]``.
+    forms: list[dict] = Field(default_factory=list, sa_column=Column(JSON))
     enabled: bool = Field(default=True)
     # Admin-controlled sort key for the user-facing dashboard tile grid AND
     # the /admin/apps table. Lower values render first. New apps default to
@@ -287,3 +293,21 @@ class ScheduledRun(SQLModel, table=True):
     last_run_at: Optional[datetime] = None
     last_status: str = Field(default="")     # "ok" | "error" | ""
     last_result: str = Field(default="")     # short summary / error (truncated)
+
+
+class FormSubmission(SQLModel, table=True):
+    # One submission to a public intake form. Forms are declared in an app's
+    # manifest (``portal.apps.PortalAppForm``) and served at
+    # ``/forms/<slug>/<form>`` — anyone with the link submits without signing in.
+    # Submitted values are stored as a JSON dict keyed by declared field name
+    # (unknown fields are dropped), for the business owner to read in the admin
+    # UI (/admin/submissions) and include in the data export. ``source_ip`` is
+    # the proxy-derived client IP, truncated. This is *data*, not a rolling log,
+    # so it is not auto-pruned — public write volume is bounded by the per-IP
+    # rate limit in ``portal/forms.py``.
+    id: Optional[int] = Field(default=None, primary_key=True)
+    app_slug: str = Field(index=True)
+    form_name: str = Field(index=True)
+    data: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=_utcnow, index=True)
+    source_ip: str = Field(default="")

@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}{{ form.title or form.name }} — submissions{% endblock %}
+{% block container_class %}wide{% endblock %}
+{% block content %}
+<p><a href="/admin/submissions" class="nav-link">← Form submissions</a></p>
+<h1>{{ form.title or form.name }}</h1>
+<p><strong>{{ app_row.name }}</strong> · public link
+<code>/forms/{{ app_row.slug }}/{{ form.name }}</code>
+&nbsp;<a class="action-chip" href="/admin/submissions/{{ app_row.slug }}/{{ form.name }}/csv">Download CSV</a></p>
+
+{% if subs %}
+<table class="apps" style="margin-top:1rem;">
+	<thead>
+		<tr>
+			<th>Received (UTC)</th>
+			{% for f in form.fields %}<th>{{ f.label }}</th>{% endfor %}
+		</tr>
+	</thead>
+	<tbody>
+		{% for s in subs %}
+		<tr>
+			<td data-label="Received">{{ s.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
+			{% for f in form.fields %}<td data-label="{{ f.label }}">{{ s.data.get(f.name, "") }}</td>{% endfor %}
+		</tr>
+		{% endfor %}
+	</tbody>
+</table>
+<p class="hint">Showing up to 500 most recent. Use <strong>Download CSV</strong> for the full set.</p>
+{% else %}
+<p class="hint" style="margin-top:1.5rem;">No submissions yet. Share the public link above to start collecting.</p>
+{% endif %}
+{% endblock %}

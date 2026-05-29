@@ -287,6 +287,90 @@ class PortalAppTool(BaseModel):
         return {"pdf"}  # share, download
 
 
+# ----- Declarative intake forms -----
+#
+# An app can declare ``forms`` in its manifest: public, no-sign-in intake forms
+# served at ``/forms/<slug>/<form>``. Each submission is stored as a
+# ``FormSubmission`` row for the business owner to read (/admin/submissions) and
+# export. Like tools, this is purely declarative — the portal renders the form
+# and records the submission; no uploaded code runs server-side.
+
+FORM_FIELD_TYPES = {"text", "email", "tel", "number", "textarea"}
+MAX_FORMS = 10
+MAX_FORM_FIELDS = 25
+
+
+class PortalAppFormField(BaseModel):
+    name: str = Field(min_length=1, max_length=40)
+    label: str = Field(min_length=1, max_length=80)
+    type: str = "text"
+    required: bool = False
+    placeholder: Optional[str] = Field(default=None, max_length=120)
+
+    @field_validator("name")
+    @classmethod
+    def _name_ok(cls, v: str) -> str:
+        if not TOOL_NAME_RE.match(v):
+            raise ValueError(
+                f"form field name '{v}' must be lowercase snake_case (a-z, 0-9, _)"
+            )
+        return v
+
+    @field_validator("type")
+    @classmethod
+    def _type_ok(cls, v: str) -> str:
+        if v not in FORM_FIELD_TYPES:
+            raise ValueError(
+                f"unknown field type '{v}'; allowed: {sorted(FORM_FIELD_TYPES)}"
+            )
+        return v
+
+
+class PortalAppForm(BaseModel):
+    name: str = Field(min_length=1, max_length=40)
+    title: str = Field(min_length=1, max_length=120)
+    description: Optional[str] = Field(default=None, max_length=500)
+    fields: list[PortalAppFormField] = Field(default_factory=list)
+    # Where to email a notification when someone submits (optional). Validated
+    # for header safety so a manifest value can't inject extra recipients/headers.
+    notify_email: Optional[str] = Field(default=None, max_length=200)
+    success_message: Optional[str] = Field(default=None, max_length=300)
+
+    @field_validator("name")
+    @classmethod
+    def _name_ok(cls, v: str) -> str:
+        if not TOOL_NAME_RE.match(v):
+            raise ValueError(
+                f"form name '{v}' must be lowercase snake_case (a-z, 0-9, _)"
+            )
+        return v
+
+    @field_validator("notify_email")
+    @classmethod
+    def _notify_ok(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        v = v.strip()
+        if not v:
+            return None
+        if "@" not in v or any(c in v for c in "\r\n,;"):
+            raise ValueError("notify_email must be a single valid email address")
+        return v
+
+    @field_validator("fields")
+    @classmethod
+    def _fields_ok(cls, v: list) -> list:
+        if not v:
+            raise ValueError("a form must declare at least one field")
+        if len(v) > MAX_FORM_FIELDS:
+            raise ValueError(f"too many form fields ({len(v)} > {MAX_FORM_FIELDS})")
+        names = [f.name for f in v]
+        dups = sorted({n for n in names if names.count(n) > 1})
+        if dups:
+            raise ValueError(f"duplicate form field names: {dups}")
+        return v
+
+
 class PortalAppManifest(BaseModel):
     slug: str = Field(min_length=2, max_length=40)
     name: str = Field(min_length=1, max_length=60)
@@ -301,6 +385,9 @@ class PortalAppManifest(BaseModel):
     # Phase 2: declarative MCP tools (see PortalAppTool). Optional; empty for
     # apps that don't expose tools.
     tools: list[PortalAppTool] = Field(default_factory=list)
+    # Public intake forms (see PortalAppForm). Optional; served at
+    # /forms/<slug>/<form>.
+    forms: list[PortalAppForm] = Field(default_factory=list)
 
     @field_validator("slug")
     @classmethod
@@ -337,6 +424,17 @@ class PortalAppManifest(BaseModel):
         dups = sorted({n for n in names if names.count(n) > 1})
         if dups:
             raise ValueError(f"duplicate tool names: {dups}")
+        return v
+
+    @field_validator("forms")
+    @classmethod
+    def _forms_unique(cls, v: list) -> list:
+        if len(v) > MAX_FORMS:
+            raise ValueError(f"too many forms ({len(v)} > {MAX_FORMS})")
+        names = [f.name for f in v]
+        dups = sorted({n for n in names if names.count(n) > 1})
+        if dups:
+            raise ValueError(f"duplicate form names: {dups}")
         return v
 
     @model_validator(mode="after")
@@ -669,6 +767,7 @@ async def install_bundle_from_path(
                 # one click away on the apps admin page.
                 allowed_origins=list(requested),
                 tools=[t.model_dump() for t in manifest.tools],
+                forms=[f.model_dump() for f in manifest.forms],
                 enabled=True,
                 uploaded_by=uploader.id,
             )
@@ -747,6 +846,7 @@ async def install_bundle_from_path(
         existing.requested_origins = new_requested
         existing.allowed_origins = new_allowed
         existing.tools = [t.model_dump() for t in manifest.tools]
+        existing.forms = [f.model_dump() for f in manifest.forms]
         existing.uploaded_by = uploader.id
         existing.uploaded_at = datetime.now(timezone.utc)
         db.add(existing)

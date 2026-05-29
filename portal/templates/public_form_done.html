@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Thank you — {{ branding.business_name }}{% endblock %}
+{% block content %}
+<div class="auth-brand">
+	{% if branding.logo_url %}
+	<img src="{{ branding.logo_url }}" alt="" class="auth-brand-logo">
+	{% else %}
+	<span class="auth-brand-mark">{{ branding.business_name[0]|upper }}</span>
+	{% endif %}
+	<span class="auth-brand-name">{{ branding.business_name }}</span>
+</div>
+
+<div class="empty">
+	<h2>Thank you</h2>
+	<p>{{ form.success_message or "Your submission has been received." }}</p>
+</div>
+{% endblock %}

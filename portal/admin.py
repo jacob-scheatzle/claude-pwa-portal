@@ -1,7 +1,9 @@
 """Admin pages: settings, API tokens, staff user management, backups."""
 from __future__ import annotations
 
+import csv
 import hashlib
+import io
 import json
 import mimetypes
 import re
@@ -17,7 +19,7 @@ from typing import Annotated, Optional
 
 import anyio
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse, Response
 from pydantic import EmailStr, TypeAdapter, ValidationError
 from sqlalchemy import delete, func
 from sqlmodel import Session, select
@@ -46,6 +48,7 @@ from portal.models import (
     ApiToken,
     App,
     AppLaunchToken,
+    FormSubmission,
     ScheduledRun,
     User,
     UserAppAccess,
@@ -1098,6 +1101,93 @@ def schedules_run_now(
     else:
         flash(request, f"Run failed: {out.get('result') or 'unknown error'}", level="error")
     return RedirectResponse("/admin/schedules", status_code=303)
+
+
+# ----- Public form submissions -----
+
+# Apps declare public intake forms (portal.apps.PortalAppForm) served at
+# /forms/<slug>/<form>; submissions land in FormSubmission. These admin pages let
+# the owner read and export them. Submissions are also part of the data export.
+
+def _form_decl(app_row: Optional[App], form_name: str) -> Optional[dict]:
+    for f in ((app_row.forms if app_row else None) or []):
+        if f.get("name") == form_name:
+            return f
+    return None
+
+
+@router.get("/admin/submissions")
+def submissions_list(request: Request, db: DbDep, admin: AdminDep):
+    apps = db.exec(select(App).order_by(App.display_order, App.name)).all()
+    agg = db.exec(
+        select(
+            FormSubmission.app_slug,
+            FormSubmission.form_name,
+            func.count().label("n"),
+            func.max(FormSubmission.created_at).label("last"),
+        ).group_by(FormSubmission.app_slug, FormSubmission.form_name)
+    ).all()
+    counts = {(r[0], r[1]): (r[2], r[3]) for r in agg}
+    forms = []
+    for a in apps:
+        for f in (a.forms or []):
+            n, last = counts.get((a.slug, f["name"]), (0, None))
+            forms.append({
+                "app_name": a.name, "slug": a.slug, "form_name": f["name"],
+                "title": f.get("title") or f["name"], "count": n, "last": last,
+            })
+    return render(request, "admin_submissions.html", user=admin, forms=forms)
+
+
+@router.get("/admin/submissions/{slug}/{form_name}")
+def submissions_detail(
+    request: Request, db: DbDep, admin: AdminDep, slug: str, form_name: str,
+):
+    app_row = db.exec(select(App).where(App.slug == slug)).first()
+    decl = _form_decl(app_row, form_name)
+    if app_row is None or decl is None:
+        raise HTTPException(404)
+    subs = db.exec(
+        select(FormSubmission)
+        .where(FormSubmission.app_slug == slug, FormSubmission.form_name == form_name)
+        .order_by(FormSubmission.created_at.desc())
+        .limit(500)
+    ).all()
+    return render(
+        request, "admin_submissions_detail.html",
+        user=admin, app_row=app_row, form=decl, subs=subs,
+    )
+
+
+@router.get("/admin/submissions/{slug}/{form_name}/csv")
+def submissions_csv(
+    request: Request, db: DbDep, admin: AdminDep, slug: str, form_name: str,
+):
+    app_row = db.exec(select(App).where(App.slug == slug)).first()
+    decl = _form_decl(app_row, form_name)
+    if app_row is None or decl is None:
+        raise HTTPException(404)
+    field_names = [f["name"] for f in decl.get("fields", [])]
+    subs = db.exec(
+        select(FormSubmission)
+        .where(FormSubmission.app_slug == slug, FormSubmission.form_name == form_name)
+        .order_by(FormSubmission.created_at.desc())
+    ).all()
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["submitted_at_utc", "source_ip"] + field_names)
+    for s in subs:
+        d = s.data or {}
+        w.writerow(
+            [s.created_at.strftime("%Y-%m-%d %H:%M:%S"), s.source_ip]
+            + [str(d.get(n, "")) for n in field_names]
+        )
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", f"{slug}-{form_name}") or "submissions"
+    return Response(
+        content=buf.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{safe}.csv"'},
+    )
 
 
 # ----- Backups -----

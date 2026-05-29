@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}{{ form.title }} — {{ branding.business_name }}{% endblock %}
+{% block content %}
+<div class="auth-brand">
+	{% if branding.logo_url %}
+	<img src="{{ branding.logo_url }}" alt="" class="auth-brand-logo">
+	{% else %}
+	<span class="auth-brand-mark">{{ branding.business_name[0]|upper }}</span>
+	{% endif %}
+	<span class="auth-brand-name">{{ branding.business_name }}</span>
+</div>
+
+<h1>{{ form.title }}</h1>
+{% if form.description %}<p>{{ form.description }}</p>{% endif %}
+
+{% if errors %}
+<div class="error">
+	<ul>{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul>
+</div>
+{% endif %}
+
+<form method="post" action="/forms/{{ app_row.slug }}/{{ form.name }}">
+	{# Honeypot — positioned off-screen, hidden from people, tempting to bots.
+	   A filled value silently discards the submission. Do not remove. #}
+	<div style="position:absolute; left:-9999px;" aria-hidden="true">
+		<label>Company URL
+			<input type="text" name="{{ honeypot }}" tabindex="-1" autocomplete="off">
+		</label>
+	</div>
+
+	{% for f in form.fields %}
+	<div>
+		<label for="f_{{ f.name }}">{{ f.label }}{% if f.required %} <span class="muted">*</span>{% endif %}</label>
+		{% if f.type == "textarea" %}
+		<textarea name="{{ f.name }}" id="f_{{ f.name }}"{% if f.required %} required{% endif %}{% if f.placeholder %} placeholder="{{ f.placeholder }}"{% endif %}>{{ values.get(f.name, "") }}</textarea>
+		{% else %}
+		<input type="{{ {'email': 'email', 'number': 'number', 'tel': 'tel'}.get(f.type, 'text') }}"
+			name="{{ f.name }}" id="f_{{ f.name }}" value="{{ values.get(f.name, '') }}"{% if f.required %} required{% endif %}{% if f.placeholder %} placeholder="{{ f.placeholder }}"{% endif %}>
+		{% endif %}
+	</div>
+	{% endfor %}
+
+	<div><button type="submit">Submit</button></div>
+</form>
+{% endblock %}
