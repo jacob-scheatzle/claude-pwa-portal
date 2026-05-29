@@ -16,7 +16,7 @@ Three layers, independently useful:
 
 | Layer | What it bans | Reads | Latency to ban |
 |---|---|---|---|
-| **Portal login** | 5 failed `/login` POSTs in 10 min from the same IP | `data/security.log` written by `portal/audit.py` | Instant (fail2ban tails the file) |
+| **Portal auth** | repeated failed `/login` POSTs **or** bad / missing / non-admin bearer tokens on `/mcp` and `/api/v1/*`, from the same IP | `data/security.log` written by `portal/audit.py` | Instant (fail2ban tails the file) |
 | **Caddy scanner sweep** | IPs hitting `/.env`, `/.git/`, `/wp-admin/`, `/actuator/`, `/boaform/`, etc. (60+ patterns) | Caddy JSON access log in journald | Instant |
 | **sshd** | 5 failed SSH auth attempts in 10 min | systemd's sshd journal | Instant |
 
@@ -170,14 +170,17 @@ that was being tried (which fail2ban itself doesn't store).
 
 ## How the signals work
 
-### `data/security.log` (portal login jail)
+### `data/security.log` (portal auth jail)
 
-Written by `portal/audit.py` from inside the portal container. Each
-login failure appends one line in a fixed format:
+Written by `portal/audit.py` from inside the portal container. Each auth
+failure — cookie login or bearer/MCP API token — appends one line in a
+fixed format:
 
 ```
 2026-05-27T14:35:18Z FAILED_LOGIN ip=45.88.138.44 email=admin@example.com reason=bad_credentials
 2026-05-27T14:36:02Z LOGIN_RATE_LIMITED ip=45.88.138.44 email=admin@example.com reason=rate_limited
+2026-05-29T12:00:00Z MCP_AUTH_FAILED ip=45.88.138.44 reason=bad_token
+2026-05-29T12:00:01Z API_AUTH_FAILED ip=45.88.138.44 reason=bad_token
 ```
 
 - **`FAILED_LOGIN`** — bad password, missing user, or any other auth-time
@@ -186,6 +189,12 @@ login failure appends one line in a fixed format:
   attempt (5 fails per 10 minutes per `(ip, email)` tuple). Banning on
   this catches a fast attacker before they trip many bad-credentials
   matches.
+- **`MCP_AUTH_FAILED`** — a bad, missing, or non-admin bearer token on the
+  `/mcp` endpoint. **`API_AUTH_FAILED`** — a bad bearer token on the
+  `/api/v1/*` API. Both catch token-guessing / stale-credential floods
+  against the portal's machine-facing surfaces. The tokens are
+  high-entropy, so banning here is about cutting DoS noise, not stopping a
+  feasible brute force.
 
 The file lives at `./data/security.log` on the host (it's the same
 bind-mounted data dir that holds `portal.db`). A `RotatingFileHandler`

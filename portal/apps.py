@@ -16,7 +16,7 @@ from typing import Annotated, Optional
 import anyio
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse, Response
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 from sqlmodel import Session, select
 
 from portal.access import (
@@ -110,6 +110,124 @@ class PortalAppPermissions(BaseModel):
         return out
 
 
+# ----- Declarative app tools (Phase 2) -----
+#
+# An app can declare ``tools`` in its manifest: named, parameterized operations
+# the portal exposes over its MCP server (``portal/mcp_server.py``) and runs
+# server-side with the declarative executor (``portal/app_tools.py``). The
+# executor only ever calls the portal's OWN trusted primitives — render an HTML
+# template to PDF, then share / email / store / return it — so the app's
+# uploaded code never runs server-side and the per-app-origin trust model holds.
+
+TOOL_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
+MAX_TOOLS = 20
+MAX_TOOL_PARAMS = 20
+MAX_TOOL_TEMPLATE_BYTES = 100 * 1024
+TOOL_PARAM_TYPES = {"string", "number", "boolean"}
+TOOL_DELIVER_KINDS = {"share", "download", "email", "store"}
+
+
+class PortalToolParam(BaseModel):
+    name: str = Field(min_length=1, max_length=40)
+    type: str = "string"
+    required: bool = False
+    description: str = Field(default="", max_length=200)
+
+    @field_validator("name")
+    @classmethod
+    def _name_ok(cls, v: str) -> str:
+        if not TOOL_NAME_RE.match(v):
+            raise ValueError(
+                f"param name '{v}' must be lowercase snake_case (a-z, 0-9, _)"
+            )
+        return v
+
+    @field_validator("type")
+    @classmethod
+    def _type_ok(cls, v: str) -> str:
+        if v not in TOOL_PARAM_TYPES:
+            raise ValueError(
+                f"param type '{v}' must be one of {sorted(TOOL_PARAM_TYPES)}"
+            )
+        return v
+
+
+class PortalToolRender(BaseModel):
+    # Inline HTML template rendered server-side with the tool's params via a
+    # sandboxed, autoescaping Jinja environment (see portal/app_tools.py).
+    # ``{{ param }}`` placeholders are substituted with escaped values; no
+    # external resources are fetched (same WeasyPrint URL fetcher as the SDK).
+    html: str = Field(min_length=1, max_length=MAX_TOOL_TEMPLATE_BYTES)
+    filename: str = Field(default="document.pdf", max_length=80)
+    branded: bool = False
+
+
+class PortalToolDeliver(BaseModel):
+    # What to do with the rendered document. ``to``/``subject``/``key`` may
+    # contain ``{{ param }}`` placeholders, substituted at run time.
+    kind: str
+    to: Optional[str] = Field(default=None, max_length=400)       # email
+    subject: Optional[str] = Field(default=None, max_length=200)  # email
+    key: Optional[str] = Field(default=None, max_length=200)      # store
+    ttl_days: Optional[int] = Field(default=None, ge=1, le=90)    # share
+
+    @field_validator("kind")
+    @classmethod
+    def _kind_ok(cls, v: str) -> str:
+        if v not in TOOL_DELIVER_KINDS:
+            raise ValueError(
+                f"deliver.kind must be one of {sorted(TOOL_DELIVER_KINDS)}"
+            )
+        return v
+
+    @model_validator(mode="after")
+    def _kind_requirements(self) -> "PortalToolDeliver":
+        if self.kind == "email" and not (self.to and self.to.strip()):
+            raise ValueError("deliver.kind 'email' requires 'to'")
+        if self.kind == "store" and not (self.key and self.key.strip()):
+            raise ValueError("deliver.kind 'store' requires 'key'")
+        return self
+
+
+class PortalAppTool(BaseModel):
+    name: str = Field(min_length=1, max_length=40)
+    description: str = Field(min_length=1, max_length=300)
+    params: list[PortalToolParam] = Field(default_factory=list)
+    render: PortalToolRender
+    deliver: PortalToolDeliver
+
+    @field_validator("name")
+    @classmethod
+    def _name_ok(cls, v: str) -> str:
+        if not TOOL_NAME_RE.match(v):
+            raise ValueError(
+                f"tool name '{v}' must be lowercase snake_case (a-z, 0-9, _)"
+            )
+        return v
+
+    @field_validator("params")
+    @classmethod
+    def _params_ok(cls, v: list) -> list:
+        if len(v) > MAX_TOOL_PARAMS:
+            raise ValueError(f"too many params ({len(v)} > {MAX_TOOL_PARAMS})")
+        names = [p.name for p in v]
+        dups = sorted({n for n in names if names.count(n) > 1})
+        if dups:
+            raise ValueError(f"duplicate param names: {dups}")
+        return v
+
+    def required_services(self) -> set[str]:
+        """Portal services this tool's recipe needs — drives the manifest
+        cross-check below and execution-time gating. Rendering always needs
+        ``pdf``; emailing needs ``email``; storing needs ``storage``."""
+        needed = {"pdf"}
+        if self.deliver.kind == "email":
+            needed.add("email")
+        elif self.deliver.kind == "store":
+            needed.add("storage")
+        return needed
+
+
 class PortalAppManifest(BaseModel):
     slug: str = Field(min_length=2, max_length=40)
     name: str = Field(min_length=1, max_length=60)
@@ -121,6 +239,9 @@ class PortalAppManifest(BaseModel):
     permissions: PortalAppPermissions = Field(default_factory=PortalAppPermissions)
     # Reserved for future portal/app compatibility checks; accepted but unused today.
     min_portal_version: Optional[str] = None
+    # Phase 2: declarative MCP tools (see PortalAppTool). Optional; empty for
+    # apps that don't expose tools.
+    tools: list[PortalAppTool] = Field(default_factory=list)
 
     @field_validator("slug")
     @classmethod
@@ -147,6 +268,34 @@ class PortalAppManifest(BaseModel):
         if v.startswith("/") or v.startswith("\\") or ".." in Path(v).parts:
             raise ValueError("paths must be relative and may not contain '..'")
         return v
+
+    @field_validator("tools")
+    @classmethod
+    def _tools_unique(cls, v: list) -> list:
+        if len(v) > MAX_TOOLS:
+            raise ValueError(f"too many tools ({len(v)} > {MAX_TOOLS})")
+        names = [t.name for t in v]
+        dups = sorted({n for n in names if names.count(n) > 1})
+        if dups:
+            raise ValueError(f"duplicate tool names: {dups}")
+        return v
+
+    @model_validator(mode="after")
+    def _tools_declare_services(self) -> "PortalAppManifest":
+        # A tool may only use portal services the manifest also declares in
+        # ``services`` — so every capability a tool exercises is visible to the
+        # admin and revocable through the existing per-app service gate. (An app
+        # with tools therefore can't rely on the empty-services "legacy, no
+        # gating" shortcut.)
+        declared = set(self.services)
+        for t in self.tools:
+            missing = t.required_services() - declared
+            if missing:
+                raise ValueError(
+                    f"tool '{t.name}' uses service(s) {sorted(missing)} that the "
+                    f"manifest's 'services' does not declare"
+                )
+        return self
 
 
 # ----- Zip safety -----
@@ -386,9 +535,29 @@ async def install_bundle(
         raise UploadError("Please upload a .zip file.")
 
     tmp_path = await _stream_to_temp(bundle, MAX_ZIP_BYTES)
+    return await install_bundle_from_path(
+        db, uploader, tmp_path,
+        allow_replace=allow_replace, expected_slug=expected_slug,
+    )
+
+
+async def install_bundle_from_path(
+    db: Session,
+    uploader: User,
+    tmp_path: Path,
+    *,
+    allow_replace: bool = False,
+    expected_slug: Optional[str] = None,
+) -> InstallResult:
+    """Core install: validate + extract + register a zip already at ``tmp_path``.
+
+    Shared by ``install_bundle`` (the HTTP UploadFile path) and the MCP
+    ``upload_app`` tool (the base64 path). Runs the blocking zip/file work on a
+    worker thread so the event loop isn't held on large uploads; DB writes stay
+    on the main thread. Always removes ``tmp_path`` before returning, on success
+    or failure.
+    """
     try:
-        # Blocking zip/file work moves to a worker thread so we don't block the
-        # event loop on large uploads. DB writes stay on the main thread.
         manifest = await anyio.to_thread.run_sync(_prepare_bundle, tmp_path)
 
         if expected_slug is not None and manifest.slug != expected_slug:
@@ -440,6 +609,7 @@ async def install_bundle(
                 # would be friction for no security gain. Revocations remain
                 # one click away on the apps admin page.
                 allowed_origins=list(requested),
+                tools=[t.model_dump() for t in manifest.tools],
                 enabled=True,
                 uploaded_by=uploader.id,
             )
@@ -517,6 +687,7 @@ async def install_bundle(
         existing.csp_strict = bool(manifest.permissions.csp_strict)
         existing.requested_origins = new_requested
         existing.allowed_origins = new_allowed
+        existing.tools = [t.model_dump() for t in manifest.tools]
         existing.uploaded_by = uploader.id
         existing.uploaded_at = datetime.now(timezone.utc)
         db.add(existing)

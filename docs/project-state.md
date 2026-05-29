@@ -20,6 +20,14 @@ project up on a different machine or after a break.
 - **Big decisions are documented**, not just in commit messages. The
   per-app-origin design lives in [per-app-origin-design.md](per-app-origin-design.md);
   this file is the meta-status.
+- **Update (May 29, 2026):** the portal now ships a built-in **MCP server** at
+  `/mcp` that (1) manages apps as Claude tool calls (list / upload / replace /
+  enable) and (2) runs each app's declared `tools` — a `portal.json` DSL
+  (params → HTML template → PDF → share / email / store / download) surfaced
+  dynamically as `<slug>__<tool>`. Bundled in the Docker image and auto-on
+  (`MCP_ENABLED` forces/disables); admin-token authed. Adds the `App.tools`
+  column (migration `665c77fdc151`) and `portal/{mcp_server,app_tools}.py`. See
+  [mcp.md](mcp.md).
 
 ---
 
@@ -185,6 +193,7 @@ python3 ~/.claude/skills/pwa-portal-app/scripts/configure.py  # interactive; sav
 | [deploying.md](deploying.md) | Production deploy on a real VPS, SMTP setup, hardening checklist |
 | [app-authoring.md](app-authoring.md) | Manually writing a child app (no Claude) — schema, SDK, packaging |
 | [api-reference.md](api-reference.md) | HTTP API + SDK reference for child apps |
+| [mcp.md](mcp.md) | Opt-in `/mcp` MCP server — connect Claude to manage apps as tool calls |
 | [per-app-origin-design.md](per-app-origin-design.md) | Spec + rollout history for the per-app subdomain model — read before touching launch / exchange / Host dispatch |
 | [../claude-skill/pwa-portal-app/SKILL.md](../claude-skill/pwa-portal-app/SKILL.md) | What Claude knows when invoking the skill |
 

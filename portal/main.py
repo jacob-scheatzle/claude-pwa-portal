@@ -51,6 +51,12 @@ from portal.web import STATIC_DIR, flash, render
 # default dictConfig, so a custom logger name silently no-ops.)
 logger = logging.getLogger("uvicorn.error")
 
+# Set during app construction (below) when the MCP management server is enabled
+# AND the optional ``mcp`` package is importable. ``lifespan`` enters its
+# session-manager task group; it stays None when MCP is off, so the portal runs
+# exactly as before. See portal/mcp_server.py and docs/mcp.md.
+_mcp_instance = None
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -72,7 +78,15 @@ async def lifespan(app: FastAPI):
             "cookies will not be sent and per-app iframes will fail to "
             "load. Set COOKIES_SECURE=false if there is no proxy doing TLS."
         )
-    yield
+    # The MCP streamable-HTTP transport needs its session-manager task group
+    # running for the app's lifetime. ``_mcp_instance`` is the
+    # StreamableHTTPSessionManager (see portal/mcp_server.build_mcp_app). No-op
+    # when MCP is disabled.
+    if _mcp_instance is not None:
+        async with _mcp_instance.run():
+            yield
+    else:
+        yield
 
 
 # FastAPI's auto-generated docs (``/docs`` and ``/redoc``) and the
@@ -115,6 +129,36 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.include_router(apps_module.router)
 app.include_router(api_module.router)
 app.include_router(admin_module.router)
+
+
+# MCP app-management server at /mcp (portal origin, admin-token auth). The
+# toggle is tri-state (see config.py): None = auto (on when the optional ``mcp``
+# package is importable — the Docker image bundles it), True = force on, False =
+# off. Registered as exact /mcp + /mcp/ routes (see portal/mcp_server.py for why
+# not app.mount). See docs/mcp.md.
+_mcp_setting = settings.mcp_enabled
+if _mcp_setting is None or _mcp_setting:
+    try:
+        from portal.mcp_server import build_mcp_app
+    except ImportError:
+        if _mcp_setting:
+            # Explicitly requested but the dependency is missing — say so.
+            logger.warning(
+                "MCP_ENABLED=true but the 'mcp' package is not installed; the "
+                "/mcp endpoint is disabled. Install it with: pip install "
+                "'pwa-portal[mcp]'"
+            )
+        # else: auto mode (MCP_ENABLED unset) with mcp absent → silently no /mcp.
+    else:
+        from starlette.routing import Route as _Route
+        _mcp_instance, _mcp_asgi = build_mcp_app()
+        # Exact routes, appended now — before the catch-all GET route defined
+        # later in this module. Both slash forms target the same handler so
+        # there's no per-request redirect whichever URL the client was given.
+        _mcp_methods = ["GET", "POST", "DELETE", "OPTIONS"]
+        app.router.routes.append(_Route("/mcp", _mcp_asgi, methods=_mcp_methods))
+        app.router.routes.append(_Route("/mcp/", _mcp_asgi, methods=_mcp_methods))
+        logger.info("MCP management server available at /mcp")
 
 
 email_adapter = TypeAdapter(EmailStr)

@@ -18,19 +18,50 @@ Use when the user asks you to:
 
 **Don't use** if the user is asking about the portal itself (admin UI, settings, auth) — that's the host application, not a child app you're building.
 
-## First-time setup the user must complete
+## First-time setup: connect to a portal
 
-Before this skill can upload anything, the user needs:
+You upload finished apps to a running **PWA Portal**. There are two ways to
+connect — pick whichever the user has set up.
 
-1. A running **PWA Portal** instance reachable at some URL.
-2. An **API token** they create at `<portal-url>/admin/tokens`. The token is shown once on creation — they need to save it.
-3. Config written to `~/.config/pwa-portal/config.json`. The fastest way: have them run
+### Option A — MCP connector (recommended)
+
+If the portal has its MCP server enabled (the admin sets `MCP_ENABLED=true`;
+see the portal's `docs/mcp.md`), you manage apps as **tool calls** with no
+config file. First check whether a portal MCP connection is already available
+(look for `whoami` / `list_apps` / `upload_app` tools). If it is, use it — and
+confirm with `whoami` that the token is an admin.
+
+If it's NOT connected yet, walk the user through it conversationally — **don't
+guess at URLs**:
+
+1. Ask for their portal URL (e.g. `https://portal.example.com`).
+2. Have them mint an **admin** API token at `<portal-url>/admin/tokens` (it's
+   shown once — they copy it).
+3. Give them the command to run:
+   ```
+   claude mcp add --transport http portal <portal-url>/mcp \
+     --header "Authorization: Bearer <token>"
+   ```
+4. Once connected, call `whoami` to confirm (expect `role: admin`). Upload with
+   the `upload_app` tool — base64 the packaged `.zip`; pass `replace=true` to
+   update an existing app in place (preserves per-user storage).
+
+### Option B — upload script (portal without the MCP server)
+
+If the portal doesn't run the MCP server, use the bundled scripts + a saved
+config. The user needs:
+
+1. A running portal reachable at some URL.
+2. An **API token** from `<portal-url>/admin/tokens` (shown once — save it).
+3. Config at `~/.config/pwa-portal/config.json`. Fastest:
    ```
    python3 ~/.claude/skills/pwa-portal-app/scripts/configure.py
    ```
-   Alternatively, `PORTAL_URL` and `PORTAL_TOKEN` environment variables work for one-off use.
+   Or set `PORTAL_URL` / `PORTAL_TOKEN` env vars for one-off use.
 
-If a build fails because config is missing, stop and ask the user to complete this setup before continuing — don't guess at URLs.
+If you're on Option B and config is missing, ask the user for their portal URL
+and token and offer to write the config for them (or run `configure.py`) before
+continuing — **don't guess at URLs**.
 
 ## App structure
 
@@ -194,6 +225,7 @@ are identical.
 | `permissions.network` | no | external HTTPS origins the app's `fetch()` calls need to reach — see "Network permissions" below |
 | `permissions.csp_strict` | no | when `true`, opt into a strict CSP that drops `'unsafe-inline'`/`'unsafe-eval'` — see "Strict CSP" below |
 | `min_portal_version` | no | hint for compatibility |
+| `tools` | no | declarative operations an MCP-connected Claude can run server-side — see "Tools (let Claude run your app)" below |
 
 The slug becomes the URL: an app with slug `expense-tracker` is reachable at `/apps/expense-tracker/`.
 
@@ -299,6 +331,42 @@ Rules:
 **When to enable it**: customer-facing apps where you want a hard
 guarantee an HTML-injection bug can't pivot to script execution. Skip it
 for internal tools where the friction outweighs the benefit.
+
+### Tools (let Claude run your app)
+
+If the portal runs the MCP server (see its `docs/mcp.md`), an app can declare
+`tools` an MCP-connected Claude calls directly — e.g. "create a quote for Acme
+at $1,250 and share it." A tool is **declarative** (no code): the portal renders
+an HTML template you provide to a PDF, then shares / downloads / emails / stores
+it. Uploaded app code never runs server-side.
+
+```json
+{
+  "services": ["pdf"],
+  "tools": [
+    {
+      "name": "create_quote",
+      "description": "Render a quote PDF and return a shareable link.",
+      "params": [
+        {"name": "customer", "type": "string", "required": true, "description": "Customer name"},
+        {"name": "amount", "type": "number", "required": true}
+      ],
+      "render": { "html": "<h1>Quote for {{ customer }}</h1><p>Total: ${{ amount }}</p>", "filename": "quote.pdf", "branded": true },
+      "deliver": { "kind": "share", "ttl_days": 30 }
+    }
+  ]
+}
+```
+
+- `name`: snake_case, unique; Claude sees it as `<slug>__<name>`.
+- `params[]`: `{name, type (string|number|boolean), required, description}` — the tool's inputs.
+- `render.html`: inline template; `{{ param }}` values are autoescaped and rendered to PDF (no external fetches — embed images/fonts as `data:` URIs). `branded: true` prepends the portal header.
+- `deliver.kind`: `share` (→ `{url}`), `download` (→ base64 PDF), `store` (→ saves at `key`), or `email` (→ sends the HTML to `to` with `subject`). `to` / `subject` / `key` may use `{{ param }}`.
+- A tool may only use services you also list in `services` (`pdf` always; `email` / `storage` for those deliver kinds) — the upload is rejected otherwise, and an admin can revoke the capability per-app.
+
+**Authoring rules**: keep templates self-contained (inline CSS); template
+storage keys from IDs, not free-text names (spaces/punctuation are rejected as
+storage keys).
 
 ## Portal SDK — how apps call services
 
@@ -432,7 +500,9 @@ Requires the corresponding service in your manifest's `services`
    python3 ~/.claude/skills/pwa-portal-app/scripts/package.py /path/to/<slug>
    ```
    Produces `<slug>-<version>.zip` next to the source folder.
-7. **Upload.**
+7. **Upload.** If connected via the portal's MCP server (Option A), call the
+   `upload_app` tool — base64-encode the `.zip` into `zip_base64`, pass
+   `replace=true` to update an existing app. Otherwise use the script:
    ```
    python3 ~/.claude/skills/pwa-portal-app/scripts/upload.py /path/to/<slug>-<version>.zip
    ```
