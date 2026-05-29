@@ -1,20 +1,24 @@
 """Public intake forms.
 
 An app declares ``forms`` in its manifest (see ``portal.apps.PortalAppForm``);
-the portal serves each at ``/forms/<slug>/<form>`` on the portal origin with no
-sign-in. A GET renders the form; a POST records a ``FormSubmission`` for the
-business owner and (optionally) emails a notification.
+the portal serves each on the **app's own origin** — consistent with per-app
+isolation, since a form belongs to one app:
 
-This is the only **public write** surface, so it is locked down accordingly:
+  * per-app-subdomain mode (default): ``<slug>.apps.<SITE_URL>/forms/<form>``
+    (the slug is the subdomain; the path is just the form name);
+  * same-origin mode (``CHILD_APPS_SAME_ORIGIN=true``):
+    ``<SITE_URL>/forms/<slug>/<form>`` (no subdomains exist).
 
-  * No session / CSRF — it is anonymous by design. Abuse is bounded instead by a
-    hidden honeypot field, a per-(IP, app, form) rate limit, strict per-field
-    size caps, and recording only the app's declared fields.
-  * Only an enabled app with the named form responds; everything else 404s, and
-    the route refuses to run on an app subdomain (portal origin only).
-  * Submitted values are autoescaped on render and never used to build email
-    headers — the notify recipient comes from the trusted manifest, not the
-    submission.
+The portal-origin ``/forms/<slug>/<form>`` URL still works: in subdomain mode a
+GET there 307-redirects to the app subdomain (the canonical link), so any link
+already shared keeps working.
+
+A GET renders the form; a POST records a ``FormSubmission`` for the business
+owner and optionally emails a notification. This is the only **public write**
+surface, so it is locked down: no session / CSRF (anonymous by design), a hidden
+honeypot, a per-(IP, app, form) rate limit, per-field size caps, and recording
+only declared fields. Submitted values are autoescaped on render, and the notify
+recipient comes from the trusted manifest — never the submission.
 """
 from __future__ import annotations
 
@@ -27,8 +31,10 @@ from threading import Lock
 from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import RedirectResponse
 from sqlmodel import Session, select
 
+from portal.config import settings
 from portal.db import get_db
 from portal.models import App, FormSubmission
 from portal.settings_store import smtp_config
@@ -54,6 +60,25 @@ _rate: dict[tuple, deque] = {}
 _rate_lock = Lock()
 
 
+def public_form_url(slug: str, form_name: str, request: Optional[Request] = None) -> str:
+    """Canonical public URL for a form — on the app's own origin.
+
+    Subdomain mode: ``<scheme>://<slug>.apps.<SITE_URL>[:port]/forms/<form>``.
+    Same-origin mode: ``<scheme>://<SITE_URL>[:port]/forms/<slug>/<form>``.
+    Scheme follows ``cookies_secure``; the request's port is preserved so dev
+    links on ``lvh.me:8000`` stay reachable.
+    """
+    scheme = "https" if settings.cookies_secure else "http"
+    port = ""
+    if request is not None:
+        host = request.headers.get("host", "")
+        if ":" in host and not host.startswith("["):
+            port = ":" + host.rsplit(":", 1)[1]
+    if settings.child_apps_same_origin:
+        return f"{scheme}://{settings.site_url}{port}/forms/{slug}/{form_name}"
+    return f"{scheme}://{slug}.apps.{settings.site_url}{port}/forms/{form_name}"
+
+
 def _rate_ok(ip: str, slug: str, form_name: str) -> bool:
     """True if this (ip, app, form) is under the per-window submission cap."""
     now = time.monotonic()
@@ -69,7 +94,6 @@ def _rate_ok(ip: str, slug: str, form_name: str) -> bool:
         if len(dq) >= _RATE_LIMIT:
             return False
         dq.append(now)
-        # Opportunistically drop stale keys so the dict can't grow unbounded.
         if len(_rate) > 4096:
             for k in [k for k, d in _rate.items() if not d or d[-1] < cutoff]:
                 _rate.pop(k, None)
@@ -90,24 +114,31 @@ def _load(db: Session, slug: str, form_name: str):
     return app_row, _find_form(app_row, form_name)
 
 
-@router.get("/forms/{slug}/{form_name}", include_in_schema=False)
-def form_page(slug: str, form_name: str, request: Request, db: DbDep):
-    # Portal origin only — never expose forms on an app subdomain.
+def _post_action(request: Request, slug: str, form_name: str) -> str:
+    """Where the rendered form POSTs back to — same origin it's served on.
+
+    On the app subdomain the slug is implicit in the host, so the form posts to
+    ``/forms/<form>``; on the portal origin (same-origin mode) it carries the slug.
+    """
     if getattr(request.state, "app_slug", None):
-        raise HTTPException(404)
-    app_row, decl = _load(db, slug, form_name)
-    if app_row is None or decl is None:
-        raise HTTPException(404)
+        return f"/forms/{form_name}"
+    return f"/forms/{slug}/{form_name}"
+
+
+def _render_form(
+    request: Request, app_row: App, decl: dict, slug: str, form_name: str,
+    *, values: Optional[dict] = None, errors: Optional[list] = None, status_code: int = 200,
+):
     return render(
         request, "public_form.html",
-        app_row=app_row, form=decl, honeypot=HONEYPOT_FIELD, values={}, errors=[],
+        app_row=app_row, form=decl, honeypot=HONEYPOT_FIELD,
+        values=values or {}, errors=errors or [],
+        post_action=_post_action(request, slug, form_name),
+        status_code=status_code,
     )
 
 
-@router.post("/forms/{slug}/{form_name}", include_in_schema=False)
-async def form_submit(slug: str, form_name: str, request: Request, db: DbDep):
-    if getattr(request.state, "app_slug", None):
-        raise HTTPException(404)
+async def _handle_submit(request: Request, db: Session, slug: str, form_name: str):
     app_row, decl = _load(db, slug, form_name)
     if app_row is None or decl is None:
         raise HTTPException(404)
@@ -123,9 +154,8 @@ async def form_submit(slug: str, form_name: str, request: Request, db: DbDep):
 
     if not _rate_ok(ip, slug, form_name):
         values = {f["name"]: (form.get(f["name"]) or "").strip() for f in fields}
-        return render(
-            request, "public_form.html", app_row=app_row, form=decl,
-            honeypot=HONEYPOT_FIELD, values=values,
+        return _render_form(
+            request, app_row, decl, slug, form_name, values=values,
             errors=["Too many submissions from here — please try again later."],
             status_code=429,
         )
@@ -151,9 +181,9 @@ async def form_submit(slug: str, form_name: str, request: Request, db: DbDep):
         values[name] = raw
 
     if errors:
-        return render(
-            request, "public_form.html", app_row=app_row, form=decl,
-            honeypot=HONEYPOT_FIELD, values=values, errors=errors, status_code=400,
+        return _render_form(
+            request, app_row, decl, slug, form_name,
+            values=values, errors=errors, status_code=400,
         )
 
     db.add(FormSubmission(
@@ -166,6 +196,54 @@ async def form_submit(slug: str, form_name: str, request: Request, db: DbDep):
         _notify(db, app_row, decl, values, notify)
 
     return render(request, "public_form_done.html", app_row=app_row, form=decl)
+
+
+# ----- subdomain routes (canonical in per-app-origin mode) -----
+
+@router.get("/forms/{form_name}", include_in_schema=False)
+def form_page_sub(form_name: str, request: Request, db: DbDep):
+    slug = getattr(request.state, "app_slug", None)
+    if not slug:
+        # Portal origin: a bare /forms/<x> has no app context. 404 (the
+        # two-segment /forms/<slug>/<form> route handles the portal origin).
+        raise HTTPException(404)
+    app_row, decl = _load(db, slug, form_name)
+    if app_row is None or decl is None:
+        raise HTTPException(404)
+    return _render_form(request, app_row, decl, slug, form_name)
+
+
+@router.post("/forms/{form_name}", include_in_schema=False)
+async def form_submit_sub(form_name: str, request: Request, db: DbDep):
+    slug = getattr(request.state, "app_slug", None)
+    if not slug:
+        raise HTTPException(404)
+    return await _handle_submit(request, db, slug, form_name)
+
+
+# ----- portal-origin routes (canonical in same-origin mode; redirect otherwise) -----
+
+@router.get("/forms/{slug}/{form_name}", include_in_schema=False)
+def form_page_portal(slug: str, form_name: str, request: Request, db: DbDep):
+    if getattr(request.state, "app_slug", None):
+        raise HTTPException(404)  # two-segment URLs don't apply on a subdomain
+    if not settings.child_apps_same_origin:
+        # Subdomain mode: the form lives on the app's own origin. Redirect any
+        # portal-origin link to the canonical subdomain URL.
+        return RedirectResponse(public_form_url(slug, form_name, request), status_code=307)
+    app_row, decl = _load(db, slug, form_name)
+    if app_row is None or decl is None:
+        raise HTTPException(404)
+    return _render_form(request, app_row, decl, slug, form_name)
+
+
+@router.post("/forms/{slug}/{form_name}", include_in_schema=False)
+async def form_submit_portal(slug: str, form_name: str, request: Request, db: DbDep):
+    if getattr(request.state, "app_slug", None):
+        raise HTTPException(404)
+    # Canonical in same-origin mode; also a harmless fallback if a subdomain
+    # form's POST ever lands here.
+    return await _handle_submit(request, db, slug, form_name)
 
 
 def _notify(db: Session, app_row: App, decl: dict, values: dict, to_addr: str) -> None:

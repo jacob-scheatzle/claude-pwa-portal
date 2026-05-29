@@ -45,6 +45,7 @@ from portal.branding import (
 from portal.config import settings
 from portal.db import engine, get_db
 from portal.deps import require_admin
+from portal.forms import public_form_url
 from portal.models import (
     ApiToken,
     App,
@@ -1137,6 +1138,7 @@ def submissions_list(request: Request, db: DbDep, admin: AdminDep):
             forms.append({
                 "app_name": a.name, "slug": a.slug, "form_name": f["name"],
                 "title": f.get("title") or f["name"], "count": n, "last": last,
+                "public_url": public_form_url(a.slug, f["name"], request),
             })
     return render(request, "admin_submissions.html", user=admin, forms=forms)
 
@@ -1158,6 +1160,7 @@ def submissions_detail(
     return render(
         request, "admin_submissions_detail.html",
         user=admin, app_row=app_row, form=decl, subs=subs,
+        public_url=public_form_url(slug, form_name, request),
     )
 
 

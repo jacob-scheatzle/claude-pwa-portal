@@ -294,7 +294,18 @@ class ChildAppCSPMiddleware(BaseHTTPMiddleware):
                     app_row = db.exec(select(App).where(App.slug == slug)).first()
                     if app_row is not None:
                         allowed = list(app_row.allowed_origins or [])
-                        if on_subdomain and bool(getattr(app_row, "csp_strict", False)):
+                        # A ``/forms/*`` request on the subdomain is a PORTAL-
+                        # rendered page (base.html chrome with inline styles +
+                        # the theme script), not the app's own bundle — so keep
+                        # it on the permissive CSP even for a csp_strict app, or
+                        # its inline styles/theme would be blocked and the public
+                        # form would render broken.
+                        is_form_page = request.url.path.startswith("/forms/")
+                        if (
+                            on_subdomain
+                            and not is_form_page
+                            and bool(getattr(app_row, "csp_strict", False))
+                        ):
                             csp_strict = True
             except Exception:
                 # DB hiccup — fall back to the legacy permissive CSP rather

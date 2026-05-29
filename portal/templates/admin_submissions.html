@@ -22,7 +22,7 @@ submissions collect here. They're included in the data export too.</p>
 		{% for f in forms %}
 		<tr>
 			<td data-label="Form"><strong>{{ f.app_name }}</strong><br><span class="muted">{{ f.title }}</span></td>
-			<td data-label="Link"><code>/forms/{{ f.slug }}/{{ f.form_name }}</code></td>
+			<td data-label="Link"><code>{{ f.public_url }}</code></td>
 			<td data-label="Submissions">{{ f.count }}</td>
 			<td data-label="Last">{% if f.last %}{{ f.last.strftime("%Y-%m-%d %H:%M") }}{% else %}—{% endif %}</td>
 			<td class="actions">

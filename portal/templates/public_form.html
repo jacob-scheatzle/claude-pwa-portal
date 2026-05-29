@@ -19,7 +19,7 @@
 </div>
 {% endif %}
 
-<form method="post" action="/forms/{{ app_row.slug }}/{{ form.name }}">
+<form method="post" action="{{ post_action }}">
 	{# Honeypot — positioned off-screen, hidden from people, tempting to bots.
 	   A filled value silently discards the submission. Do not remove. #}
 	<div style="position:absolute; left:-9999px;" aria-hidden="true">

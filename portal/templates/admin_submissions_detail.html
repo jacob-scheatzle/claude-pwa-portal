@@ -5,7 +5,7 @@
 <p><a href="/admin/submissions" class="nav-link">← Form submissions</a></p>
 <h1>{{ form.title or form.name }}</h1>
 <p><strong>{{ app_row.name }}</strong> · public link
-<code>/forms/{{ app_row.slug }}/{{ form.name }}</code>
+<code>{{ public_url }}</code>
 &nbsp;<a class="action-chip" href="/admin/submissions/{{ app_row.slug }}/{{ form.name }}/csv">Download CSV</a></p>
 
 {% if subs %}

@@ -38,7 +38,7 @@ project up on a different machine or after a break.
      monthly cadence; admin UI at **Admin → Schedules** and MCP tools
      (`list/create/set_enabled/delete/run_schedule`). Migration `13ed9c934c09`.
   2. **Public intake forms** — apps declare `forms` (manifest); served at the
-     public `/forms/<slug>/<form>` (`portal/forms.py`), submissions stored in
+     app-origin `<slug>.apps.<SITE_URL>/forms/<form>` (`portal/forms.py`), submissions stored in
      `FormSubmission`, viewed at **Admin → Submissions** (+ CSV). Anti-abuse:
      per-IP rate limit, honeypot, size caps, portal-origin-only.
   3. **Data export** — **Admin → Export** streams a portable, secret-free zip

@@ -227,7 +227,7 @@ are identical.
 | `permissions.csp_strict` | no | when `true`, opt into a strict CSP that drops `'unsafe-inline'`/`'unsafe-eval'` — see "Strict CSP" below |
 | `min_portal_version` | no | hint for compatibility |
 | `tools` | no | declarative operations an MCP-connected Claude can run server-side — see "Tools (let Claude run your app)" below |
-| `forms` | no | public, no-sign-in intake forms at `/forms/<slug>/<form>`; submissions show under Admin → Submissions — see "Public intake forms" below |
+| `forms` | no | public, no-sign-in intake forms on the app's own origin (`<slug>.apps.<SITE_URL>/forms/<form>`); submissions show under Admin → Submissions — see "Public intake forms" below |
 
 The slug becomes the URL: an app with slug `expense-tracker` is reachable at `/apps/expense-tracker/`.
 
@@ -400,7 +400,7 @@ and `examples/work-order`.
 
 When the business needs input from someone who *isn't* a portal user — a
 customer requesting a quote, a lead form on their website — declare `forms`.
-Each is served at a public URL `/forms/<slug>/<form>` you can share; submissions
+Each is served on the app's own origin (`<slug>.apps.<SITE_URL>/forms/<form>`) you can share; submissions
 collect under **Admin → Submissions** (CSV export available) and in the data
 export. No app code runs server-side.
 

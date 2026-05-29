@@ -175,9 +175,10 @@ The manifest is rejected at upload if a tool uses an undeclared service.
 ## Forms — public intake (optional)
 
 Declare `forms` to collect input from people who are NOT signed in (a customer
-quote request, a job intake). Each form is served at `/forms/<slug>/<form>`;
-every submission is stored for the owner (Admin -> Submissions) and included in
-the data export. Forms are declarative — no app code runs.
+quote request, a job intake). Each form is served on the app's own origin
+(`<slug>.apps.<SITE_URL>/forms/<form>`); every submission is stored for the owner
+(Admin -> Submissions) and included in the data export. Forms are declarative —
+no app code runs.
 
 ```json
 "forms": [

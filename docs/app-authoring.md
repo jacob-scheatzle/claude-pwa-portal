@@ -79,7 +79,7 @@ That's a valid app. Zip the folder so `portal.json` is at the root, upload it, a
 | `permissions.csp_strict` | no | if `true`, the portal serves the app under a strict CSP (no inline scripts/styles, no `eval`). Inline `<script>` tags must carry `nonce="{{NONCE}}"` — the portal substitutes the placeholder per response. |
 | `min_portal_version` | no | hint for future compatibility checks |
 | `tools` | no | declarative operations an MCP-connected Claude can run (render a PDF → share / email / store). See "App tools" below and [mcp.md](mcp.md). |
-| `forms` | no | public, no-sign-in intake forms served at `/forms/<slug>/<form>`. Submissions collect under **Admin → Submissions** (with CSV export) and in the data export. See "Public intake forms" below. |
+| `forms` | no | public, no-sign-in intake forms served on the app's own origin (`<slug>.apps.<SITE_URL>/forms/<form>`). Submissions collect under **Admin → Submissions** (with CSV export) and in the data export. See "Public intake forms" below. |
 
 The slug is the URL: an app with slug `expense-tracker` lives at `/apps/expense-tracker/`.
 
@@ -116,7 +116,8 @@ declares in `services` — `share`/`download` need `pdf`, `store` needs `pdf` +
 
 Declare `forms` to collect input from people who **aren't signed in** — a
 customer requesting a quote, someone booking a job. Each form is served at a
-public URL (`/forms/<slug>/<form>`) you can share or link from a website;
+public URL on the app's own origin (`<slug>.apps.<SITE_URL>/forms/<form>`, or
+`<SITE_URL>/forms/<slug>/<form>` in same-origin mode) you can share or link from a website;
 submissions collect under **Admin → Submissions** (with CSV export) and in the
 data export. Forms are declarative — no app code runs server-side.
 

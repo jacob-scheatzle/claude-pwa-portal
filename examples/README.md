@@ -10,7 +10,7 @@ $1,250 and share it." Each tool renders an HTML template to a PDF and then
 shares / emails / stores it; no app code runs server-side. See
 [`docs/mcp.md`](../docs/mcp.md). [`customer-directory`](customer-directory/) also
 declares a **public intake form** (a "request a callback" form served at
-`/forms/customer-directory/request_callback`) — see [app-authoring](../docs/app-authoring.md#public-intake-forms).
+`customer-directory.apps.<SITE_URL>/forms/request_callback`) — see [app-authoring](../docs/app-authoring.md#public-intake-forms).
 
 | App | SDK services | MCP tools | What it does |
 | --- | --- | --- | --- |
