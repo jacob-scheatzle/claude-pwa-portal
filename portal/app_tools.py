@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import io
 import math
-import threading
 from email.message import EmailMessage
 from pathlib import Path
 from typing import Any, Optional
@@ -57,22 +56,6 @@ _TEXT_ENV = SandboxedEnvironment(autoescape=False, undefined=StrictUndefined)
 # an admin-driven (but possibly prompt-influenced) MCP call.
 MAX_TOOL_ARRAY_ITEMS = 500
 MAX_EMAIL_RECIPIENTS = 50
-
-# Serialize concurrent ``store`` deliveries into the same (app, user) namespace,
-# mirroring the SDK's per-namespace lock (portal/api.py). run_tool executes in a
-# worker thread, so this is a threading.Lock, not an asyncio one.
-_store_locks: dict[tuple, threading.Lock] = {}
-_store_locks_guard = threading.Lock()
-
-
-def _store_lock(slug: str, user_id: int) -> threading.Lock:
-    key = (slug, user_id)
-    with _store_locks_guard:
-        lock = _store_locks.get(key)
-        if lock is None:
-            lock = threading.Lock()
-            _store_locks[key] = lock
-        return lock
 
 
 def _param_json_schema(p: dict) -> dict:
@@ -261,6 +244,7 @@ def run_tool(
         _ns_usage,
         _recipient_domain_allowlist,
         _validate_key,
+        namespace_lock,
     )
 
     render = tool.get("render") or {}
@@ -346,10 +330,10 @@ def run_tool(
                     target.relative_to(ns)
                 except ValueError:
                     raise AppToolError("invalid storage key")
-                # Serialize same-namespace writes (mirrors the SDK's per-namespace
-                # lock) so two concurrent near-cap stores can't both pass the
-                # usage check and then both self-delete.
-                with _store_lock(app_row.slug, user.id):
+                # Cross-process lock over the namespace (shared with the SDK's
+                # storage PUT) so two concurrent near-cap writes can't both pass
+                # the usage check and then both self-delete.
+                with namespace_lock(app_row.slug, user.id):
                     target.parent.mkdir(parents=True, exist_ok=True)
                     target.write_bytes(pdf)
                     if _ns_usage(ns) > MAX_NAMESPACE_BYTES:

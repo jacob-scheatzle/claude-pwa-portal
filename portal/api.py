@@ -3,18 +3,26 @@ for the Claude skill. Auth accepts either a session cookie or
 `Authorization: Bearer <token>`."""
 from __future__ import annotations
 
-import asyncio
 import io
 import logging
 import mimetypes
+import os
 import re
 import time
 from collections import deque
+from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timezone
 from email.message import EmailMessage
 from pathlib import Path
 from threading import Lock
 from typing import Annotated, Optional
+
+import anyio
+
+try:
+    import fcntl  # POSIX advisory file locking; absent on Windows
+except ImportError:  # pragma: no cover - the portal ships on Linux/macOS
+    fcntl = None
 
 logger = logging.getLogger("portal.api")
 
@@ -710,23 +718,73 @@ def _ns_usage(ns: Path) -> int:
     return sum(p.stat().st_size for p in ns.rglob("*") if p.is_file())
 
 
-# Per-(app_slug, user_id) asyncio locks serialize concurrent PUTs into the
-# same namespace. Without this, two near-simultaneous PUTs each ~cap-sized
-# can both pass the per-object check, both finish writing, and then both
+# Concurrent writers into one (app_slug, user_id) namespace must serialize, or
+# two near-cap writes can both pass the per-object check, both finish, then both
 # observe an over-cap namespace and delete themselves — losing two
-# successful-looking writes. Holding the lock across the streaming +
-# cleanup means the namespace cap is checked against a stable on-disk
-# state. Single-threaded asyncio makes the dict access here race-free.
-_storage_locks: dict[tuple[str, int], asyncio.Lock] = {}
+# successful-looking writes. Two code paths mutate a namespace (the storage PUT
+# below and the declarative app-tool ``store`` deliver in app_tools.py), and the
+# deployment may eventually run more than one worker process, so an in-process
+# asyncio/threading lock isn't enough on its own.
+#
+# Back the lock with an flock on a sentinel file kept OUTSIDE the namespace dir
+# (so it never shows up in a listing or counts toward the quota). flock is tied
+# to the open file description, so one exclusive lock serializes mutators across
+# threads, the asyncio loop, AND separate worker processes on this host — the
+# entire deployment surface (single host, bind-mounted data dir). Where fcntl is
+# unavailable (Windows dev) we fall back to a shared in-process lock, keyed
+# identically so both storage paths still serialize within the process.
+_fallback_ns_locks: dict[tuple[str, int], Lock] = {}
+_fallback_ns_guard = Lock()
 
 
-def _get_storage_lock(app_slug: str, user_id: int) -> asyncio.Lock:
-    key = (app_slug, user_id)
-    lock = _storage_locks.get(key)
-    if lock is None:
-        lock = asyncio.Lock()
-        _storage_locks[key] = lock
-    return lock
+def _ns_lock_path(app_slug: str, user_id: int) -> Path:
+    base = Path(settings.data_dir).resolve() / "locks" / app_slug
+    base.mkdir(parents=True, exist_ok=True)
+    return base / f"{user_id}.lock"
+
+
+def _acquire_ns_lock(app_slug: str, user_id: int):
+    """Block until this namespace is exclusively ours; return a release handle."""
+    if fcntl is None:  # pragma: no cover - Windows fallback
+        with _fallback_ns_guard:
+            lock = _fallback_ns_locks.setdefault((app_slug, user_id), Lock())
+        lock.acquire()
+        return lock
+    fd = os.open(_ns_lock_path(app_slug, user_id), os.O_CREAT | os.O_RDWR, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    return fd
+
+
+def _release_ns_lock(handle) -> None:
+    if fcntl is None:  # pragma: no cover - Windows fallback
+        handle.release()
+        return
+    try:
+        fcntl.flock(handle, fcntl.LOCK_UN)
+    finally:
+        os.close(handle)
+
+
+@contextmanager
+def namespace_lock(app_slug: str, user_id: int):
+    """Exclusive cross-process lock over one storage namespace, for sync callers
+    (e.g. the app-tool ``store`` deliver, which runs in a worker thread)."""
+    handle = _acquire_ns_lock(app_slug, user_id)
+    try:
+        yield
+    finally:
+        _release_ns_lock(handle)
+
+
+@asynccontextmanager
+async def namespace_lock_async(app_slug: str, user_id: int):
+    """Async variant for the storage PUT handler. Acquires in a worker thread so
+    the blocking flock wait can't stall the event loop; release is instant."""
+    handle = await anyio.to_thread.run_sync(_acquire_ns_lock, app_slug, user_id)
+    try:
+        yield
+    finally:
+        _release_ns_lock(handle)
 
 
 @router.get("/storage")
@@ -802,7 +860,7 @@ async def storage_put(
 
     target.parent.mkdir(parents=True, exist_ok=True)
     written = 0
-    async with _get_storage_lock(app_row.slug, me.id):
+    async with namespace_lock_async(app_row.slug, me.id):
         try:
             with open(target, "wb") as f:
                 async for chunk in request.stream():
