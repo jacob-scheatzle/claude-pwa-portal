@@ -517,9 +517,12 @@ def build_mcp_app():
             ).all()
             for app in apps:
                 for decl in (app.tools or []):
+                    tname = decl.get("name")
+                    if not tname:
+                        continue  # malformed/legacy row — skip it, don't break the whole list
                     tools.append(
                         types.Tool(
-                            name=f"{app.slug}{_TOOL_SEP}{decl['name']}",
+                            name=f"{app.slug}{_TOOL_SEP}{tname}",
                             description=f"[{app.name}] {decl.get('description', '')}".strip(),
                             inputSchema=tool_input_schema(decl),
                         )

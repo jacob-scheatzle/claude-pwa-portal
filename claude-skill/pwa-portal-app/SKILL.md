@@ -25,8 +25,9 @@ connect — pick whichever the user has set up.
 
 ### Option A — MCP connector (recommended)
 
-If the portal has its MCP server enabled (the admin sets `MCP_ENABLED=true`;
-see the portal's `docs/mcp.md`), you manage apps as **tool calls** with no
+If the portal has its MCP server (on by default in the Docker image; an admin
+can disable it with `MCP_ENABLED=false` — see the portal's `docs/mcp.md`), you
+manage apps as **tool calls** with no
 config file. First check whether a portal MCP connection is already available
 (look for `whoami` / `list_apps` / `upload_app` tools). If it is, use it — and
 confirm with `whoami` that the token is an admin.

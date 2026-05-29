@@ -1,9 +1,10 @@
 # Per-app origin isolation — design spec
 
-> **Status:** locked design, **not yet implemented.** This document is the
-> implementation brief for item 4 of the deferred review-fix queue. Pick this
-> up when ready to make the change; everything below is the result of a design
-> conversation and shouldn't need to be re-decided.
+> **Status:** ✅ implemented and now the **default** — child apps run on per-app
+> subdomains; `CHILD_APPS_SAME_ORIGIN=true` opts back into legacy same-origin.
+> This document is retained as the architectural design record + rollout history;
+> the live code is the source of truth. Read it before touching the launch /
+> exchange / Host-dispatch paths.
 
 ## Goal
 

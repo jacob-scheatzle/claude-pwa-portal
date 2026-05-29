@@ -22,6 +22,8 @@ Session across threads.
 from __future__ import annotations
 
 import io
+import math
+import threading
 from email.message import EmailMessage
 from pathlib import Path
 from typing import Any, Optional
@@ -49,6 +51,29 @@ class AppToolError(Exception):
 _HTML_ENV = SandboxedEnvironment(autoescape=True, undefined=StrictUndefined)
 _TEXT_ENV = SandboxedEnvironment(autoescape=False, undefined=StrictUndefined)
 
+# Bound a single tool call's blast radius. An array param can't exceed this many
+# elements (also emitted as JSON-Schema ``maxItems``), and an email-deliver tool
+# can't fan out past this many recipients — caps render cost and mail volume for
+# an admin-driven (but possibly prompt-influenced) MCP call.
+MAX_TOOL_ARRAY_ITEMS = 500
+MAX_EMAIL_RECIPIENTS = 50
+
+# Serialize concurrent ``store`` deliveries into the same (app, user) namespace,
+# mirroring the SDK's per-namespace lock (portal/api.py). run_tool executes in a
+# worker thread, so this is a threading.Lock, not an asyncio one.
+_store_locks: dict[tuple, threading.Lock] = {}
+_store_locks_guard = threading.Lock()
+
+
+def _store_lock(slug: str, user_id: int) -> threading.Lock:
+    key = (slug, user_id)
+    with _store_locks_guard:
+        lock = _store_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _store_locks[key] = lock
+        return lock
+
 
 def _param_json_schema(p: dict) -> dict:
     """JSON-Schema for one declared param — a scalar, or an array of objects."""
@@ -68,7 +93,7 @@ def _param_json_schema(p: dict) -> dict:
         }
         if ireq:
             item["required"] = ireq
-        schema: dict[str, Any] = {"type": "array", "items": item}
+        schema: dict[str, Any] = {"type": "array", "items": item, "maxItems": MAX_TOOL_ARRAY_ITEMS}
     else:
         schema = {"type": ptype}
     if p.get("description"):
@@ -93,8 +118,14 @@ def tool_input_schema(tool: dict) -> dict:
 
 def _coerce_scalar(value: Any, ptype: str, where: str) -> Any:
     try:
-        if ptype == "number" and not isinstance(value, (int, float)):
-            return float(value)
+        if ptype == "number":
+            # bool is an int subclass — reject it so True isn't read as 1.
+            if isinstance(value, bool):
+                raise ValueError
+            num = float(value)
+            if not math.isfinite(num):  # block NaN / Infinity poisoning totals
+                raise AppToolError(f"{where} must be a finite number")
+            return num
         if ptype == "boolean" and not isinstance(value, bool):
             return str(value).strip().lower() in ("1", "true", "yes", "on")
         if ptype == "string":
@@ -127,6 +158,11 @@ def _build_context(tool: dict, args: dict) -> dict:
         if ptype == "array":
             if not isinstance(value, list):
                 raise AppToolError(f"parameter '{name}' must be a list")
+            if len(value) > MAX_TOOL_ARRAY_ITEMS:
+                raise AppToolError(
+                    f"parameter '{name}' has too many items "
+                    f"({len(value)} > {MAX_TOOL_ARRAY_ITEMS})"
+                )
             field_types = {f["name"]: f.get("type", "string") for f in p.get("fields", [])}
             rows: list[dict] = []
             for el in value:
@@ -284,6 +320,10 @@ def run_tool(
             if kind == "download":
                 _check_pdf_rate(user.id)
                 pdf = _render_pdf_bytes(html)
+                if len(pdf) > MAX_OBJECT_BYTES:
+                    raise AppToolError(
+                        f"PDF exceeds {MAX_OBJECT_BYTES // (1024 * 1024)}MB limit"
+                    )
                 return {
                     "delivered": "download",
                     "filename": filename,
@@ -302,14 +342,21 @@ def run_tool(
                     )
                 ns = _ns_dir(app_row.slug, user.id)
                 target = (ns / safe_key).resolve()
-                target.relative_to(ns)
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(pdf)
-                if _ns_usage(ns) > MAX_NAMESPACE_BYTES:
-                    target.unlink(missing_ok=True)
-                    raise AppToolError(
-                        f"storage namespace exceeds {MAX_NAMESPACE_BYTES // (1024 * 1024)}MB limit"
-                    )
+                try:
+                    target.relative_to(ns)
+                except ValueError:
+                    raise AppToolError("invalid storage key")
+                # Serialize same-namespace writes (mirrors the SDK's per-namespace
+                # lock) so two concurrent near-cap stores can't both pass the
+                # usage check and then both self-delete.
+                with _store_lock(app_row.slug, user.id):
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(pdf)
+                    if _ns_usage(ns) > MAX_NAMESPACE_BYTES:
+                        target.unlink(missing_ok=True)
+                        raise AppToolError(
+                            f"storage namespace exceeds {MAX_NAMESPACE_BYTES // (1024 * 1024)}MB limit"
+                        )
                 return {"delivered": "store", "key": safe_key, "size": len(pdf)}
 
             if kind == "email":
@@ -324,6 +371,10 @@ def run_tool(
                 to_list = [a.strip() for a in to_raw.split(",") if a.strip()]
                 if not to_list:
                     raise AppToolError("no recipient resolved for email delivery")
+                if len(to_list) > MAX_EMAIL_RECIPIENTS:
+                    raise AppToolError(
+                        f"too many recipients ({len(to_list)} > {MAX_EMAIL_RECIPIENTS})"
+                    )
                 _enforce_recipient_allowlist(to_list, _recipient_domain_allowlist(db))
                 _check_email_rate(user.id)
                 subject = _render_text(deliver.get("subject"), ctx)

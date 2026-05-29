@@ -35,7 +35,7 @@ git clone https://github.com/jacob-scheatzle/claude-pwa-portal.git
 cd claude-pwa-portal
 python3 ~/.claude/skills/pwa-portal-app/scripts/package.py examples/mileage-log
 PORTAL_URL=https://your-portal PORTAL_TOKEN=<admin-token> \
-  python3 ~/.claude/skills/pwa-portal-app/scripts/upload.py mileage-log-1.0.0.zip
+  python3 ~/.claude/skills/pwa-portal-app/scripts/upload.py mileage-log-1.1.0.zip
 ```
 
 **From a cloned repo without the skill** — the same scripts live at

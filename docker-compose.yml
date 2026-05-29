@@ -25,6 +25,9 @@ services:
       COOKIES_SECURE: ${COOKIES_SECURE:-true}
       HTTP_ONLY: ${HTTP_ONLY:-false}
       CHILD_APPS_SAME_ORIGIN: ${CHILD_APPS_SAME_ORIGIN:-false}
+      # Blank = auto (on; the image bundles the mcp dep). Set MCP_ENABLED=false
+      # in .env to disable the /mcp endpoint. See docs/mcp.md.
+      MCP_ENABLED: ${MCP_ENABLED:-}
     volumes:
       - ./data:/data
     expose:

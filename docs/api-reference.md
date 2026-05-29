@@ -229,7 +229,7 @@ storage; `pdf` renders fresh HTML server-side and stores the result.
 }
 ```
 
-- `ttl_seconds` — link expiry. Default 7 days, max 30 days.
+- `ttl_seconds` — link expiry. Default 7 days, max 90 days.
 - `max_views` — view cap. `0` (or omitted) means unlimited within TTL.
 - `filename` — optional, up to 80 chars; shown as the download filename.
 
@@ -243,18 +243,14 @@ The `/s/<token>` URL serves with `Content-Disposition: attachment` and
 no portal cookie — links can be safely shared. View counts are atomic
 against `max_views`; concurrent hits past the cap get 404.
 
-### `GET /api/v1/share/list`
-
-Lists active shares the calling user has created for this app.
-
-### `POST /api/v1/share/{token}/revoke`
-
-Immediately invalidates a share. Subsequent `/s/<token>` hits return 404.
+Active shares are listed and revoked by an admin from the **Admin → Shares**
+page (`/admin/shares`) — there is no per-token `/api/v1` revoke endpoint.
 
 **Failures**:
 
-- `403 service not enabled for this app` — `services` array missing `share`.
-- `404 storage key not found` — `kind=storage` references a missing object.
+- `403` — the app isn't authorized for the service this share kind needs
+  (`storage` for `kind=storage`, `pdf` for `kind=pdf`).
+- `404` — `kind=storage` references an object that isn't in the creator's namespace.
 
 ## JS SDK reference
 
@@ -276,9 +272,7 @@ The script attaches a single global, `window.portal`, exposing:
 | `portal.storage.get(key)` | `Blob`, `string`, or parsed JSON (auto by Content-Type) |
 | `portal.storage.list()` | `{ items, usage, limit }` |
 | `portal.storage.delete(key)` | `{ deleted }` |
-| `portal.share.create({ kind, key?, html?, filename?, ttl_seconds?, max_views? })` | `{ url, expires_at }` |
-| `portal.share.list()` | `{ items: [...] }` |
-| `portal.share.revoke(token)` | `{ revoked }` |
+| `portal.share.create({ kind, key?, html?, filename?, ttl_seconds?, max_views? })` | `{ token, url, expires_at, kind, max_views }` |
 | `portal.appSlug` | string or `null` — auto-detected from URL |
 
 All methods are async (return Promises). On HTTP failure they throw an `Error` with `.status` (HTTP code) and `.detail` (server-provided message) populated.

@@ -180,7 +180,8 @@ con = sqlite3.connect('data/portal.db')
 print('alembic_version:', con.execute('SELECT version_num FROM alembic_version').fetchall())
 print('tables:', [r[0] for r in con.execute(\"SELECT name FROM sqlite_master WHERE type='table' ORDER BY name\").fetchall()])
 "
-# Expect: ('7d3122820cf2',) and 6 tables including alembic_version
+# Expect alembic_version at the latest revision (currently 665c77fdc151) and
+# 13 tables total (12 models + alembic_version).
 ```
 
 ### Build + upload an app from Claude Code

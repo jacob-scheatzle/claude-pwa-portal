@@ -221,9 +221,9 @@ Alternatively, upload via the web UI at **Apps → Upload**.
 
 ## A worked example
 
-See [`examples/`](../examples/) for a gallery of seven reference apps —
-mileage log, time tracker, expense logger, customer directory, quote
-builder, invoice generator, and a minimal [`hello-receipt`](../examples/hello-receipt/)
+See [`examples/`](../examples/) for a gallery of eight reference apps —
+work order, mileage log, time tracker, expense logger, customer directory,
+quote builder, invoice generator, and a minimal [`hello-receipt`](../examples/hello-receipt/)
 that exercises every SDK service in one file:
 
 - Loads the current user
