@@ -79,6 +79,7 @@ That's a valid app. Zip the folder so `portal.json` is at the root, upload it, a
 | `permissions.csp_strict` | no | if `true`, the portal serves the app under a strict CSP (no inline scripts/styles, no `eval`). Inline `<script>` tags must carry `nonce="{{NONCE}}"` — the portal substitutes the placeholder per response. |
 | `min_portal_version` | no | hint for future compatibility checks |
 | `tools` | no | declarative operations an MCP-connected Claude can run (render a PDF → share / email / store). See "App tools" below and [mcp.md](mcp.md). |
+| `forms` | no | public, no-sign-in intake forms served at `/forms/<slug>/<form>`. Submissions collect under **Admin → Submissions** (with CSV export) and in the data export. See "Public intake forms" below. |
 
 The slug is the URL: an app with slug `expense-tracker` lives at `/apps/expense-tracker/`.
 
@@ -110,6 +111,46 @@ server-side.
 template and in those fields. A tool may only use services the manifest also
 declares in `services` — `share`/`download` need `pdf`, `store` needs `pdf` +
 `storage`, `email` needs `email`. Full reference: [mcp.md](mcp.md).
+
+## Public intake forms
+
+Declare `forms` to collect input from people who **aren't signed in** — a
+customer requesting a quote, someone booking a job. Each form is served at a
+public URL (`/forms/<slug>/<form>`) you can share or link from a website;
+submissions collect under **Admin → Submissions** (with CSV export) and in the
+data export. Forms are declarative — no app code runs server-side.
+
+```json
+"forms": [
+  {
+    "name": "quote_request",
+    "title": "Request a quote",
+    "description": "Tell us about your project and we'll get back to you.",
+    "fields": [
+      {"name": "full_name", "label": "Your name", "type": "text", "required": true},
+      {"name": "email", "label": "Email", "type": "email", "required": true},
+      {"name": "phone", "label": "Phone", "type": "tel"},
+      {"name": "details", "label": "Project details", "type": "textarea"}
+    ],
+    "notify_email": "owner@example.com",
+    "success_message": "Thanks — we'll be in touch soon."
+  }
+]
+```
+
+- Field `type` is `text` | `email` | `tel` | `number` | `textarea`.
+- `notify_email` (optional) sends a plain-text alert on each submission (needs
+  SMTP configured); the submission is stored regardless.
+- Forms need **no** `services`. The public endpoint is rate-limited per IP, has
+  a spam honeypot, and records only the fields you declared.
+
+## Scheduled runs
+
+Any tool can run on a recurring schedule — a daily summary, a weekly timesheet,
+a monthly report — with its output delivered through the tool's own
+`deliver` action. Schedules aren't part of the manifest; an admin creates them
+at **Admin → Schedules** (or Claude does, over MCP) after the app is uploaded.
+See [mcp.md](mcp.md).
 
 ## Using the SDK
 

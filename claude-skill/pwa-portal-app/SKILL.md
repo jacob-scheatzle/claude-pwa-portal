@@ -227,6 +227,7 @@ are identical.
 | `permissions.csp_strict` | no | when `true`, opt into a strict CSP that drops `'unsafe-inline'`/`'unsafe-eval'` — see "Strict CSP" below |
 | `min_portal_version` | no | hint for compatibility |
 | `tools` | no | declarative operations an MCP-connected Claude can run server-side — see "Tools (let Claude run your app)" below |
+| `forms` | no | public, no-sign-in intake forms at `/forms/<slug>/<form>`; submissions show under Admin → Submissions — see "Public intake forms" below |
 
 The slug becomes the URL: an app with slug `expense-tracker` is reachable at `/apps/expense-tracker/`.
 
@@ -394,6 +395,39 @@ For invoices, quotes, work orders — anything with a variable list — use an
 
 Full, working versions ship in `examples/invoice-gen`, `examples/quote-builder`,
 and `examples/work-order`.
+
+## Public intake forms (let non-users submit data)
+
+When the business needs input from someone who *isn't* a portal user — a
+customer requesting a quote, a lead form on their website — declare `forms`.
+Each is served at a public URL `/forms/<slug>/<form>` you can share; submissions
+collect under **Admin → Submissions** (CSV export available) and in the data
+export. No app code runs server-side.
+
+```json
+"forms": [
+  {
+    "name": "quote_request",
+    "title": "Request a quote",
+    "description": "Tell us what you need.",
+    "fields": [
+      { "name": "full_name", "label": "Your name", "type": "text", "required": true },
+      { "name": "email", "label": "Email", "type": "email", "required": true },
+      { "name": "details", "label": "Details", "type": "textarea" }
+    ],
+    "notify_email": "owner@example.com",
+    "success_message": "Thanks — we'll be in touch."
+  }
+]
+```
+
+Field `type` is `text` | `email` | `tel` | `number` | `textarea`. Forms need no
+`services`. The public endpoint is rate-limited per IP and has a spam honeypot.
+
+**Scheduling:** any tool can run on a recurring schedule (daily/weekly/monthly)
+from **Admin → Schedules**, or via Claude over MCP (`create_schedule`) — handy
+for "email the monthly report" with nobody clicking a button. Schedules aren't
+part of the manifest; they're set up after the app is uploaded.
 
 ## Portal SDK — how apps call services
 

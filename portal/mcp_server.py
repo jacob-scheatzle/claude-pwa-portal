@@ -76,9 +76,12 @@ _INSTRUCTIONS = (
     "Tools named '<slug>__<tool>' are operations a specific app declared (e.g. "
     "render a document and email/share/store it) — call list_apps or get_app to "
     "see an app's tools and their parameters. Everything runs as the token's "
-    "owner and is recorded in the portal audit log. Before building or changing "
-    "an app, call authoring_guide for the manifest schema and the tool DSL "
-    "(params, render templates, deliver kinds, array line items)."
+    "owner and is recorded in the portal audit log. The list_schedules / "
+    "create_schedule / set_schedule_enabled / delete_schedule / run_schedule "
+    "tools run an app's tool automatically on a daily/weekly/monthly cadence. "
+    "Before building or changing an app, call authoring_guide for the manifest "
+    "schema, the tool DSL (params, render templates, deliver kinds, array line "
+    "items), and public intake forms."
 )
 
 # Self-contained app-authoring guide returned by the ``authoring_guide`` tool so
@@ -108,7 +111,8 @@ preserves per-user storage). The zip root holds at least:
   "entry": "index.html",
   "services": ["pdf", "email", "storage"],   // SDK + tool services this app uses
   "permissions": { "network": [] },          // external https origins the UI fetches
-  "tools": [ ... ]                           // optional MCP tools (below)
+  "tools": [ ... ],                          // optional MCP tools (below)
+  "forms": [ ... ]                           // optional public intake forms (below)
 }
 ```
 
@@ -168,9 +172,38 @@ code never runs server-side. Each enabled app's tools appear as `<slug>__<tool>`
 - `email` -> `email`
 The manifest is rejected at upload if a tool uses an undeclared service.
 
+## Forms — public intake (optional)
+
+Declare `forms` to collect input from people who are NOT signed in (a customer
+quote request, a job intake). Each form is served at `/forms/<slug>/<form>`;
+every submission is stored for the owner (Admin -> Submissions) and included in
+the data export. Forms are declarative — no app code runs.
+
+```json
+"forms": [
+  {
+    "name": "quote_request",                 // snake_case, unique, used in the URL
+    "title": "Request a quote",
+    "description": "Tell us about your project.",
+    "fields": [
+      {"name": "full_name", "label": "Your name", "type": "text", "required": true},
+      {"name": "email", "label": "Email", "type": "email", "required": true},
+      {"name": "details", "label": "Details", "type": "textarea"}
+    ],
+    "notify_email": "owner@example.com",      // optional: emailed on each submission
+    "success_message": "Thanks — we'll be in touch."
+  }
+]
+```
+
+Field `type` is `text` | `email` | `tel` | `number` | `textarea`. Forms need no
+`services`. The public endpoint is rate-limited per IP and has a spam honeypot.
+
 ## Notes
 - Tool calls run as the connected admin user, in that user's per-app storage,
   send email as the business, and share the SDK's per-user PDF/email rate limits.
+- Recurring runs: any tool can be scheduled to run daily/weekly/monthly with the
+  `create_schedule` tool (or Admin -> Schedules) — great for periodic reports.
 - The `invoice-gen`, `quote-builder`, and `work-order` example apps in the repo
   ship full, working line-item tools to copy from.
 """

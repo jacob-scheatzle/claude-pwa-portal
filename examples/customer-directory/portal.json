@@ -1,7 +1,7 @@
 {
 	"slug": "customer-directory",
 	"name": "Customer Directory",
-	"version": "1.1.0",
+	"version": "1.2.0",
 	"description": "Lightweight CRM: track customers, tag them, and send quick emails.",
 	"icon": "icon.png",
 	"entry": "index.html",
@@ -24,6 +24,20 @@
 				"branded": true
 			},
 			"deliver": {"kind": "email", "to": "{{ to }}", "subject": "{{ subject }}"}
+		}
+	],
+	"forms": [
+		{
+			"name": "request_callback",
+			"title": "Request a callback",
+			"description": "Leave your details and we'll get back to you shortly.",
+			"fields": [
+				{"name": "full_name", "label": "Your name", "type": "text", "required": true},
+				{"name": "phone", "label": "Phone", "type": "tel", "required": true},
+				{"name": "email", "label": "Email", "type": "email", "required": false},
+				{"name": "reason", "label": "What can we help with?", "type": "textarea", "required": false}
+			],
+			"success_message": "Thanks! We'll be in touch soon."
 		}
 	],
 	"min_portal_version": "0.1.0"

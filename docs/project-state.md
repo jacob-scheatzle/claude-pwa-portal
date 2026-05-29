@@ -31,6 +31,20 @@ project up on a different machine or after a break.
   MCP-connected Claude build apps without the local skill. Adds the `App.tools`
   column (migration `665c77fdc151`) and `portal/{mcp_server,app_tools}.py`. See
   [mcp.md](mcp.md).
+- **Update (May 29, 2026, later):** three small-business features landed on top
+  of the MCP work (v0.9.0–0.11.0):
+  1. **Scheduler** — `ScheduledRun` + an in-process asyncio ticker in the
+     lifespan (`portal/scheduler.py`) runs an app's tool on a daily/weekly/
+     monthly cadence; admin UI at **Admin → Schedules** and MCP tools
+     (`list/create/set_enabled/delete/run_schedule`). Migration `13ed9c934c09`.
+  2. **Public intake forms** — apps declare `forms` (manifest); served at the
+     public `/forms/<slug>/<form>` (`portal/forms.py`), submissions stored in
+     `FormSubmission`, viewed at **Admin → Submissions** (+ CSV). Anti-abuse:
+     per-IP rate limit, honeypot, size caps, portal-origin-only.
+  3. **Data export** — **Admin → Export** streams a portable, secret-free zip
+     (apps/users/submissions/schedules/audit JSON + storage files).
+  Adds `App.forms` + `FormSubmission` (migration `1ee4231bf6f8`). Each shipped
+  with code + admin UI + MCP parity (scheduler) + docs, individually verified.
 
 ---
 
@@ -180,8 +194,8 @@ con = sqlite3.connect('data/portal.db')
 print('alembic_version:', con.execute('SELECT version_num FROM alembic_version').fetchall())
 print('tables:', [r[0] for r in con.execute(\"SELECT name FROM sqlite_master WHERE type='table' ORDER BY name\").fetchall()])
 "
-# Expect alembic_version at the latest revision (currently 665c77fdc151) and
-# 13 tables total (12 models + alembic_version).
+# Expect alembic_version at the latest revision (currently 1ee4231bf6f8) and
+# 15 tables total (14 models + alembic_version).
 ```
 
 ### Build + upload an app from Claude Code

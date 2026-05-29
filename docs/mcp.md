@@ -80,6 +80,14 @@ Ask Claude to call **`whoami`**. It should return your admin user
 | `get_app(slug)` | Full detail for one app: version, enabled, declared vs approved services, requested vs allowed network origins, `csp_strict`, entry, icon, upload time. |
 | `upload_app(filename, zip_base64, replace=false)` | Install a packaged app `.zip` (base64-encoded). `replace=false` installs new (fails if the slug exists); `replace=true` updates in place, **preserving per-user storage**. Slug/name/version come from the bundle's `portal.json`. |
 | `set_app_enabled(slug, enabled)` | Enable or disable an app. Disabling hides it from the dashboard and revokes open app sessions. |
+| `list_schedules()` | List recurring scheduled tool runs (id, app, tool, cadence, enabled, args, last/next run). |
+| `create_schedule(app_slug, tool_name, args, frequency, hour, …)` | Schedule one of an app's tools to run automatically on a cadence (`daily`/`weekly`/`monthly` at a UTC `hour`:`minute`; `day_of_week` 0–6 for weekly, `day_of_month` 1–28 for monthly). Output is delivered through the tool's own deliver action. Runs as the connected admin. |
+| `set_schedule_enabled(id, enabled)` | Pause or resume a schedule. |
+| `delete_schedule(id)` | Delete a schedule. |
+| `run_schedule(id)` | Run a schedule's tool immediately (does not change its cadence). |
+
+Schedules are also managed from the admin UI at **Admin → Schedules**, so the
+portal can run them with or without an MCP connection.
 
 `delete_app` is intentionally **not** exposed — deletion wipes per-user storage.
 Delete from the admin UI (**Admin → Apps**) when you really mean it.

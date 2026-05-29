@@ -8,7 +8,9 @@ Every app here also declares **MCP tools** in its `portal.json`, so an
 MCP-connected Claude can run them directly — e.g. "create a quote for Acme at
 $1,250 and share it." Each tool renders an HTML template to a PDF and then
 shares / emails / stores it; no app code runs server-side. See
-[`docs/mcp.md`](../docs/mcp.md).
+[`docs/mcp.md`](../docs/mcp.md). [`customer-directory`](customer-directory/) also
+declares a **public intake form** (a "request a callback" form served at
+`/forms/customer-directory/request_callback`) — see [app-authoring](../docs/app-authoring.md#public-intake-forms).
 
 | App | SDK services | MCP tools | What it does |
 | --- | --- | --- | --- |
@@ -17,7 +19,7 @@ shares / emails / stores it; no app code runs server-side. See
 | [mileage-log](mileage-log/) | `pdf` `storage` | `mileage_report` | Log business trips with miles and purpose; export an IRS-ready deduction PDF. |
 | [time-tracker](time-tracker/) | `pdf` `email` `storage` | `create_timesheet` | Track billable time by client/project; export a clean timesheet PDF. |
 | [expense-logger](expense-logger/) | `pdf` `storage` | `expense_report` | Log expenses by category and export a monthly PDF report. |
-| [customer-directory](customer-directory/) | `email` `storage` | `email_customer` | Lightweight CRM — track customers, tag them, send quick emails. |
+| [customer-directory](customer-directory/) | `email` `storage` | `email_customer` | Lightweight CRM — track customers, tag them, send quick emails. Also declares a public **request-a-callback** intake form. |
 | [quote-builder](quote-builder/) | `pdf` `email` `storage` | `create_quote` | Build itemized quotes, generate a PDF, share a link the customer can open. |
 | [invoice-gen](invoice-gen/) | `pdf` `email` `storage` | `create_invoice`, `email_invoice` | Build line-item invoices, generate a branded PDF, email it to the customer. |
 
