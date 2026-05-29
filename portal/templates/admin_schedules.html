@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}Schedules — Portal admin{% endblock %}
+{% block container_class %}wide{% endblock %}
+{% block content %}
+<h1>Scheduled runs</h1>
+<p>Run one of an app's tools automatically on a schedule — a daily summary, a
+weekly timesheet, a monthly report. Each run is delivered the same way the tool
+delivers when Claude calls it (emailed, stored, or shared). Times are UTC.</p>
+
+{% if options %}
+<form method="get" action="/admin/schedules/new" style="margin-top:1rem;">
+	<div style="display:flex; gap:0.5rem; align-items:end; flex-wrap:wrap;">
+		<div style="flex:1 1 18rem; min-width:0;">
+			<label for="sel">Add a schedule</label>
+			<select name="sel" id="sel">
+				{% for o in options %}
+				<option value="{{ o.sel }}">{{ o.label }}</option>
+				{% endfor %}
+			</select>
+		</div>
+		<button type="submit" class="secondary">Configure →</button>
+	</div>
+</form>
+{% else %}
+<p class="hint" style="margin-top:1rem;">No app tools to schedule yet. Upload an
+app that declares <code>tools</code> in its <code>portal.json</code> first.</p>
+{% endif %}
+
+{% if rows %}
+<table class="apps" style="margin-top:1.5rem;">
+	<thead>
+		<tr>
+			<th>App / tool</th>
+			<th>Cadence</th>
+			<th>Next run</th>
+			<th>Last run</th>
+			<th></th>
+		</tr>
+	</thead>
+	<tbody>
+		{% for r in rows %}
+		<tr>
+			<td data-label="Tool">
+				<strong>{{ r.app_name }}</strong><br>
+				<code>{{ r.s.tool_name }}</code>
+				{% if r.s.label %}<br><span class="muted">{{ r.s.label }}</span>{% endif %}
+				{% if not r.s.enabled %}<br><span class="pill off">paused</span>{% endif %}
+			</td>
+			<td data-label="Cadence">{{ r.cadence }}</td>
+			<td data-label="Next run">{% if r.s.enabled %}{{ r.s.next_run_at.strftime("%Y-%m-%d %H:%M") }}{% else %}—{% endif %}</td>
+			<td data-label="Last run">
+				{% if r.s.last_run_at %}
+					{{ r.s.last_run_at.strftime("%Y-%m-%d %H:%M") }}<br>
+					{% if r.s.last_status == "ok" %}<span class="pill on">ok</span>
+					{% elif r.s.last_status == "error" %}<span class="pill off">error</span>{% endif %}
+					{% if r.s.last_result %}<br><span class="muted" style="font-size:0.8rem;">{{ r.s.last_result }}</span>{% endif %}
+				{% else %}—{% endif %}
+			</td>
+			<td class="actions">
+				<form method="post" action="/admin/schedules/{{ r.s.id }}/run-now" style="display:inline;">
+					<input type="hidden" name="_csrf" value="{{ csrf_token }}">
+					<button class="action-chip" type="submit">Run now</button>
+				</form>
+				<form method="post" action="/admin/schedules/{{ r.s.id }}/toggle" style="display:inline;">
+					<input type="hidden" name="_csrf" value="{{ csrf_token }}">
+					<button class="action-chip" type="submit">{% if r.s.enabled %}Pause{% else %}Resume{% endif %}</button>
+				</form>
+				<form method="post" action="/admin/schedules/{{ r.s.id }}/delete" style="display:inline;"
+					data-confirm="Delete this schedule? It will stop running.">
+					<input type="hidden" name="_csrf" value="{{ csrf_token }}">
+					<button class="action-chip danger" type="submit">Delete</button>
+				</form>
+			</td>
+		</tr>
+		{% endfor %}
+	</tbody>
+</table>
+{% else %}
+<p class="hint" style="margin-top:1.5rem;">No schedules yet.</p>
+{% endif %}
+{% endblock %}

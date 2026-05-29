@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}New schedule — Portal admin{% endblock %}
+{% block content %}
+<p><a href="/admin/schedules" class="nav-link">← Schedules</a></p>
+<h1>Schedule a run</h1>
+<p>Run <code>{{ tool.name }}</code> from <strong>{{ app_row.name }}</strong> on a
+recurring schedule. {% if tool.description %}{{ tool.description }}{% endif %}</p>
+
+<form method="post" action="/admin/schedules">
+	<input type="hidden" name="_csrf" value="{{ csrf_token }}">
+	<input type="hidden" name="sel" value="{{ sel }}">
+
+	<div>
+		<label for="label">Label <span class="muted">(optional)</span></label>
+		<input type="text" name="label" id="label" maxlength="120"
+			placeholder="e.g. Monthly mileage report">
+	</div>
+
+	<fieldset>
+		<legend>Cadence (UTC)</legend>
+		<div class="form-row-2col">
+			<div>
+				<label for="frequency">Frequency</label>
+				<select name="frequency" id="frequency">
+					{% for f in frequencies %}
+					<option value="{{ f }}">{{ f|capitalize }}</option>
+					{% endfor %}
+				</select>
+			</div>
+			<div>
+				<label for="hour">Time (UTC)</label>
+				<div style="display:flex; gap:0.4rem; align-items:center;">
+					<input type="number" name="hour" id="hour" min="0" max="23" value="8" style="width:5rem;">
+					<span class="muted">:</span>
+					<input type="number" name="minute" id="minute" min="0" max="59" value="0" style="width:5rem;">
+				</div>
+			</div>
+		</div>
+		<div class="form-row-2col">
+			<div>
+				<label for="day_of_week">Day of week <span class="muted">(weekly only)</span></label>
+				<select name="day_of_week" id="day_of_week">
+					<option value="0">Monday</option>
+					<option value="1">Tuesday</option>
+					<option value="2">Wednesday</option>
+					<option value="3">Thursday</option>
+					<option value="4">Friday</option>
+					<option value="5">Saturday</option>
+					<option value="6">Sunday</option>
+				</select>
+			</div>
+			<div>
+				<label for="day_of_month">Day of month <span class="muted">(monthly only, 1–28)</span></label>
+				<input type="number" name="day_of_month" id="day_of_month" min="1" max="28" value="1" style="width:5rem;">
+			</div>
+		</div>
+	</fieldset>
+
+	{% if tool.params %}
+	<fieldset>
+		<legend>Tool inputs</legend>
+		{% for p in tool.params %}
+		<div>
+			<label for="p_{{ p.name }}">{{ p.name }}{% if p.required %} <span class="muted">*</span>{% endif %}
+				<span class="muted">({{ p.type }})</span></label>
+			{% if p.type == "boolean" %}
+			<label style="font-weight:400; display:flex; align-items:center; gap:0.4rem;">
+				<input type="checkbox" name="p_{{ p.name }}" value="1" style="width:auto;">
+				{{ p.description or p.name }}
+			</label>
+			{% elif p.type == "number" %}
+			<input type="number" step="any" name="p_{{ p.name }}" id="p_{{ p.name }}"{% if p.required %} required{% endif %}>
+			{% elif p.type == "array" %}
+			<textarea name="p_{{ p.name }}" id="p_{{ p.name }}" placeholder='[{"description": "...", "qty": 1}]'></textarea>
+			<p class="hint">A JSON array of line items.{% if p.fields %} Each item's fields: {% for f in p.fields %}<code>{{ f.name }}</code>{% if not loop.last %}, {% endif %}{% endfor %}.{% endif %}</p>
+			{% else %}
+			<input type="text" name="p_{{ p.name }}" id="p_{{ p.name }}"{% if p.required %} required{% endif %}>
+			{% endif %}
+			{% if p.description and p.type != "boolean" %}<p class="hint">{{ p.description }}</p>{% endif %}
+		</div>
+		{% endfor %}
+	</fieldset>
+	{% endif %}
+
+	<div>
+		<button type="submit">Create schedule</button>
+	</div>
+</form>
+{% endblock %}

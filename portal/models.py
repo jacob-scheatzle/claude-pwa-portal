@@ -249,3 +249,41 @@ class UserAppAccess(SQLModel, table=True):
     user_id: int = Field(foreign_key="user.id", primary_key=True)
     app_id: int = Field(foreign_key="app.id", primary_key=True)
     granted_at: datetime = Field(default_factory=_utcnow)
+
+
+class ScheduledRun(SQLModel, table=True):
+    # A saved, recurring invocation of one of an app's declared ``tools``. The
+    # portal's in-process scheduler (``portal/scheduler.py``, started in the
+    # FastAPI lifespan) wakes periodically, fires any row whose ``next_run_at``
+    # has passed via the same declarative executor the MCP server uses
+    # (``portal.app_tools.run_tool``) — so output flows through the tool's own
+    # ``deliver`` action (email / store / share) and NO uploaded code runs
+    # server-side — then advances ``next_run_at`` to the next occurrence.
+    #
+    # The run acts as ``user_id``: the tool writes into that user's
+    # per-(app, user) storage namespace and emails as the business. Cadence is a
+    # small structured set (daily / weekly / monthly at a fixed UTC hour:minute)
+    # so we need no cron-parser dependency. All datetimes are UTC, like the rest
+    # of the schema. The scheduler is per-process, matching the rate-limit
+    # counters — see docs/deploying.md if you ever run multiple workers.
+    id: Optional[int] = Field(default=None, primary_key=True)
+    app_slug: str = Field(index=True)
+    tool_name: str
+    # Preset arguments passed to the tool on each run (validated by the executor
+    # at run time, exactly as an MCP/SDK call would be).
+    args: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    user_id: int = Field(foreign_key="user.id")
+    label: str = Field(default="")
+    frequency: str = Field(default="daily")  # "daily" | "weekly" | "monthly"
+    hour: int = Field(default=8)             # 0-23, UTC
+    minute: int = Field(default=0)           # 0-59
+    day_of_week: int = Field(default=0)      # 0=Mon .. 6=Sun (weekly only)
+    # Capped to 1-28 so the chosen day exists in every month.
+    day_of_month: int = Field(default=1)     # 1-28 (monthly only)
+    enabled: bool = Field(default=True, index=True)
+    created_by: Optional[int] = Field(default=None, foreign_key="user.id")
+    created_at: datetime = Field(default_factory=_utcnow)
+    next_run_at: datetime = Field(index=True)
+    last_run_at: Optional[datetime] = None
+    last_status: str = Field(default="")     # "ok" | "error" | ""
+    last_result: str = Field(default="")     # short summary / error (truncated)

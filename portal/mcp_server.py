@@ -35,6 +35,7 @@ import binascii
 import logging
 import os
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -53,7 +54,8 @@ from portal.config import settings
 from portal.db import engine
 from portal.deps import authenticate_bearer
 from portal.middleware import resolve_app_slug_from_host
-from portal.models import App, User
+from portal.models import App, ScheduledRun, User
+from portal.scheduler import FREQUENCIES, compute_next_run, fire_schedule
 from portal.sessions import revoke_all_app_sessions_for_slug
 
 logger = logging.getLogger("uvicorn.error")
@@ -270,6 +272,55 @@ _MGMT_TOOLS = [
             "required": ["slug", "enabled"],
         },
     ),
+    types.Tool(
+        name="list_schedules",
+        description="List recurring scheduled tool runs (id, app, tool, cadence, "
+        "enabled, args, last/next run).",
+        inputSchema={**_OBJ, "properties": {}},
+    ),
+    types.Tool(
+        name="create_schedule",
+        description="Schedule one of an app's tools to run automatically on a "
+        "cadence; its output is delivered through the tool's own deliver action "
+        "(email / store / share). The run acts as the authenticated user. Cadence "
+        "is daily / weekly / monthly at a UTC hour:minute (day_of_week 0=Mon..6=Sun "
+        "for weekly; day_of_month 1-28 for monthly). 'args' are the tool's "
+        "parameters — same shape as calling the tool directly.",
+        inputSchema={
+            **_OBJ,
+            "properties": {
+                "app_slug": {"type": "string"},
+                "tool_name": {"type": "string"},
+                "args": {"type": "object", "description": "tool parameters"},
+                "frequency": {"type": "string", "enum": list(FREQUENCIES)},
+                "hour": {"type": "integer", "minimum": 0, "maximum": 23},
+                "minute": {"type": "integer", "minimum": 0, "maximum": 59},
+                "day_of_week": {"type": "integer", "minimum": 0, "maximum": 6},
+                "day_of_month": {"type": "integer", "minimum": 1, "maximum": 28},
+                "label": {"type": "string"},
+            },
+            "required": ["app_slug", "tool_name", "frequency"],
+        },
+    ),
+    types.Tool(
+        name="set_schedule_enabled",
+        description="Enable or pause a schedule by id.",
+        inputSchema={
+            **_OBJ,
+            "properties": {"id": {"type": "integer"}, "enabled": {"type": "boolean"}},
+            "required": ["id", "enabled"],
+        },
+    ),
+    types.Tool(
+        name="delete_schedule",
+        description="Delete a schedule by id.",
+        inputSchema={**_OBJ, "properties": {"id": {"type": "integer"}}, "required": ["id"]},
+    ),
+    types.Tool(
+        name="run_schedule",
+        description="Run a schedule's tool immediately. Does not change its cadence.",
+        inputSchema={**_OBJ, "properties": {"id": {"type": "integer"}}, "required": ["id"]},
+    ),
 ]
 _MGMT_NAMES = {t.name for t in _MGMT_TOOLS}
 
@@ -462,6 +513,132 @@ def build_mcp_app():
             )
             return {"slug": app.slug, "enabled": bool(app.enabled)}
 
+    # --- schedule handlers ---
+
+    def _sched_summary(s: ScheduledRun) -> dict:
+        return {
+            "id": s.id, "app_slug": s.app_slug, "tool_name": s.tool_name,
+            "frequency": s.frequency, "hour": s.hour, "minute": s.minute,
+            "day_of_week": s.day_of_week, "day_of_month": s.day_of_month,
+            "enabled": bool(s.enabled), "label": s.label, "args": dict(s.args or {}),
+            "next_run_at": s.next_run_at.isoformat() if s.next_run_at else None,
+            "last_run_at": s.last_run_at.isoformat() if s.last_run_at else None,
+            "last_status": s.last_status, "last_result": s.last_result,
+        }
+
+    def _do_list_schedules() -> dict:
+        with Session(engine) as db:
+            rows = db.exec(select(ScheduledRun).order_by(ScheduledRun.next_run_at)).all()
+            return {"schedules": [_sched_summary(s) for s in rows], "count": len(rows)}
+
+    def _clamp_int(v, lo, hi, default):
+        try:
+            return max(lo, min(hi, int(v)))
+        except (TypeError, ValueError):
+            return default
+
+    def _do_create_schedule(args: dict) -> dict:
+        ident = _ctx_user()
+        slug = (args.get("app_slug") or "").strip()
+        tool_name = (args.get("tool_name") or "").strip()
+        frequency = (args.get("frequency") or "daily").strip()
+        if frequency not in FREQUENCIES:
+            raise ValueError(f"frequency must be one of {sorted(FREQUENCIES)}")
+        tool_args = args.get("args") or {}
+        if not isinstance(tool_args, dict):
+            raise ValueError("'args' must be an object")
+        with Session(engine) as db:
+            app = db.exec(select(App).where(App.slug == slug)).first()
+            if app is None:
+                raise ValueError(f"No app with slug '{slug}'.")
+            decl = next((t for t in (app.tools or []) if t.get("name") == tool_name), None)
+            if decl is None:
+                raise ValueError(f"App '{slug}' has no tool '{tool_name}'.")
+            hour = _clamp_int(args.get("hour"), 0, 23, 8)
+            minute = _clamp_int(args.get("minute"), 0, 59, 0)
+            dow = _clamp_int(args.get("day_of_week"), 0, 6, 0)
+            dom = _clamp_int(args.get("day_of_month"), 1, 28, 1)
+            now = datetime.now(timezone.utc)
+            sched = ScheduledRun(
+                app_slug=slug, tool_name=tool_name, args=tool_args,
+                user_id=ident["id"], created_by=ident["id"],
+                label=(args.get("label") or "")[:120], frequency=frequency,
+                hour=hour, minute=minute, day_of_week=dow, day_of_month=dom,
+                enabled=True,
+                next_run_at=compute_next_run(
+                    frequency=frequency, hour=hour, minute=minute,
+                    day_of_week=dow, day_of_month=dom, after=now,
+                ),
+            )
+            db.add(sched)
+            db.commit()
+            db.refresh(sched)
+            record_event(
+                db, actor=db.get(User, ident["id"]), action="schedule.create",
+                request=_ctx_request(), target=f"schedule:{slug}/{tool_name}",
+                details={"frequency": frequency, "via": "mcp"},
+            )
+            return _sched_summary(sched)
+
+    def _do_set_schedule_enabled(args: dict) -> dict:
+        ident = _ctx_user()
+        sid = args.get("id")
+        enabled = bool(args.get("enabled"))
+        with Session(engine) as db:
+            sched = db.get(ScheduledRun, sid)
+            if sched is None:
+                raise ValueError(f"No schedule with id {sid}.")
+            sched.enabled = enabled
+            if enabled:
+                sched.next_run_at = compute_next_run(
+                    frequency=sched.frequency, hour=sched.hour, minute=sched.minute,
+                    day_of_week=sched.day_of_week, day_of_month=sched.day_of_month,
+                    after=datetime.now(timezone.utc),
+                )
+            db.add(sched)
+            db.commit()
+            record_event(
+                db, actor=db.get(User, ident["id"]), action="schedule.toggle",
+                request=_ctx_request(),
+                target=f"schedule:{sched.app_slug}/{sched.tool_name}",
+                details={"enabled": enabled, "via": "mcp"},
+            )
+            return _sched_summary(sched)
+
+    def _do_delete_schedule(args: dict) -> dict:
+        ident = _ctx_user()
+        sid = args.get("id")
+        with Session(engine) as db:
+            sched = db.get(ScheduledRun, sid)
+            if sched is None:
+                raise ValueError(f"No schedule with id {sid}.")
+            target = f"schedule:{sched.app_slug}/{sched.tool_name}"
+            db.delete(sched)
+            db.commit()
+            record_event(
+                db, actor=db.get(User, ident["id"]), action="schedule.delete",
+                request=_ctx_request(), target=target, details={"via": "mcp"},
+            )
+            return {"deleted": sid}
+
+    async def _do_run_schedule(args: dict) -> dict:
+        ident = _ctx_user()
+        sid = args.get("id")
+        # fire_schedule opens its own session and runs blocking tool work; offload.
+        out = await anyio.to_thread.run_sync(lambda: fire_schedule(sid, advance=False))
+        if not out.get("found"):
+            raise ValueError(f"No schedule with id {sid}.")
+        try:
+            with Session(engine) as db:
+                record_event(
+                    db, actor=db.get(User, ident["id"]), action="schedule.run_now",
+                    request=_ctx_request(), target=f"schedule:{sid}",
+                    details={"status": out.get("status"), "via": "mcp"},
+                )
+        except Exception:
+            logger.exception("MCP run_schedule audit failed (id=%s)", sid)
+        return {"id": sid, "status": out.get("status"), "result": out.get("result")}
+
     # --- app-declared tool dispatch ---
 
     async def _do_app_tool(name: str, args: dict) -> dict:
@@ -543,6 +720,16 @@ def build_mcp_app():
             return await _do_upload_app(arguments)
         if name == "set_app_enabled":
             return _do_set_enabled(arguments)
+        if name == "list_schedules":
+            return _do_list_schedules()
+        if name == "create_schedule":
+            return _do_create_schedule(arguments)
+        if name == "set_schedule_enabled":
+            return _do_set_schedule_enabled(arguments)
+        if name == "delete_schedule":
+            return _do_delete_schedule(arguments)
+        if name == "run_schedule":
+            return await _do_run_schedule(arguments)
         if _TOOL_SEP in name:
             return await _do_app_tool(name, arguments)
         raise ValueError(f"Unknown tool: {name}")

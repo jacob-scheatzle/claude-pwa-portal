@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import mimetypes
 import re
 import secrets
@@ -41,7 +42,15 @@ from portal.branding import (
 from portal.config import settings
 from portal.db import get_db
 from portal.deps import require_admin
-from portal.models import ApiToken, App, AppLaunchToken, User, UserAppAccess
+from portal.models import (
+    ApiToken,
+    App,
+    AppLaunchToken,
+    ScheduledRun,
+    User,
+    UserAppAccess,
+)
+from portal.scheduler import FREQUENCIES, compute_next_run, fire_schedule
 from portal.security import check_csrf, hash_password, validate_password
 from portal.sessions import revoke_all_app_sessions_for_user, revoke_all_for_user
 from portal.settings_store import get_setting, set_secret, set_setting, smtp_config
@@ -867,6 +876,228 @@ def shares_delete(
     )
     flash(request, "Share link deleted.")
     return RedirectResponse("/admin/shares", status_code=303)
+
+
+# ----- Scheduled tool runs -----
+
+# A ScheduledRun fires one of an app's declared tools on a cadence; the portal's
+# in-process ticker (portal/scheduler.py) executes it and delivers the output
+# through the tool's own deliver action (email / store / share). These routes
+# let an admin build and manage schedules without touching the MCP path.
+
+def _apps_with_tools(db: Session) -> list[App]:
+    apps = db.exec(select(App).order_by(App.display_order, App.name)).all()
+    return [a for a in apps if a.tools]
+
+
+def _tool_decl(app_row: Optional[App], tool_name: str) -> Optional[dict]:
+    for decl in ((app_row.tools if app_row else None) or []):
+        if decl.get("name") == tool_name:
+            return decl
+    return None
+
+
+def _cadence_summary(s: ScheduledRun) -> str:
+    t = f"{s.hour:02d}:{s.minute:02d} UTC"
+    if s.frequency == "weekly":
+        days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        return f"Weekly · {days[max(0, min(6, s.day_of_week))]} · {t}"
+    if s.frequency == "monthly":
+        return f"Monthly · day {s.day_of_month} · {t}"
+    return f"Daily · {t}"
+
+
+@router.get("/admin/schedules")
+def schedules_list(request: Request, db: DbDep, admin: AdminDep):
+    schedules = db.exec(select(ScheduledRun).order_by(ScheduledRun.next_run_at)).all()
+    app_names = {a.slug: a.name for a in db.exec(select(App)).all()}
+    options = []
+    for a in _apps_with_tools(db):
+        for decl in a.tools:
+            options.append({
+                "sel": f"{a.slug}/{decl['name']}",
+                "label": f"{a.name} → {decl['name']}",
+            })
+    rows = [{
+        "s": s,
+        "app_name": app_names.get(s.app_slug, s.app_slug),
+        "cadence": _cadence_summary(s),
+    } for s in schedules]
+    return render(request, "admin_schedules.html", user=admin, rows=rows, options=options)
+
+
+@router.get("/admin/schedules/new")
+def schedules_new(request: Request, db: DbDep, admin: AdminDep, sel: str = ""):
+    slug, _, tool_name = sel.partition("/")
+    app_row = db.exec(select(App).where(App.slug == slug)).first() if slug else None
+    decl = _tool_decl(app_row, tool_name)
+    if app_row is None or decl is None:
+        flash(request, "Pick an app tool to schedule.", level="error")
+        return RedirectResponse("/admin/schedules", status_code=303)
+    return render(
+        request, "admin_schedule_new.html", user=admin,
+        app_row=app_row, tool=decl, sel=sel, frequencies=FREQUENCIES,
+    )
+
+
+def _coerce_sched_arg(param: dict, raw):
+    """Turn a raw form value into a typed tool argument (mirrors the executor)."""
+    ptype = param.get("type", "string")
+    if ptype == "array":
+        raw = (raw or "").strip()
+        if not raw:
+            return []
+        try:
+            val = json.loads(raw)
+        except ValueError:
+            raise ValueError(f"'{param['name']}' must be valid JSON")
+        if not isinstance(val, list):
+            raise ValueError(f"'{param['name']}' must be a JSON array")
+        return val
+    if ptype == "number":
+        raw = (raw or "").strip()
+        if raw == "":
+            return None
+        try:
+            return float(raw)
+        except ValueError:
+            raise ValueError(f"'{param['name']}' must be a number")
+    if ptype == "boolean":
+        return bool(raw)  # an unchecked checkbox is absent from the form
+    return raw or ""
+
+
+@router.post("/admin/schedules")
+async def schedules_create(request: Request, db: DbDep, admin: AdminDep):
+    form = await request.form()
+    check_csrf(request, form.get("_csrf", ""))
+    sel = (form.get("sel") or "").strip()
+    slug, _, tool_name = sel.partition("/")
+    app_row = db.exec(select(App).where(App.slug == slug)).first() if slug else None
+    decl = _tool_decl(app_row, tool_name)
+    if app_row is None or decl is None:
+        flash(request, "Unknown app tool.", level="error")
+        return RedirectResponse("/admin/schedules", status_code=303)
+
+    frequency = (form.get("frequency") or "daily").strip()
+    if frequency not in FREQUENCIES:
+        frequency = "daily"
+
+    def _int(name: str, default: int, lo: int, hi: int) -> int:
+        try:
+            return max(lo, min(hi, int(form.get(name, default))))
+        except (TypeError, ValueError):
+            return default
+
+    hour = _int("hour", 8, 0, 23)
+    minute = _int("minute", 0, 0, 59)
+    day_of_week = _int("day_of_week", 0, 0, 6)
+    day_of_month = _int("day_of_month", 1, 1, 28)
+    label = (form.get("label") or "").strip()[:120]
+
+    args: dict = {}
+    try:
+        for p in (decl.get("params") or []):
+            raw = form.get(f"p_{p['name']}") if p["type"] == "boolean" else form.get(f"p_{p['name']}", "")
+            val = _coerce_sched_arg(p, raw)
+            empty = val is None or val == "" or val == []
+            if p.get("required") and p["type"] != "boolean" and empty:
+                raise ValueError(f"'{p['name']}' is required")
+            if val is not None:
+                args[p["name"]] = val
+    except ValueError as e:
+        flash(request, f"Couldn't save schedule: {e}", level="error")
+        return RedirectResponse(f"/admin/schedules/new?sel={sel}", status_code=303)
+
+    now = datetime.now(timezone.utc)
+    sched = ScheduledRun(
+        app_slug=slug, tool_name=tool_name, args=args, user_id=admin.id,
+        label=label, frequency=frequency, hour=hour, minute=minute,
+        day_of_week=day_of_week, day_of_month=day_of_month, enabled=True,
+        created_by=admin.id,
+        next_run_at=compute_next_run(
+            frequency=frequency, hour=hour, minute=minute,
+            day_of_week=day_of_week, day_of_month=day_of_month, after=now,
+        ),
+    )
+    db.add(sched)
+    db.commit()
+    record_event(
+        db, actor=admin, action="schedule.create", request=request,
+        target=f"schedule:{slug}/{tool_name}", details={"frequency": frequency},
+    )
+    flash(request, "Schedule created.")
+    return RedirectResponse("/admin/schedules", status_code=303)
+
+
+@router.post("/admin/schedules/{sched_id}/toggle")
+def schedules_toggle(
+    request: Request, db: DbDep, admin: AdminDep, sched_id: int,
+    csrf: Annotated[str, Form(alias="_csrf")] = "",
+):
+    check_csrf(request, csrf)
+    sched = db.get(ScheduledRun, sched_id)
+    if sched is None:
+        raise HTTPException(404)
+    sched.enabled = not sched.enabled
+    if sched.enabled:
+        # Recompute from now so re-enabling a long-paused schedule doesn't
+        # immediately fire on a long-past next_run_at.
+        sched.next_run_at = compute_next_run(
+            frequency=sched.frequency, hour=sched.hour, minute=sched.minute,
+            day_of_week=sched.day_of_week, day_of_month=sched.day_of_month,
+            after=datetime.now(timezone.utc),
+        )
+    db.add(sched)
+    db.commit()
+    record_event(
+        db, actor=admin, action="schedule.toggle", request=request,
+        target=f"schedule:{sched.app_slug}/{sched.tool_name}",
+        details={"enabled": sched.enabled},
+    )
+    flash(request, "Schedule " + ("resumed." if sched.enabled else "paused."))
+    return RedirectResponse("/admin/schedules", status_code=303)
+
+
+@router.post("/admin/schedules/{sched_id}/delete")
+def schedules_delete(
+    request: Request, db: DbDep, admin: AdminDep, sched_id: int,
+    csrf: Annotated[str, Form(alias="_csrf")] = "",
+):
+    check_csrf(request, csrf)
+    sched = db.get(ScheduledRun, sched_id)
+    if sched is None:
+        raise HTTPException(404)
+    target = f"schedule:{sched.app_slug}/{sched.tool_name}"
+    db.delete(sched)
+    db.commit()
+    record_event(db, actor=admin, action="schedule.delete", request=request, target=target)
+    flash(request, "Schedule deleted.")
+    return RedirectResponse("/admin/schedules", status_code=303)
+
+
+@router.post("/admin/schedules/{sched_id}/run-now")
+def schedules_run_now(
+    request: Request, db: DbDep, admin: AdminDep, sched_id: int,
+    csrf: Annotated[str, Form(alias="_csrf")] = "",
+):
+    check_csrf(request, csrf)
+    sched = db.get(ScheduledRun, sched_id)
+    if sched is None:
+        raise HTTPException(404)
+    target = f"schedule:{sched.app_slug}/{sched.tool_name}"
+    # advance=False: a manual fire shouldn't disturb the cadence. Runs in the
+    # threadpool (sync handler), so the blocking tool execution is off the loop.
+    out = fire_schedule(sched_id, advance=False)
+    record_event(
+        db, actor=admin, action="schedule.run_now", request=request,
+        target=target, details={"status": out.get("status")},
+    )
+    if out.get("status") == "ok":
+        flash(request, "Ran now — " + (out.get("result") or "done") + ".")
+    else:
+        flash(request, f"Run failed: {out.get('result') or 'unknown error'}", level="error")
+    return RedirectResponse("/admin/schedules", status_code=303)
 
 
 # ----- Backups -----

@@ -1,3 +1,5 @@
+import asyncio
+import contextlib
 import logging
 import re
 import time
@@ -27,6 +29,7 @@ from portal.db import engine, get_db, init_db
 from portal.deps import current_user, require_user
 from portal.middleware import ChildAppCSPMiddleware, HostDispatchMiddleware
 from portal.models import App, Setting, User
+from portal.scheduler import scheduler_loop
 from portal.security import (
     check_csrf,
     hash_password,
@@ -78,15 +81,23 @@ async def lifespan(app: FastAPI):
             "cookies will not be sent and per-app iframes will fail to "
             "load. Set COOKIES_SECURE=false if there is no proxy doing TLS."
         )
-    # The MCP streamable-HTTP transport needs its session-manager task group
-    # running for the app's lifetime. ``_mcp_instance`` is the
-    # StreamableHTTPSessionManager (see portal/mcp_server.build_mcp_app). No-op
-    # when MCP is disabled.
-    if _mcp_instance is not None:
-        async with _mcp_instance.run():
+    # Background scheduler: fires recurring app-tool runs whose next_run_at has
+    # passed (portal/scheduler.py). One task per process; cancelled on shutdown.
+    scheduler_task = asyncio.create_task(scheduler_loop())
+    try:
+        # The MCP streamable-HTTP transport needs its session-manager task group
+        # running for the app's lifetime. ``_mcp_instance`` is the
+        # StreamableHTTPSessionManager (see portal/mcp_server.build_mcp_app).
+        # No-op when MCP is disabled.
+        if _mcp_instance is not None:
+            async with _mcp_instance.run():
+                yield
+        else:
             yield
-    else:
-        yield
+    finally:
+        scheduler_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await scheduler_task
 
 
 # FastAPI's auto-generated docs (``/docs`` and ``/redoc``) and the
