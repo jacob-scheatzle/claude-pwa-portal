@@ -181,10 +181,12 @@ The Docker image bundles the `mcp` dep and `mcp_enabled` defaults to **auto**
 (`Optional[bool]=None` → on when importable), so the container comes up with
 `/mcp` live; `MCP_ENABLED=false` disables it, `true` forces it. It exposes
 admin-token-authed tools (`whoami`, `list_apps`, `get_app`, `upload_app`,
-`set_app_enabled`) that wrap existing internals. Auth reuses
+`set_app_enabled`, and `authoring_guide` — a self-contained authoring spec for
+MCP-only clients) that wrap existing internals. Auth reuses
 `deps.authenticate_bearer`. See [docs/mcp.md](docs/mcp.md). **Phase 2 is
 implemented:** apps declare a `tools` DSL in `portal.json` (validated in
-`apps.py`: name/params/render/deliver, with a cross-check that each tool's
+`apps.py`: name/params/render/deliver — params are scalar or `array` line-item
+objects — with a cross-check that each tool's
 services are declared), stored in the new `App.tools` JSON column (migration
 `665c77fdc151`); `portal/app_tools.py` runs them over trusted primitives; and
 `mcp_server.py` surfaces each enabled app's tools dynamically as `<slug>__<tool>`

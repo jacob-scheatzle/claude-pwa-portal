@@ -39,7 +39,7 @@ If you need wildcard DNS for per-app origin isolation (the default), see [sectio
 
 If you're putting this behind a load balancer that terminates TLS, or you want to run plain HTTP for local testing, see [section 2.7: HTTP-only mode](#27-optional-http-only-mode).
 
-If you want Claude to manage apps over MCP (list / upload / replace / enable as tool calls), see [the MCP server guide](mcp.md) — it's opt-in (`MCP_ENABLED=true` plus the `mcp` extra, or `--build-arg INSTALL_MCP=true` for the image).
+If you want Claude to manage apps over MCP — list / upload / replace / enable, and run each app's declared tools — see [the MCP server guide](mcp.md). It's **on by default** in the Docker image (admin-token-gated); set `MCP_ENABLED=false` to disable it.
 
 If you want to build from source instead (for development or local patches), skip the Quickstart and use the **Build from source** section after the troubleshooting block.
 
@@ -91,6 +91,10 @@ SECRET_KEY=<paste here>
 
 # Set to true once you're running behind HTTPS.
 COOKIES_SECURE=true
+
+# MCP app-management server at /mcp. Blank = auto (on — the image bundles the
+# dependency). Set false to disable it, true to require it. See docs/mcp.md.
+MCP_ENABLED=
 
 # Optional pre-config — admins can also fill this in via Settings later.
 SMTP_HOST=
@@ -502,6 +506,7 @@ Run through these before you point real users at the portal:
 - [ ] Back up `data/` regularly (see [Backups](#backups) above).
 - [ ] Plan for `SECRET_KEY` rotation — it boots every user out, so ideally only rotate on confirmed compromise.
 - [ ] Restrict outbound network on the VPS to your SMTP host(s) (egress firewall / security group).
+- [ ] *(If unused)* set `MCP_ENABLED=false` to drop the `/mcp` app-management endpoint. It's on by default in the image and admin-token-gated, with auth failures fed to the fail2ban jail — but if you never connect Claude to this portal, turning it off removes the surface. See [docs/mcp.md](mcp.md).
 - [ ] Don't share the host with untrusted users — the SQLite DB on disk contains SMTP credentials (encrypted, but the decryption key lives next to it in `.env`).
 - [ ] The Dockerfile now runs as UID 1001. The `data/` directory on the host must be writable by that uid; if you see permission errors after first boot, run `chown -R 1001:1001 data/` on the host and `docker compose restart portal`.
 - [ ] *(Optional, further hardening)* Try `read_only: true` on the portal service in `docker-compose.yml`. The container already gets `tmpfs: [/tmp]` for scratch space; `/data` stays writable via the bind mount. Test thoroughly before relying on it — some libraries write outside the expected paths.

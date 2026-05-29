@@ -36,8 +36,9 @@ The portal is designed so the apps inside it can be authored by someone who isn'
   - `portal.pdf.render/download()` — server-rendered PDF via WeasyPrint (SSRF-locked; only `data:` URIs)
   - `portal.email.send()` — outgoing mail with per-user rate limit + optional recipient-domain allowlist
   - `portal.storage.{put,get,list,delete}` — per-app, per-user key/value storage
+- A built-in **MCP server** (`/mcp`, admin-token authed, on by default in the image) so Claude connects with a URL + token to **manage apps** (list / upload / replace / enable) and **run the tools an app declares**. Any app's `portal.json` can expose declarative tools — fill an HTML template → PDF → share / email / store, including itemized line-item documents — that appear to Claude as callable tools. See [docs/mcp.md](docs/mcp.md).
 - A **Claude skill** ([`claude-skill/pwa-portal-app/`](claude-skill/pwa-portal-app/)) so a non-developer can ask Claude to build an app and have it scaffolded, packaged, and uploaded automatically.
-- A **reference gallery** at [`examples/`](https://github.com/jacob-scheatzle/claude-pwa-portal/tree/main/examples) — seven drop-in PWAs (mileage log, time tracker, expense logger, customer directory, quote builder, invoice generator) plus a minimal [`hello-receipt`](https://github.com/jacob-scheatzle/claude-pwa-portal/tree/main/examples/hello-receipt) that exercises every SDK service in one file.
+- A **reference gallery** at [`examples/`](https://github.com/jacob-scheatzle/claude-pwa-portal/tree/main/examples) — eight drop-in PWAs (work order, invoice generator, quote builder, time tracker, expense logger, mileage log, customer directory) plus a minimal [`hello-receipt`](https://github.com/jacob-scheatzle/claude-pwa-portal/tree/main/examples/hello-receipt) that exercises every SDK service in one file. Each app also declares **MCP tools** Claude can run; the invoice, quote, and work-order apps render itemized line-item PDFs.
 - **Pre-built container images on GHCR** + a GitHub Actions workflow that builds and publishes on every push to `main`. Deployers don't need to clone the repo.
 - **Drop in configs for Fail2Ban** It is HIGHLY suggested to use Fail2Ban or something similar to block unwanted connections if using on a VPS or standalone machine. If deploying in a cloud environment it is suggested to use the appropriate security groups, network firewalls, etc. 
 ## Quick start
@@ -74,6 +75,8 @@ See [docs/deploying.md](docs/deploying.md) for the full guide: wildcard DNS setu
 ## Building apps for it
 
 Two paths.
+
+> If your portal runs the MCP server (the default in the Docker image), Claude can also connect to it directly — `claude mcp add --transport http portal <url>/mcp --header "Authorization: Bearer <admin-token>"` — and then manage apps and run their tools as tool calls, no `configure.py` needed. The server even ships an `authoring_guide` tool so an MCP-connected Claude can build apps without the local skill. See [docs/mcp.md](docs/mcp.md).
 
 ### With Claude
 
@@ -125,6 +128,8 @@ portal/                  FastAPI portal app
   apps.py                  Child-app upload, validation, extraction, serving (portal +
                              subdomain paths)
   admin.py                 /admin/{settings,tokens,users}
+  mcp_server.py            /mcp MCP server — app management + each app's declared tools (optional)
+  app_tools.py             Executor for app-declared tools (template → PDF → share/email/store)
   middleware.py            HostDispatchMiddleware — sets request.state.app_slug from Host
   models.py                SQLModel tables: User, Setting, App, ApiToken, UserSession,
                              AppLaunchToken, AppSession
@@ -145,8 +150,8 @@ claude-skill/
   pwa-portal-app/          Drop-in Claude skill — SKILL.md + scaffolding + scripts
 examples/
   hello-receipt/           Reference child app exercising every SDK service
-docs/                    Deployment, app authoring, API reference, project-state,
-                           per-app-origin-design
+docs/                    Deployment, app authoring, API reference, MCP server,
+                           fail2ban, project-state, per-app-origin-design
 .github/workflows/       CI: build + push images to GHCR on push to main / v* tags
 docker-compose.yml       Production compose (pulls from GHCR; no source needed)
 docker-compose.override.yml  Dev override — auto-merges to build locally
@@ -164,6 +169,7 @@ CLAUDE.md                Codebase context loaded by Claude Code sessions
 - **Single-tenant per deployment.** One business per portal instance. Multi-tenant SaaS is explicitly not a goal — every small business self-hosts.
 - **Per-app origin isolation.** Each child app runs at `<slug>.apps.<SITE_URL>` (its own browser origin), embedded in an iframe rendered at `/apps/<slug>/` on the portal origin. Browser same-origin policy is the actual security boundary between apps. Caddy fetches Let's Encrypt certs on demand per subdomain (HTTP-01); a single wildcard DNS A record is all the operator needs. Legacy same-origin mode (`CHILD_APPS_SAME_ORIGIN=true`) remains for self-hosters who can't configure wildcard DNS — with a warning banner in the admin UI.
 - **Server-side Python services.** PDF (WeasyPrint), email (SMTP), and per-user storage are server endpoints; child apps are HTML/CSS/JS that call them through the SDK. Keeps a small VPS happy and lets non-coders ship working tools.
+- **MCP as a transport, not a new privilege.** The built-in MCP server lets Claude manage apps and run each app's declared tools over the same admin-token API that already exists. App tools are *declarative* (template → PDF → deliver) and run by composing the portal's own services — uploaded code never executes server-side, so the per-app-origin trust model is untouched. On by default in the image; `MCP_ENABLED=false` removes the endpoint.
 - **Env as the source of truth for routing.** `SITE_URL` and `SECRET_KEY` come from `.env`; Caddy reads the same value at boot, the portal won't start with a placeholder secret if `SITE_URL` isn't `localhost`. SMTP credentials are admin-editable from the UI (Fernet-encrypted at rest in SQLite).
 - **Stdlib-only Claude skill tooling.** `package.py` and `upload.py` use only the Python standard library (`urllib`, `zipfile`), so they work anywhere Python 3.11+ runs.
 - **No frontend build step in the portal.** Server-rendered Jinja templates with light POST forms — no React, no Vue, no bundler. Easier for non-coders to read, fork, and patch.
@@ -185,7 +191,3 @@ The practical effect: hobbyist forks and internal-business use are unaffected; a
 ## Contributing
 
 This is an early project. Issues and PRs welcome. By contributing, you agree your contributions are licensed under the same AGPL-3.0 terms. Skim the architectural notes above before proposing significant structural changes.
-
-## Contributing
-
-This is an early project. Issues and PRs welcome. Skim the architectural notes above before proposing significant structural changes.

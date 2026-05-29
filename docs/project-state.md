@@ -25,7 +25,10 @@ project up on a different machine or after a break.
   enable) and (2) runs each app's declared `tools` — a `portal.json` DSL
   (params → HTML template → PDF → share / email / store / download) surfaced
   dynamically as `<slug>__<tool>`. Bundled in the Docker image and auto-on
-  (`MCP_ENABLED` forces/disables); admin-token authed. Adds the `App.tools`
+  (`MCP_ENABLED` forces/disables); admin-token authed, with auth failures wired
+  into the fail2ban jail. Tool params include **array line items** (itemized
+  invoices / quotes / work orders), and an `authoring_guide` tool lets an
+  MCP-connected Claude build apps without the local skill. Adds the `App.tools`
   column (migration `665c77fdc151`) and `portal/{mcp_server,app_tools}.py`. See
   [mcp.md](mcp.md).
 
@@ -52,7 +55,8 @@ Components:
 | Claude skill | `claude-skill/pwa-portal-app/` — SKILL.md + scaffolding template + stdlib-only `configure.py` / `package.py` / `upload.py` |
 | Reference app | `examples/hello-receipt/` — exercises every SDK service |
 | Migrations | Alembic with on-startup `upgrade head`; existing pre-Alembic DBs auto-stamped |
-| Docs | Deploying, app-authoring, API reference, this file, the per-app-origin design |
+| Docs | Deploying, app-authoring, API reference, MCP server, fail2ban, this file, the per-app-origin design |
+| MCP server | Optional `/mcp` (FastMCP/low-level Server) — app management + each app's declared tools; `authoring_guide`; admin-bearer auth |
 
 Smoke-tested live: end-to-end PDF generation through Caddy via HTTPS,
 session login + logout + revocation, in-place app replace preserving
@@ -118,15 +122,19 @@ rotate across the login boundary.
 
 ## What's still genuinely open
 
-1. **First real-VPS deploy.** Everything works locally under
-   `docker compose`, but the image build + Caddy auto-TLS against a real
-   domain hasn't been exercised. Most likely friction surfaces: Pango /
-   Caddy / Caddyfile interactions you can't see without HTTPS + a real
-   DNS name, and the per-app-subdomain wildcard DNS path.
-2. **First schema-change ship.** Now that Alembic is in, the next
-   time you add a column to a model, the workflow is
-   `alembic revision --autogenerate -m "..."` then commit + deploy.
-   `portal/db.py:init_db()` runs `upgrade head` on container boot.
+1. **Real-VPS deploy edges.** The image build, Caddy auto-TLS, sslip.io's
+   shared Let's Encrypt quota, and cloud-provider wildcard-DNS limits are now
+   documented from real deploys in [deploying.md](deploying.md). Per-app
+   subdomain wildcard DNS remains the most common bring-up snag.
+2. **Schema-change workflow — exercised.** Shipped for real with the
+   `App.tools` column (migration `665c77fdc151`): edit a model →
+   `alembic revision --autogenerate` → inspect → commit; `portal/db.py:init_db()`
+   runs `upgrade head` on container boot.
+3. **MCP app-tools in the wild.** The MCP server, the declarative tool DSL
+   (incl. array line items), and the `authoring_guide` tool are verified
+   locally and over the streamable-HTTP transport — real usage across Claude
+   Code / Desktop / claude.ai connectors is new and may need tool-description
+   tuning.
 
 ---
 
@@ -193,7 +201,8 @@ python3 ~/.claude/skills/pwa-portal-app/scripts/configure.py  # interactive; sav
 | [deploying.md](deploying.md) | Production deploy on a real VPS, SMTP setup, hardening checklist |
 | [app-authoring.md](app-authoring.md) | Manually writing a child app (no Claude) — schema, SDK, packaging |
 | [api-reference.md](api-reference.md) | HTTP API + SDK reference for child apps |
-| [mcp.md](mcp.md) | Opt-in `/mcp` MCP server — connect Claude to manage apps as tool calls |
+| [mcp.md](mcp.md) | The `/mcp` MCP server — connect Claude to manage apps + run their declared tools (incl. line items); the authoring guide |
+| [fail2ban.md](fail2ban.md) | Ban brute-force logins + bearer/MCP auth-failure floods at the host firewall |
 | [per-app-origin-design.md](per-app-origin-design.md) | Spec + rollout history for the per-app subdomain model — read before touching launch / exchange / Host dispatch |
 | [../claude-skill/pwa-portal-app/SKILL.md](../claude-skill/pwa-portal-app/SKILL.md) | What Claude knows when invoking the skill |
 

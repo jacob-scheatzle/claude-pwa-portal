@@ -6,8 +6,9 @@ URL + an admin API token and manages your child apps **as tool calls** — list,
 inspect, upload, replace, enable/disable — instead of the skill's
 `upload.py` + `~/.config/pwa-portal/config.json` plumbing.
 
-It's **opt-in** and **off by default**: it's a write-capable, admin-authed
-surface, and it needs an optional dependency. Turn it on deliberately.
+It's **on by default in the Docker image** (the dependency is bundled and the
+toggle auto-enables) but inert without a valid admin token. It's a
+write-capable, admin-authed surface — set `MCP_ENABLED=false` if you don't use it.
 
 > The server does two things: **manage** apps (list / upload / replace / enable)
 > and **run** the tools an app declares in its manifest (see
@@ -74,6 +75,7 @@ Ask Claude to call **`whoami`**. It should return your admin user
 | Tool | What it does |
 |---|---|
 | `whoami` | Returns `{id, email, role}` — confirms the connection and that the token is an admin. |
+| `authoring_guide` | Returns a self-contained app-authoring spec (manifest + tool DSL + line items + a worked example). Call it before building or changing an app — especially without the local skill. |
 | `list_apps` | All installed apps in dashboard order: slug, name, version, enabled, declared + admin-approved services. |
 | `get_app(slug)` | Full detail for one app: version, enabled, declared vs approved services, requested vs allowed network origins, `csp_strict`, entry, icon, upload time. |
 | `upload_app(filename, zip_base64, replace=false)` | Install a packaged app `.zip` (base64-encoded). `replace=false` installs new (fails if the slug exists); `replace=true` updates in place, **preserving per-user storage**. Slug/name/version come from the bundle's `portal.json`. |
