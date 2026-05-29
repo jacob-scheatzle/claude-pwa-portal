@@ -362,7 +362,7 @@ it. Uploaded app code never runs server-side.
 - `params[]`: `{name, type (string|number|boolean), required, description}` — the tool's inputs.
 - `render.html`: inline template; `{{ param }}` values are autoescaped and rendered to PDF (no external fetches — embed images/fonts as `data:` URIs). `branded: true` prepends the portal header.
 - `deliver.kind`: `share` (→ `{url}`), `download` (→ base64 PDF), `store` (→ saves at `key`), or `email` (→ sends the HTML to `to` with `subject`). `to` / `subject` / `key` may use `{{ param }}`.
-- A tool may only use services you also list in `services` (`pdf` always; `email` / `storage` for those deliver kinds) — the upload is rejected otherwise, and an admin can revoke the capability per-app.
+- A tool may only use services you also list in `services` — `share`/`download` need `pdf`, `store` needs `pdf` + `storage`, `email` needs `email` — the upload is rejected otherwise, and an admin can revoke the capability per-app.
 
 **Authoring rules**: keep templates self-contained (inline CSS); template
 storage keys from IDs, not free-text names (spaces/punctuation are rejected as

@@ -191,9 +191,10 @@ that declares them is uploaded/enabled and disappear when it's disabled, named
   runs it by composing its own primitives. The per-app-origin isolation is
   untouched.
 - A tool may only use portal services the manifest also **declares** in
-  `services` (`pdf` for any tool; `email`/`storage` for those deliver kinds), so
-  an admin can revoke the capability per-app under `/admin/apps` — and the
-  manifest is rejected at upload if a tool uses an undeclared service.
+  `services` — `share`/`download` need `pdf`, `store` needs `pdf` + `storage`,
+  and `email` needs `email` — so an admin can revoke the capability per-app
+  under `/admin/apps`, and the manifest is rejected at upload if a tool uses an
+  undeclared service.
 - Tool calls run as the **connected admin user**, in that user's per-app storage
   namespace, send email as the business, and count against the same per-user
   PDF/email rate limits as the SDK.

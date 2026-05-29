@@ -1,10 +1,41 @@
 {
 	"slug": "hello-receipt",
 	"name": "Hello Receipt",
-	"version": "0.1.0",
-	"description": "Reference child app: form → PDF + email + saved history. Demonstrates every portal SDK service.",
+	"version": "0.2.0",
+	"description": "Reference child app: form → PDF + email + saved history, plus MCP tools. Demonstrates every portal SDK service.",
 	"icon": "icon.png",
 	"entry": "index.html",
 	"services": ["pdf", "email", "storage"],
+	"tools": [
+		{
+			"name": "create_receipt",
+			"description": "Render a receipt PDF and return a shareable link.",
+			"params": [
+				{"name": "customer", "type": "string", "required": true},
+				{"name": "amount", "type": "number", "required": true, "description": "Total in USD"},
+				{"name": "items", "type": "string", "required": false, "description": "Itemization, one per line"}
+			],
+			"render": {
+				"html": "<style>body{font-family:system-ui,-apple-system,sans-serif;color:#1c1917}h1{font-size:20pt;margin:0 0 8pt}.who{color:#57534e}.items{white-space:pre-wrap;margin:12pt 0;color:#44403c}.tot{font-size:16pt;font-weight:700;border-top:2px solid #1c1917;padding-top:8pt}</style><h1>Receipt</h1><div class='who'>For {{ customer }}</div><div class='items'>{{ items }}</div><div class='tot'>Total: ${{ '%.2f'|format(amount) }}</div>",
+				"filename": "receipt.pdf",
+				"branded": true
+			},
+			"deliver": {"kind": "share", "ttl_days": 30}
+		},
+		{
+			"name": "email_receipt",
+			"description": "Email a receipt summary to the customer.",
+			"params": [
+				{"name": "to", "type": "string", "required": true, "description": "Customer email"},
+				{"name": "customer", "type": "string", "required": true},
+				{"name": "amount", "type": "number", "required": true, "description": "Total in USD"}
+			],
+			"render": {
+				"html": "<div style='font-family:system-ui,-apple-system,sans-serif;color:#1c1917;font-size:14px;line-height:1.6'><p>Hi {{ customer }},</p><p>Thanks for your business — your total is <strong>${{ '%.2f'|format(amount) }}</strong>.</p></div>",
+				"branded": true
+			},
+			"deliver": {"kind": "email", "to": "{{ to }}", "subject": "Your receipt"}
+		}
+	],
 	"min_portal_version": "0.1.0"
 }

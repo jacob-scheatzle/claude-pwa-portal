@@ -1,7 +1,7 @@
 {
   "slug": "quote-builder",
   "name": "Quote Builder",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Build itemized quotes, generate a PDF, and share a link the customer can open.",
   "icon": "icon.png",
   "entry": "index.html",
@@ -9,5 +9,22 @@
   "permissions": {
     "network": []
   },
+  "tools": [
+    {
+      "name": "create_quote",
+      "description": "Render a quote PDF and return a shareable link.",
+      "params": [
+        {"name": "customer", "type": "string", "required": true},
+        {"name": "amount", "type": "number", "required": true, "description": "Quote total in USD"},
+        {"name": "summary", "type": "string", "required": false, "description": "What the quote covers"}
+      ],
+      "render": {
+        "html": "<style>body{font-family:system-ui,-apple-system,sans-serif;color:#1c1917}h1{font-size:20pt;margin:0 0 4pt}.sub{color:#57534e;margin-bottom:16pt}.summary{white-space:pre-wrap;color:#44403c}.tot{font-size:16pt;font-weight:700;margin-top:16pt;border-top:2px solid #1c1917;padding-top:8pt}</style><h1>Quote</h1><div class='sub'>Prepared for {{ customer }}</div><div class='summary'>{{ summary }}</div><div class='tot'>Total: ${{ '%.2f'|format(amount) }}</div>",
+        "filename": "quote.pdf",
+        "branded": true
+      },
+      "deliver": {"kind": "share", "ttl_days": 30}
+    }
+  ],
   "min_portal_version": "0.1.0"
 }

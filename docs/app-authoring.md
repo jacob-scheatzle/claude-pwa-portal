@@ -108,8 +108,8 @@ server-side.
 `deliver.kind` is `share` | `download` | `store` (needs a templated `key`) |
 `email` (needs `to`, optional `subject`); `{{ param }}` placeholders work in the
 template and in those fields. A tool may only use services the manifest also
-declares in `services` (`pdf` for any tool; `email` / `storage` for those
-deliver kinds). Full reference: [mcp.md](mcp.md).
+declares in `services` — `share`/`download` need `pdf`, `store` needs `pdf` +
+`storage`, `email` needs `email`. Full reference: [mcp.md](mcp.md).
 
 ## Using the SDK
 

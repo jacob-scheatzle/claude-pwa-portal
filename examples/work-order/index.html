@@ -1,0 +1,377 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Work Order</title>
+<script src="/portal-sdk.js"></script>
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #fafaf9; --surface: #ffffff; --surface-2: #f5f5f4;
+  --border: #e7e5e4; --border-strong: #d6d3d1;
+  --text: #1c1917; --text-muted: #57534e; --text-faint: #78716c;
+  --accent: #059669; --accent-hover: #047857; --accent-fg: #ffffff;
+  --accent-tint: #ecfdf5; --accent-soft: rgba(5,150,105,0.12);
+  --danger: #b91c1c; --success: #15803d;
+  --radius-sm: 0.4rem; --radius: 0.55rem;
+  --shadow-sm: 0 1px 2px rgba(15,23,42,0.05), 0 1px 1px rgba(15,23,42,0.025);
+  --shadow: 0 2px 4px rgba(15,23,42,0.06), 0 1px 2px rgba(15,23,42,0.04);
+  --font-sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0c0a09; --surface: #1c1917; --surface-2: #292524;
+    --border: #292524; --border-strong: #44403c;
+    --text: #fafaf9; --text-muted: #a8a29e;
+    --accent: #10b981; --accent-hover: #34d399; --accent-fg: #0c0a09;
+    --accent-tint: #064e3b; --accent-soft: rgba(16,185,129,0.18);
+    --danger: #f87171; --success: #4ade80;
+  }
+}
+* { box-sizing: border-box; }
+body { font-family: var(--font-sans); background: var(--bg); color: var(--text); margin: 0; line-height: 1.55; -webkit-font-smoothing: antialiased; }
+.shell { max-width: 44rem; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
+h1 { margin: 0 0 0.25rem; font-size: 1.65rem; font-weight: 700; letter-spacing: -0.025em; }
+h2 { margin: 2rem 0 0.75rem; font-size: 1.1rem; font-weight: 600; letter-spacing: -0.01em; }
+.muted { color: var(--text-muted); font-size: 0.9rem; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.25rem; box-shadow: var(--shadow-sm); margin-top: 1rem; }
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.85rem; }
+.full { grid-column: 1 / -1; }
+@media (max-width: 600px) { .grid-2 { grid-template-columns: 1fr; } }
+label { font-weight: 600; font-size: 0.8rem; display: block; margin-bottom: 0.3rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+input, textarea {
+  width: 100%; padding: 0.6rem 0.8rem;
+  border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  background: var(--surface); color: var(--text); font-size: 0.95rem; font-family: inherit;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+input:focus, textarea:focus { outline: 0; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+textarea { min-height: 5rem; resize: vertical; }
+button {
+  display: inline-flex; align-items: center; justify-content: center; gap: 0.4rem;
+  padding: 0.6rem 1.05rem; border: 0; border-radius: var(--radius-sm);
+  background: var(--accent); color: var(--accent-fg);
+  font-weight: 600; font-size: 0.925rem; font-family: inherit; cursor: pointer;
+  box-shadow: var(--shadow-sm); transition: background 0.12s ease, box-shadow 0.12s ease, transform 0.06s ease;
+}
+button:hover { background: var(--accent-hover); box-shadow: var(--shadow); }
+button:active { transform: translateY(1px); box-shadow: none; }
+button.secondary { background: var(--surface); color: var(--accent); border: 1px solid var(--border-strong); box-shadow: none; }
+button.secondary:hover { background: var(--accent-tint); border-color: var(--accent); }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+.actions { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-top: 1rem; }
+.status { font-size: 0.875rem; color: var(--text-muted); min-height: 1.2em; margin-top: 0.75rem; }
+.status.error { color: var(--danger); }
+.status.success { color: var(--success); }
+.totals { display: grid; grid-template-columns: 1fr auto; row-gap: 0.35rem; column-gap: 1.5rem; margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border); font-variant-numeric: tabular-nums; }
+.totals .label { color: var(--text-muted); font-size: 0.9rem; }
+.totals .val { text-align: right; font-weight: 500; }
+.totals .grand-label, .totals .grand-val { font-weight: 700; font-size: 1.1rem; color: var(--text); padding-top: 0.4rem; border-top: 1px solid var(--border); }
+.share-box { margin-top: 1rem; padding: 0.85rem 1rem; background: var(--accent-tint); border: 1px solid var(--accent); border-radius: var(--radius-sm); }
+.share-box.hidden { display: none; }
+.share-url { display: flex; gap: 0.5rem; align-items: center; margin-top: 0.5rem; }
+.share-url input { font-family: var(--font-mono); font-size: 0.85rem; }
+.history-item { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; padding: 0.7rem 0.85rem; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); margin-bottom: 0.5rem; }
+.history-item .who { font-weight: 600; }
+.history-item .meta { color: var(--text-muted); font-size: 0.85rem; }
+.history-item .amt { font-variant-numeric: tabular-nums; font-weight: 600; }
+.history-item a { color: var(--accent); font-size: 0.85rem; text-decoration: none; }
+.history-item a:hover { text-decoration: underline; }
+.empty { color: var(--text-faint); font-style: italic; font-size: 0.9rem; padding: 0.5rem 0; }
+.tip { margin-top: 2rem; padding: 0.85rem 1rem; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); font-size: 0.85rem; color: var(--text-muted); }
+.tip code { font-family: var(--font-mono); font-size: 0.8rem; color: var(--text); }
+</style>
+</head>
+<body>
+<main class="shell">
+  <h1>Work Order</h1>
+  <p class="muted">Log a job, total up labor and materials, and hand the customer a PDF — download it, share a link, or email it.</p>
+
+  <div class="card">
+    <div class="grid-2">
+      <div>
+        <label>Customer name</label>
+        <input id="customer" placeholder="Acme Property Mgmt.">
+      </div>
+      <div>
+        <label>Customer email (optional)</label>
+        <input id="email" type="email" placeholder="contact@acme.com">
+      </div>
+      <div class="full">
+        <label>Job site address (optional)</label>
+        <input id="site" placeholder="123 Main St, Springfield">
+      </div>
+      <div>
+        <label>Work order #</label>
+        <input id="number">
+      </div>
+      <div>
+        <label>Date</label>
+        <input id="date" type="date">
+      </div>
+      <div>
+        <label>Labor hours</label>
+        <input id="hours" type="number" step="0.25" min="0" value="0">
+      </div>
+      <div>
+        <label>Labor rate ($/hr)</label>
+        <input id="rate" type="number" step="0.01" min="0" value="0">
+      </div>
+      <div class="full">
+        <label>Materials ($)</label>
+        <input id="materials" type="number" step="0.01" min="0" value="0">
+      </div>
+    </div>
+
+    <div style="margin-top: 1rem;">
+      <label>Work performed</label>
+      <textarea id="description" placeholder="Replaced kitchen faucet cartridge; tested for leaks..."></textarea>
+    </div>
+
+    <div class="totals">
+      <span class="label">Labor</span><span class="val" id="labor">$0.00</span>
+      <span class="label">Materials</span><span class="val" id="mat">$0.00</span>
+      <span class="grand-label">Total</span><span class="grand-val" id="total">$0.00</span>
+    </div>
+
+    <div class="actions">
+      <button id="download">Download PDF</button>
+      <button class="secondary" id="share">Create share link</button>
+      <button class="secondary" id="emailBtn">Email link to customer</button>
+    </div>
+    <p id="status" class="status"></p>
+
+    <div id="share-box" class="share-box hidden">
+      <div style="font-weight: 600;">Share link created</div>
+      <div class="muted" id="share-meta"></div>
+      <div class="share-url">
+        <input id="share-url" readonly>
+        <button class="secondary" type="button" id="copy">Copy</button>
+      </div>
+    </div>
+  </div>
+
+  <h2>Recent work orders</h2>
+  <div id="history"></div>
+
+  <div class="tip">
+    Connected to the portal over MCP? This app also exposes the tools
+    <code>work-order__create_work_order</code> and
+    <code>work-order__email_work_order</code>, so Claude can draft and send a
+    work order without opening this screen.
+  </div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const fmt = (n) => "$" + (Number(n) || 0).toFixed(2);
+const todayISO = () => new Date().toISOString().slice(0, 10);
+function escapeHTML(s) { return String(s ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+
+function labor() { return (Number($("hours").value) || 0) * (Number($("rate").value) || 0); }
+function materials() { return Number($("materials").value) || 0; }
+function total() { return labor() + materials(); }
+
+function recalc() {
+  $("labor").textContent = fmt(labor());
+  $("mat").textContent = fmt(materials());
+  $("total").textContent = fmt(total());
+}
+["hours", "rate", "materials"].forEach(id => $(id).addEventListener("input", recalc));
+
+function buildHTML() {
+  const cust = $("customer").value || "Customer";
+  const site = $("site").value;
+  const num = $("number").value || "—";
+  const date = $("date").value || todayISO();
+  const desc = $("description").value;
+  return `
+  <html><head><meta charset="utf-8"><style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif; color: #1c1917; font-size: 11pt; }
+    h1 { font-size: 22pt; margin: 0 0 0.4rem; letter-spacing: -0.02em; }
+    .meta { color: #57534e; font-size: 10pt; margin-bottom: 1.25rem; }
+    .bill .lbl { color: #78716c; font-size: 9pt; text-transform: uppercase; letter-spacing: 0.06em; }
+    .bill .v { font-size: 11pt; font-weight: 600; }
+    .desc { margin: 1.25rem 0; padding: 0.85rem 1rem; background: #f5f5f4; border-radius: 6px; white-space: pre-wrap; color: #44403c; }
+    table { width: 100%; border-collapse: collapse; margin-top: 0.5rem; }
+    td { padding: 0.5rem; border-bottom: 1px solid #e7e5e4; }
+    td:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+    .totals { margin-top: 1rem; margin-left: auto; width: 18rem; }
+    .totals tr td { border: 0; padding: 0.2rem 0.5rem; }
+    .totals tr:last-child td { font-weight: 700; font-size: 13pt; border-top: 2px solid #1c1917; padding-top: 0.5rem; }
+  </style></head><body>
+    <h1>Work Order ${escapeHTML(num)}</h1>
+    <div class="meta">${escapeHTML(date)}</div>
+    <div class="bill">
+      <div class="lbl">For</div>
+      <div class="v">${escapeHTML(cust)}</div>
+      ${site ? `<div style="color:#57534e">${escapeHTML(site)}</div>` : ""}
+    </div>
+    ${desc ? `<div class="desc">${escapeHTML(desc)}</div>` : ""}
+    <table>
+      <tr><td>Labor (${(Number($("hours").value)||0).toFixed(2)} hr &times; ${fmt(Number($("rate").value)||0)})</td><td>${fmt(labor())}</td></tr>
+      <tr><td>Materials</td><td>${fmt(materials())}</td></tr>
+    </table>
+    <table class="totals">
+      <tr><td>Total</td><td>${fmt(total())}</td></tr>
+    </table>
+  </body></html>`;
+}
+
+function setStatus(msg, kind = "") {
+  const el = $("status");
+  el.textContent = msg;
+  el.className = "status" + (kind ? " " + kind : "");
+}
+
+function snapshot(shareUrl = null) {
+  return {
+    number: $("number").value,
+    date: $("date").value,
+    customer: $("customer").value,
+    email: $("email").value,
+    total: total(),
+    share_url: shareUrl,
+    saved_at: new Date().toISOString(),
+  };
+}
+
+async function saveHistory(record) {
+  try {
+    const key = `orders/${(record.number || record.saved_at).replace(/[^A-Za-z0-9._-]+/g, "-")}.json`;
+    await portal.storage.put(key, record);
+  } catch {}
+}
+
+function validate({ requireEmail = false } = {}) {
+  if (!$("customer").value.trim()) { setStatus("Add a customer name.", "error"); return false; }
+  if (!$("description").value.trim()) { setStatus("Describe the work performed.", "error"); return false; }
+  if (total() <= 0) { setStatus("Add labor hours/rate or materials.", "error"); return false; }
+  if (requireEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test($("email").value.trim())) {
+    setStatus("Enter a valid customer email.", "error"); return false;
+  }
+  return true;
+}
+
+$("download").addEventListener("click", async () => {
+  if (!validate()) return;
+  setStatus("Generating PDF…");
+  try {
+    const num = $("number").value || "work-order";
+    await portal.pdf.download({ html: buildHTML(), filename: `work-order-${num}.pdf`, branded: true });
+    await saveHistory(snapshot());
+    setStatus("Downloaded.", "success");
+    loadHistory();
+  } catch (e) { setStatus("PDF failed: " + e.message, "error"); }
+});
+
+let lastShare = null;
+async function createShare() {
+  const num = $("number").value || "work-order";
+  const share = await portal.share.create({
+    kind: "pdf",
+    html: buildHTML(),
+    filename: `work-order-${num}.pdf`,
+    ttlSeconds: 30 * 24 * 3600,
+  });
+  lastShare = share;
+  $("share-url").value = share.url;
+  $("share-meta").textContent = `Expires ${new Date(share.expires_at).toLocaleString()}.`;
+  $("share-box").classList.remove("hidden");
+  return share;
+}
+
+$("share").addEventListener("click", async () => {
+  if (!validate()) return;
+  setStatus("Creating share link…");
+  try {
+    const share = await createShare();
+    await saveHistory(snapshot(share.url));
+    setStatus("Link ready.", "success");
+    loadHistory();
+  } catch (e) {
+    if (/service|not enabled|403/i.test(e.message || "")) {
+      setStatus("Share service not enabled on this portal. Use Download PDF or Email instead.", "error");
+    } else {
+      setStatus("Share failed: " + e.message, "error");
+    }
+  }
+});
+
+$("copy").addEventListener("click", async () => {
+  const input = $("share-url");
+  input.select();
+  try { await navigator.clipboard.writeText(input.value); setStatus("Copied to clipboard.", "success"); }
+  catch { document.execCommand("copy"); setStatus("Copied.", "success"); }
+});
+
+$("emailBtn").addEventListener("click", async () => {
+  if (!validate({ requireEmail: true })) return;
+  setStatus("Preparing email…");
+  try {
+    let share = lastShare;
+    if (!share) { try { share = await createShare(); } catch { share = null; } }
+    const cust = $("customer").value;
+    const num = $("number").value || "";
+    let bodyHtml, bodyText;
+    if (share) {
+      bodyHtml = `<p>Hi ${escapeHTML(cust)},</p><p>Your work order is ready. View and download it here:</p><p><a href="${escapeHTML(share.url)}">${escapeHTML(share.url)}</a></p><p>Thank you for your business.</p>`;
+      bodyText = `Hi ${cust},\n\nYour work order is ready: ${share.url}\n\nThank you for your business.`;
+    } else {
+      bodyHtml = buildHTML();
+      bodyText = `Hi ${cust},\n\nYour work order ${num} is ready. Total: ${fmt(total())}.\n\nThanks!`;
+    }
+    await portal.email.send({
+      to: $("email").value,
+      subject: `Work Order ${num}`.trim(),
+      html: bodyHtml,
+      text: bodyText,
+    });
+    await saveHistory(snapshot(share ? share.url : null));
+    setStatus("Emailed.", "success");
+    loadHistory();
+  } catch (e) { setStatus("Email failed: " + e.message, "error"); }
+});
+
+async function loadHistory() {
+  const el = $("history");
+  el.innerHTML = "";
+  try {
+    const list = await portal.storage.list();
+    const items = (list.items || []).filter(i => i.key.startsWith("orders/"));
+    if (!items.length) { el.innerHTML = `<div class="empty">No work orders saved yet.</div>`; return; }
+    const records = await Promise.all(items.map(async (i) => {
+      try { return await portal.storage.get(i.key); } catch { return null; }
+    }));
+    records
+      .filter(Boolean)
+      .sort((a, b) => (b.saved_at || "").localeCompare(a.saved_at || ""))
+      .slice(0, 20)
+      .forEach(r => {
+        const div = document.createElement("div");
+        div.className = "history-item";
+        const linkPart = r.share_url ? `<a href="${escapeHTML(r.share_url)}" target="_blank" rel="noopener">view</a>` : "";
+        div.innerHTML = `
+          <div>
+            <div class="who">${escapeHTML(r.customer || "(no name)")} <span class="muted">— ${escapeHTML(r.number || "")}</span></div>
+            <div class="meta">${escapeHTML(r.date || (r.saved_at||"").slice(0,10))} ${linkPart}</div>
+          </div>
+          <div class="amt">${fmt(r.total)}</div>
+        `;
+        el.appendChild(div);
+      });
+  } catch (e) {
+    el.innerHTML = `<div class="empty">Couldn't load history: ${escapeHTML(e.message)}</div>`;
+  }
+}
+
+// Init
+$("number").value = `WO-${new Date().getFullYear()}-${Date.now().toString().slice(-5)}`;
+$("date").value = todayISO();
+recalc();
+loadHistory();
+</script>
+</body>
+</html>

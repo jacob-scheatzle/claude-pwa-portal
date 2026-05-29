@@ -1,7 +1,7 @@
 {
   "slug": "mileage-log",
   "name": "Mileage Log",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Log business trips with miles and purpose, and export an IRS-ready deduction report.",
   "icon": "icon.png",
   "entry": "index.html",
@@ -9,5 +9,22 @@
   "permissions": {
     "network": []
   },
+  "tools": [
+    {
+      "name": "mileage_report",
+      "description": "Render a mileage deduction report and return a shareable link.",
+      "params": [
+        {"name": "period", "type": "string", "required": true, "description": "e.g. Q2 2026"},
+        {"name": "total_miles", "type": "number", "required": true},
+        {"name": "rate", "type": "number", "required": true, "description": "Per-mile rate in USD, e.g. 0.67"},
+        {"name": "notes", "type": "string", "required": false}
+      ],
+      "render": {
+        "html": "<style>body{font-family:system-ui,-apple-system,sans-serif;color:#1c1917}h1{font-size:20pt;margin:0 0 4pt}.sub{color:#57534e;margin-bottom:16pt}table{border-collapse:collapse;margin-top:8pt}td{padding:4pt 16pt 4pt 0}.tot{font-size:15pt;font-weight:700;margin-top:16pt;border-top:2px solid #1c1917;padding-top:8pt}.notes{white-space:pre-wrap;color:#44403c;margin-top:12pt}</style><h1>Mileage Log</h1><div class='sub'>{{ period }}</div><table><tr><td>Total miles</td><td>{{ '%.1f'|format(total_miles) }}</td></tr><tr><td>Rate</td><td>${{ '%.3f'|format(rate) }}/mi</td></tr></table><div class='tot'>Deduction: ${{ '%.2f'|format(total_miles * rate) }}</div><div class='notes'>{{ notes }}</div>",
+        "filename": "mileage-report.pdf"
+      },
+      "deliver": {"kind": "share", "ttl_days": 30}
+    }
+  ],
   "min_portal_version": "0.1.0"
 }

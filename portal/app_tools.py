@@ -195,11 +195,12 @@ def run_tool(
         # enabled for this app (the manifest already cross-checked that every
         # service is declared). ``allowed_services`` is the approved subset.
         allowed = set(app_row.allowed_services or [])
-        needed = {"pdf"}
         if kind == "email":
-            needed.add("email")
+            needed = {"email"}  # renders HTML → email body; no PDF produced
         elif kind == "store":
-            needed.add("storage")
+            needed = {"pdf", "storage"}  # render PDF, then save it
+        else:
+            needed = {"pdf"}  # share, download
         missing = needed - allowed
         if missing:
             raise AppToolError(

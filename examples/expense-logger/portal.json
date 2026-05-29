@@ -1,7 +1,7 @@
 {
   "slug": "expense-logger",
   "name": "Expense Logger",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Log business expenses by category and export a clean PDF report for any month.",
   "icon": "icon.png",
   "entry": "index.html",
@@ -9,5 +9,21 @@
   "permissions": {
     "network": []
   },
+  "tools": [
+    {
+      "name": "expense_report",
+      "description": "Render an expense report PDF for a period and return a shareable link.",
+      "params": [
+        {"name": "period", "type": "string", "required": true, "description": "Reporting period, e.g. May 2026"},
+        {"name": "total", "type": "number", "required": true, "description": "Total expenses in USD"},
+        {"name": "items", "type": "string", "required": false, "description": "Line items, one per line"}
+      ],
+      "render": {
+        "html": "<style>body{font-family:system-ui,-apple-system,sans-serif;color:#1c1917}h1{font-size:20pt;margin:0 0 4pt}.sub{color:#57534e;margin-bottom:16pt}.items{white-space:pre-wrap;color:#44403c}.tot{font-size:15pt;font-weight:700;margin-top:16pt;border-top:2px solid #1c1917;padding-top:8pt}</style><h1>Expense Report</h1><div class='sub'>{{ period }}</div><div class='items'>{{ items }}</div><div class='tot'>Total: ${{ '%.2f'|format(total) }}</div>",
+        "filename": "expense-report.pdf"
+      },
+      "deliver": {"kind": "share", "ttl_days": 30}
+    }
+  ],
   "min_portal_version": "0.1.0"
 }

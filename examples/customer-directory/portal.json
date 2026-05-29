@@ -1,7 +1,7 @@
 {
 	"slug": "customer-directory",
 	"name": "Customer Directory",
-	"version": "1.0.0",
+	"version": "1.1.0",
 	"description": "Lightweight CRM: track customers, tag them, and send quick emails.",
 	"icon": "icon.png",
 	"entry": "index.html",
@@ -9,5 +9,22 @@
 	"permissions": {
 		"network": []
 	},
+	"tools": [
+		{
+			"name": "email_customer",
+			"description": "Send a quick branded email to a customer.",
+			"params": [
+				{"name": "to", "type": "string", "required": true, "description": "Customer email address"},
+				{"name": "customer_name", "type": "string", "required": true, "description": "Customer name, used in the greeting"},
+				{"name": "subject", "type": "string", "required": true, "description": "Email subject line"},
+				{"name": "message", "type": "string", "required": true, "description": "Message body; line breaks are preserved"}
+			],
+			"render": {
+				"html": "<div style='font-family:system-ui,-apple-system,sans-serif;color:#1c1917;font-size:14px;line-height:1.6'><p>Hi {{ customer_name }},</p><div style='white-space:pre-wrap'>{{ message }}</div></div>",
+				"branded": true
+			},
+			"deliver": {"kind": "email", "to": "{{ to }}", "subject": "{{ subject }}"}
+		}
+	],
 	"min_portal_version": "0.1.0"
 }
