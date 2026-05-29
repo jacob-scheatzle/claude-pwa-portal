@@ -715,7 +715,13 @@ def _ns_dir(app_slug: str, user_id: int) -> Path:
 
 
 def _ns_usage(ns: Path) -> int:
-    return sum(p.stat().st_size for p in ns.rglob("*") if p.is_file())
+    # Skip symlinks: nothing in the portal ever creates one under a namespace
+    # (keys are validated, writes are plain files), so a symlink here would be
+    # an out-of-band plant — don't follow it into another tree or let it skew
+    # quota accounting.
+    return sum(
+        p.stat().st_size for p in ns.rglob("*") if p.is_file() and not p.is_symlink()
+    )
 
 
 # Concurrent writers into one (app_slug, user_id) namespace must serialize, or
@@ -779,7 +785,13 @@ def namespace_lock(app_slug: str, user_id: int):
 @asynccontextmanager
 async def namespace_lock_async(app_slug: str, user_id: int):
     """Async variant for the storage PUT handler. Acquires in a worker thread so
-    the blocking flock wait can't stall the event loop; release is instant."""
+    the blocking flock wait can't stall the event loop; release is instant.
+
+    anyio's default abandon_on_cancel=False is load-bearing here: if the client
+    disconnects while we're blocked in flock(), the await stays shielded until
+    the lock is granted, so the try/finally still runs and the fd/lock can't
+    leak. Do not make this acquisition cancellable.
+    """
     handle = await anyio.to_thread.run_sync(_acquire_ns_lock, app_slug, user_id)
     try:
         yield
@@ -798,7 +810,7 @@ def storage_list(
     items = []
     usage = 0
     for p in ns.rglob("*"):
-        if p.is_file():
+        if p.is_file() and not p.is_symlink():
             size = p.stat().st_size
             items.append({"key": p.relative_to(ns).as_posix(), "size": size})
             usage += size
@@ -859,30 +871,35 @@ async def storage_put(
         raise HTTPException(400, "invalid key")
 
     target.parent.mkdir(parents=True, exist_ok=True)
-    written = 0
-    async with namespace_lock_async(app_row.slug, me.id):
-        try:
-            with open(target, "wb") as f:
-                async for chunk in request.stream():
-                    written += len(chunk)
-                    if written > MAX_OBJECT_BYTES:
-                        raise HTTPException(
-                            413,
-                            f"object exceeds {MAX_OBJECT_BYTES // (1024 * 1024)}MB limit",
-                        )
-                    f.write(chunk)
-        except Exception:
-            # Disk error, oversized body, network drop — any path that leaves
-            # a partial file behind should clean up before re-raising.
-            target.unlink(missing_ok=True)
-            raise
 
-        if _ns_usage(ns) > MAX_NAMESPACE_BYTES:
-            target.unlink(missing_ok=True)
+    # Read the body into memory (bounded by the per-object cap) BEFORE taking the
+    # namespace lock, so a slow client can't hold the cross-process lock for the
+    # whole upload and stall other writes into the same namespace.
+    body = bytearray()
+    async for chunk in request.stream():
+        body += chunk
+        if len(body) > MAX_OBJECT_BYTES:
+            raise HTTPException(
+                413, f"object exceeds {MAX_OBJECT_BYTES // (1024 * 1024)}MB limit"
+            )
+    written = len(body)
+
+    # Critical section: only the quota check + write. Account for the object this
+    # key may replace (so a re-PUT isn't double-counted) and check BEFORE writing,
+    # so an over-cap PUT leaves any existing value at this key intact instead of
+    # truncating it and then failing.
+    async with namespace_lock_async(app_row.slug, me.id):
+        existing = target.stat().st_size if target.is_file() else 0
+        if _ns_usage(ns) - existing + written > MAX_NAMESPACE_BYTES:
             raise HTTPException(
                 507,
                 f"storage namespace exceeds {MAX_NAMESPACE_BYTES // (1024 * 1024)}MB limit",
             )
+        try:
+            target.write_bytes(body)
+        except Exception:
+            target.unlink(missing_ok=True)
+            raise
 
     return {
         "key": key,

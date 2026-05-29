@@ -331,16 +331,18 @@ def run_tool(
                 except ValueError:
                     raise AppToolError("invalid storage key")
                 # Cross-process lock over the namespace (shared with the SDK's
-                # storage PUT) so two concurrent near-cap writes can't both pass
-                # the usage check and then both self-delete.
+                # storage PUT) so two concurrent near-cap writes can't race the
+                # quota check. Check BEFORE writing — accounting for the object
+                # this key may replace — so an over-cap store leaves any prior
+                # value at the key intact instead of truncating then failing.
                 with namespace_lock(app_row.slug, user.id):
                     target.parent.mkdir(parents=True, exist_ok=True)
-                    target.write_bytes(pdf)
-                    if _ns_usage(ns) > MAX_NAMESPACE_BYTES:
-                        target.unlink(missing_ok=True)
+                    existing = target.stat().st_size if target.is_file() else 0
+                    if _ns_usage(ns) - existing + len(pdf) > MAX_NAMESPACE_BYTES:
                         raise AppToolError(
                             f"storage namespace exceeds {MAX_NAMESPACE_BYTES // (1024 * 1024)}MB limit"
                         )
+                    target.write_bytes(pdf)
                 return {"delivered": "store", "key": safe_key, "size": len(pdf)}
 
             if kind == "email":
