@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Export data — Portal admin{% endblock %}
+{% block content %}
+<h1>Export your data</h1>
+<p class="muted">A portable <code>.zip</code> of your business's own data — open
+<code>data.json</code> in any tool, or move it to another system. No secrets, no
+lock-in.</p>
+
+<section>
+	<h2 class="section-label">What's included</h2>
+	<ul style="line-height:1.8;">
+		<li><strong><code>data.json</code></strong> — your apps (with their tool &amp; form definitions), users (email and role only), every public-form submission, your scheduled runs, and the audit log.</li>
+		<li><strong><code>storage/</code></strong> — every app's per-user stored files, laid out as <code>storage/&lt;app&gt;/&lt;user-id&gt;/&lt;key&gt;</code>.</li>
+	</ul>
+
+	<h2 class="section-label">What's <em>not</em> included</h2>
+	<ul style="line-height:1.8;">
+		<li>Password hashes, API token hashes, SMTP credentials, and <code>SECRET_KEY</code> — this file is safe to share and store in ordinary places.</li>
+	</ul>
+
+	<div class="warn-banner" style="margin-top:1.25rem;">
+		Need a <strong>full restore</strong> instead (database + secrets)? Use the
+		<a href="/admin/backup">Backup</a> page — that snapshot is for disaster
+		recovery and <em>does</em> contain encrypted secrets.
+	</div>
+</section>
+
+<form method="post" action="/admin/export/download" style="margin-top:1.5rem;">
+	<input type="hidden" name="_csrf" value="{{ csrf_token }}">
+	<button type="submit">Download data export</button>
+</form>
+{% endblock %}

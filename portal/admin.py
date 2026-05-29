@@ -12,6 +12,7 @@ import shutil
 import sqlite3
 import tarfile
 import tempfile
+import zipfile
 from datetime import datetime, timezone
 from email.message import EmailMessage
 from pathlib import Path
@@ -42,12 +43,13 @@ from portal.branding import (
     get_branding,
 )
 from portal.config import settings
-from portal.db import get_db
+from portal.db import engine, get_db
 from portal.deps import require_admin
 from portal.models import (
     ApiToken,
     App,
     AppLaunchToken,
+    AuditEvent,
     FormSubmission,
     ScheduledRun,
     User,
@@ -1187,6 +1189,126 @@ def submissions_csv(
         content=buf.getvalue(),
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{safe}.csv"'},
+    )
+
+
+# ----- Data export -----
+
+# A portable, secret-free zip of the business's own data: a JSON dump of apps,
+# users (email + role only), form submissions, scheduled runs, and the audit
+# log, plus every app's per-user storage files. Distinct from Backups, which is
+# a full disaster-recovery snapshot of the data dir (it DOES include the SQLite
+# DB with encrypted secrets). This export is the "take my data and go" / open it
+# in Excel artifact, so it deliberately excludes all credentials.
+
+def _build_export(data_dir: Path) -> tuple[Path, Path, str]:
+    """Build the portable export zip. Returns (zip_path, tmp_dir, filename).
+
+    The caller schedules ``shutil.rmtree(tmp_dir)`` once the response is sent.
+    Runs its own DB session (safe in a worker thread). NEVER includes password
+    hashes, API token hashes, SMTP credentials, or SECRET_KEY.
+    """
+    tmp_dir = Path(tempfile.mkdtemp(prefix="portal-export-"))
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%SZ")
+    filename = f"pwa-portal-export-{timestamp}.zip"
+    zip_path = tmp_dir / filename
+
+    def _iso(dt):
+        return dt.isoformat() if dt else None
+
+    try:
+        with Session(engine) as db:
+            apps = db.exec(select(App).order_by(App.display_order, App.name)).all()
+            users = db.exec(select(User).order_by(User.id)).all()
+            subs = db.exec(select(FormSubmission).order_by(FormSubmission.created_at)).all()
+            scheds = db.exec(select(ScheduledRun).order_by(ScheduledRun.id)).all()
+            events = db.exec(select(AuditEvent).order_by(AuditEvent.at)).all()
+            data = {
+                "exported_at": datetime.now(timezone.utc).isoformat(),
+                "site_url": settings.site_url,
+                "note": (
+                    "Portable PWA Portal data export. Excludes all secrets "
+                    "(password hashes, API token hashes, SMTP credentials, SECRET_KEY)."
+                ),
+                "apps": [{
+                    "slug": a.slug, "name": a.name, "version": a.version,
+                    "description": a.description, "enabled": bool(a.enabled),
+                    "services": list(a.services or []),
+                    "tools": list(a.tools or []), "forms": list(a.forms or []),
+                    "uploaded_at": _iso(a.uploaded_at),
+                } for a in apps],
+                "users": [{
+                    "id": u.id, "email": u.email, "role": u.role,
+                    "created_at": _iso(u.created_at),
+                } for u in users],
+                "form_submissions": [{
+                    "app_slug": s.app_slug, "form_name": s.form_name,
+                    "data": dict(s.data or {}), "created_at": _iso(s.created_at),
+                } for s in subs],
+                "scheduled_runs": [{
+                    "id": s.id, "app_slug": s.app_slug, "tool_name": s.tool_name,
+                    "args": dict(s.args or {}), "frequency": s.frequency,
+                    "hour": s.hour, "minute": s.minute, "day_of_week": s.day_of_week,
+                    "day_of_month": s.day_of_month, "enabled": bool(s.enabled),
+                    "label": s.label, "next_run_at": _iso(s.next_run_at),
+                } for s in scheds],
+                "audit_events": [{
+                    "at": _iso(e.at), "actor_email": e.actor_email,
+                    "action": e.action, "target": e.target, "ip": e.ip,
+                    "details": dict(e.details or {}),
+                } for e in events],
+            }
+        readme = (
+            "PWA Portal — data export\n"
+            "========================\n\n"
+            "data.json   apps, users (email + role only), form submissions,\n"
+            "            scheduled runs, and the audit log.\n"
+            "storage/    every app's per-user stored files, laid out as\n"
+            "            storage/<app-slug>/<user-id>/<key>.\n\n"
+            "NOT included, by design: the SQLite database, password hashes, API\n"
+            "token hashes, SMTP credentials, and SECRET_KEY. For a full\n"
+            "disaster-recovery snapshot that DOES include those, use the Backup\n"
+            "page instead.\n"
+        )
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("data.json", json.dumps(data, indent=2, default=str))
+            zf.writestr("README.txt", readme)
+            storage_dir = data_dir / "storage"
+            if storage_dir.is_dir():
+                for p in storage_dir.rglob("*"):
+                    # Skip symlinks defensively; nothing should plant one here.
+                    if p.is_file() and not p.is_symlink():
+                        zf.write(
+                            p, arcname="storage/" + p.relative_to(storage_dir).as_posix()
+                        )
+        return zip_path, tmp_dir, filename
+    except BaseException:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise
+
+
+@router.get("/admin/export")
+def export_form(request: Request, db: DbDep, admin: AdminDep):
+    return render(request, "admin_export.html", user=admin)
+
+
+@router.post("/admin/export/download")
+async def export_download(
+    request: Request,
+    db: DbDep,
+    admin: AdminDep,
+    csrf: Annotated[str, Form(alias="_csrf")] = "",
+):
+    check_csrf(request, csrf)
+    data_dir = Path(settings.data_dir).resolve()
+    zip_path, tmp_dir, filename = await anyio.to_thread.run_sync(_build_export, data_dir)
+    record_event(
+        db, actor=admin, action="data.export", request=request,
+        target=f"export:{filename}",
+    )
+    cleanup = BackgroundTask(shutil.rmtree, str(tmp_dir), ignore_errors=True)
+    return FileResponse(
+        zip_path, media_type="application/zip", filename=filename, background=cleanup,
     )
 
 

@@ -1,6 +1,6 @@
 [project]
 name = "pwa-portal"
-version = "0.10.0"
+version = "0.11.0"
 description = "Open-source PWA hosting portal for small businesses"
 license = "AGPL-3.0-or-later"
 license-files = ["LICENSE"]
