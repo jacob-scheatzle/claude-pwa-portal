@@ -423,6 +423,23 @@ That's it — no `git pull`, no rebuild. The container ships a pinned set
 of dependencies plus the Alembic migration chain, so a normal upgrade is
 just two commands.
 
+**Reclaim disk space.** Each `docker compose pull` leaves the previous
+`:latest` image behind as a dangling (untagged) layer, so repeated upgrades
+slowly fill the disk. A safe one-liner after a redeploy clears it:
+
+```bash
+docker compose pull && docker compose up -d && \
+  docker container prune -f && docker image prune -f && docker builder prune -f
+```
+
+For a set-and-forget weekly sweep, install
+[`contrib/scripts/portal-docker-prune.sh`](../contrib/scripts/README.md#portal-docker-prunesh)
+on a cron. **Never** prune with `--volumes` on this host — Caddy's TLS certs
+live in the `caddy_data` / `caddy_config` volumes, and wiping them forces a full
+Let's Encrypt re-issue (with its rate limit) on the next boot. The portal's
+`./data` is a bind mount, so prune never touches it; dangling-image + build-cache
+pruning is otherwise completely safe to run while the stack is up.
+
 To pin to a specific release instead of `latest`, set `PORTAL_IMAGE_TAG=v0.6.7`
 (or whichever tag you want) in `.env` before the `up -d`. Tags live at
 <https://github.com/jacob-scheatzle/claude-pwa-portal/pkgs/container/claude-pwa-portal>.

@@ -82,7 +82,16 @@ docker compose up --build -d
 docker compose logs -f portal
 docker compose down       # stop, keep data
 docker compose down -v    # also remove Caddy volumes
+# After any up/--build/pull, reclaim disk left by dangling images + build cache:
+./contrib/scripts/portal-docker-prune.sh
 ```
+
+**Always prune after bringing the stack up** (`up`, `up --build`, or `pull` +
+`up`). `contrib/scripts/portal-docker-prune.sh` is the safe sweep — dangling
+images + stopped containers + build cache only. **Never** prune with
+`--volumes` (Caddy's TLS certs live in `caddy_data`/`caddy_config`) or with
+`-a`/`--all` on a shared host. Deployers schedule the same script on a weekly
+cron; see `contrib/scripts/README.md`.
 
 ### Smoke-test the running stack
 ```bash
