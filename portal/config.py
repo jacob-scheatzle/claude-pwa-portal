@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import Optional
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -44,6 +45,16 @@ class Settings(BaseSettings):
     # portal shell, less safe; admins see a warning banner).
     child_apps_same_origin: Optional[bool] = False
 
+    # Controls the app-management MCP server at ``/mcp`` (admin-token authed).
+    #   None (default) → AUTO: enabled when the optional ``mcp`` package is
+    #       importable. The Docker image bundles it, so the container comes up
+    #       with /mcp live; a bare ``pip install`` (no extra) stays off silently.
+    #   True  → force on; logs a warning if ``mcp`` isn't installed.
+    #   False → force off.
+    # Install the dep with ``pip install 'pwa-portal[mcp]'`` (or the Docker
+    # ``INSTALL_MCP`` build arg, which defaults on). See docs/mcp.md.
+    mcp_enabled: Optional[bool] = None
+
     # SMTP (read here in step 5; admin UI will override in step 6)
     smtp_host: Optional[str] = None
     smtp_port: int = 587
@@ -51,6 +62,15 @@ class Settings(BaseSettings):
     smtp_password: Optional[str] = None
     smtp_from: Optional[str] = None
     smtp_use_tls: bool = True
+
+    @field_validator("mcp_enabled", mode="before")
+    @classmethod
+    def _mcp_enabled_blank_is_auto(cls, v):
+        # MCP_ENABLED="" (the .env.example default) means "auto" → None.
+        # Pydantic can't coerce an empty string to a bool, so normalize first.
+        if isinstance(v, str) and v.strip() == "":
+            return None
+        return v
 
 
 settings = Settings()

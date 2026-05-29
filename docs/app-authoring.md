@@ -78,8 +78,38 @@ That's a valid app. Zip the folder so `portal.json` is at the root, upload it, a
 | `permissions.network` | no | array of external `connect-src` origins your app may fetch from (e.g. `["https://api.stripe.com"]`). Auto-approved on first upload; revocable per-origin. Anything not listed is blocked by the per-app Content-Security-Policy. |
 | `permissions.csp_strict` | no | if `true`, the portal serves the app under a strict CSP (no inline scripts/styles, no `eval`). Inline `<script>` tags must carry `nonce="{{NONCE}}"` — the portal substitutes the placeholder per response. |
 | `min_portal_version` | no | hint for future compatibility checks |
+| `tools` | no | declarative operations an MCP-connected Claude can run (render a PDF → share / email / store). See "App tools" below and [mcp.md](mcp.md). |
 
 The slug is the URL: an app with slug `expense-tracker` lives at `/apps/expense-tracker/`.
+
+## App tools (run by Claude over MCP)
+
+If the portal runs its MCP server ([mcp.md](mcp.md)), an app can declare `tools`
+an MCP-connected Claude calls directly — each appears as `<slug>__<tool>`. A
+tool is **declarative**: the portal renders an HTML template you supply to a PDF
+and then shares / downloads / emails / stores it. Your app's code never runs
+server-side.
+
+```json
+"tools": [
+  {
+    "name": "create_quote",
+    "description": "Render a quote PDF and return a share link.",
+    "params": [
+      {"name": "customer", "type": "string", "required": true},
+      {"name": "amount", "type": "number", "required": true}
+    ],
+    "render": {"html": "<h1>Quote for {{ customer }}</h1><p>${{ amount }}</p>", "branded": true},
+    "deliver": {"kind": "share", "ttl_days": 30}
+  }
+]
+```
+
+`deliver.kind` is `share` | `download` | `store` (needs a templated `key`) |
+`email` (needs `to`, optional `subject`); `{{ param }}` placeholders work in the
+template and in those fields. A tool may only use services the manifest also
+declares in `services` (`pdf` for any tool; `email` / `storage` for those
+deliver kinds). Full reference: [mcp.md](mcp.md).
 
 ## Using the SDK
 

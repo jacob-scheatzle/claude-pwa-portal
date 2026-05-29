@@ -23,6 +23,38 @@ APP_SESSION_COOKIE = "app_session"
 _TOKEN_LAST_USED_REFRESH = timedelta(seconds=60)
 
 
+def authenticate_bearer(db: Session, authorization: Optional[str]) -> Optional[User]:
+    """Resolve an ``Authorization: Bearer <token>`` header to its owner User.
+
+    Shared by ``current_user_or_token`` (the cookie+bearer dep) and the MCP
+    server's ASGI auth wrapper so the token-validation logic lives in exactly
+    one place. Returns ``None`` for a missing, malformed, or unknown token.
+    Touches ``last_used_at`` (throttled by ``_TOKEN_LAST_USED_REFRESH``). Does
+    NOT set ``request.state`` — callers own that.
+    """
+    if not authorization or not authorization.lower().startswith("bearer "):
+        return None
+    raw = authorization[7:].strip()
+    if not raw:
+        return None
+    token_hash = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    api_token = db.exec(
+        select(ApiToken).where(ApiToken.token_hash == token_hash)
+    ).first()
+    if api_token is None:
+        return None
+    now = datetime.now(timezone.utc)
+    last = api_token.last_used_at
+    # Treat naive last_used_at as UTC for the comparison.
+    if last is not None and last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
+    if last is None or (now - last) > _TOKEN_LAST_USED_REFRESH:
+        api_token.last_used_at = now
+        db.add(api_token)
+        db.commit()
+    return db.get(User, api_token.created_by)
+
+
 def current_user(
     request: Request,
     db: Annotated[Session, Depends(get_db)],
@@ -84,30 +116,27 @@ def current_user_or_token(
                 return user
         return None
 
-    # 2. Bearer token (portal-origin programmatic clients).
+    # 2. Bearer token (portal-origin programmatic clients). The hash lookup +
+    # last_used touch is delegated to ``authenticate_bearer`` (shared with the
+    # MCP server's auth wrapper). An invalid bearer deliberately falls through
+    # to cookie auth for back-compat, but we DO NOT set auth_method="token" in
+    # that case — the bearer was bogus, so any "I'm a token client" privileges
+    # (e.g. naming an arbitrary app via X-Portal-App) must not apply.
     if authorization and authorization.lower().startswith("bearer "):
-        raw = authorization[7:].strip()
-        if raw:
-            token_hash = hashlib.sha256(raw.encode("utf-8")).hexdigest()
-            api_token = db.exec(
-                select(ApiToken).where(ApiToken.token_hash == token_hash)
-            ).first()
-            if api_token is not None:
-                now = datetime.now(timezone.utc)
-                last = api_token.last_used_at
-                # Treat naive last_used_at as UTC for the comparison.
-                if last is not None and last.tzinfo is None:
-                    last = last.replace(tzinfo=timezone.utc)
-                if last is None or (now - last) > _TOKEN_LAST_USED_REFRESH:
-                    api_token.last_used_at = now
-                    db.add(api_token)
-                    db.commit()
-                request.state.auth_method = "token"
-                return db.get(User, api_token.created_by)
-            # Invalid bearer: deliberately fall through to cookie auth for
-            # back-compat, but DO NOT set auth_method="token" — the bearer
-            # was bogus, so any "I'm a token client" privileges (e.g. naming
-            # an arbitrary app via X-Portal-App) must not apply.
+        token_user = authenticate_bearer(db, authorization)
+        if token_user is not None:
+            request.state.auth_method = "token"
+            return token_user
+        # Bearer presented but unknown: log for fail2ban (token-guessing or
+        # stale-credential floods on /api/v1/*). Browsers never send a bearer,
+        # so this won't fire for normal cookie users. Best-effort — never block
+        # auth on a logging hiccup.
+        try:
+            from portal.audit import _client_ip, emit_security_line
+
+            emit_security_line("API_AUTH_FAILED", _client_ip(request), reason="bad_token")
+        except Exception:
+            pass
 
     # 3. Portal-origin UserSession cookie.
     session_id = request.session.get("session_id")

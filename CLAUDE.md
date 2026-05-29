@@ -20,12 +20,14 @@ portal/
   api.py              /api/v1/* (JSON; cookie + bearer auth; storage / pdf / email)
   apps.py             /admin/apps/* + /apps/<slug>/* + child-app zip upload/validation/serving
   admin.py            /admin/{settings,tokens,users} (HTML form routes)
+  mcp_server.py       Optional /mcp MCP server (low-level Server, dynamic list_tools) — app-mgmt tools + each app's declared tools; admin-bearer ASGI auth; gated by MCP_ENABLED + [mcp] extra
+  app_tools.py        Phase 2 executor — runs an app's declared tools (sandboxed-Jinja template → PDF → share/email/store/download) over trusted primitives
   models.py           SQLModel tables: User, Setting, App, ApiToken, UserSession
   sessions.py         Helpers for the server-side UserSession (create/revoke/touch)
   security.py         bcrypt, password validation, csrf_token() + check_csrf() + check_csrf_header()
   smtp.py             send_message() — used by api.email_send and admin SMTP-test
   settings_store.py   get_setting/set_setting (plain) + get_secret/set_secret (Fernet-encrypted)
-  deps.py             current_user (cookie), current_user_or_token (cookie + bearer)
+  deps.py             current_user (cookie), current_user_or_token (cookie + bearer), authenticate_bearer (shared token→user lookup)
   config.py           Pydantic Settings; SITE_URL, SECRET_KEY, COOKIES_SECURE, SMTP_*
   db.py               engine + init_db() (runs `alembic upgrade head`; auto-stamps pre-Alembic DBs)
   web.py              Shared `templates`, `render()` helper (auto-injects user, flashes, csrf_token)
@@ -172,3 +174,18 @@ an opt-out via `CHILD_APPS_SAME_ORIGIN=true`. See
 [docs/per-app-origin-design.md](docs/per-app-origin-design.md) for the
 architectural context if you're touching the launch / exchange / Host
 dispatch code paths.
+
+An **MCP app-management server** lives at `portal/mcp_server.py`, served at
+`/mcp` via exact routes (not `app.mount` — the catch-all GET would shadow it).
+The Docker image bundles the `mcp` dep and `mcp_enabled` defaults to **auto**
+(`Optional[bool]=None` → on when importable), so the container comes up with
+`/mcp` live; `MCP_ENABLED=false` disables it, `true` forces it. It exposes
+admin-token-authed tools (`whoami`, `list_apps`, `get_app`, `upload_app`,
+`set_app_enabled`) that wrap existing internals. Auth reuses
+`deps.authenticate_bearer`. See [docs/mcp.md](docs/mcp.md). **Phase 2 is
+implemented:** apps declare a `tools` DSL in `portal.json` (validated in
+`apps.py`: name/params/render/deliver, with a cross-check that each tool's
+services are declared), stored in the new `App.tools` JSON column (migration
+`665c77fdc151`); `portal/app_tools.py` runs them over trusted primitives; and
+`mcp_server.py` surfaces each enabled app's tools dynamically as `<slug>__<tool>`
+(its `list_tools` reads the DB per request, so no restart/notification needed).

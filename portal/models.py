@@ -65,6 +65,15 @@ class App(SQLModel, table=True):
     # everything the manifest declared (the admin uploaded it); revocations
     # made through the admin UI persist across re-uploads of the same slug.
     allowed_origins: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    # Phase 2: declarative MCP tools this app exposes. Each entry is a tool
+    # declaration (name, description, params, render template, deliver action),
+    # validated by ``portal.apps.PortalAppManifest`` at upload. The portal
+    # surfaces these over the MCP server (``portal/mcp_server.py``) and runs them
+    # with the declarative executor (``portal/app_tools.py``) over its OWN
+    # trusted primitives (template → PDF → share / email / storage) — uploaded
+    # app code never runs server-side. Refreshed on every upload/replace; the
+    # manifest is the source of truth. Existing pre-feature rows read as ``[]``.
+    tools: list[dict] = Field(default_factory=list, sa_column=Column(JSON))
     enabled: bool = Field(default=True)
     # Admin-controlled sort key for the user-facing dashboard tile grid AND
     # the /admin/apps table. Lower values render first. New apps default to

@@ -7,6 +7,11 @@ The portal exposes a JSON HTTP API under `/api/v1/`. It's consumed both by:
 
 The same endpoints accept either auth method.
 
+> **Managing apps from Claude?** The portal can also expose an opt-in **MCP
+> server** at `/mcp` (admin-token authed) so Claude lists / uploads / replaces /
+> enables apps as tool calls. It wraps the same app operations described here.
+> See [mcp.md](mcp.md).
+
 ## Authentication
 
 ### Session cookie

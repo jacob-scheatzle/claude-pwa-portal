@@ -39,6 +39,8 @@ If you need wildcard DNS for per-app origin isolation (the default), see [sectio
 
 If you're putting this behind a load balancer that terminates TLS, or you want to run plain HTTP for local testing, see [section 2.7: HTTP-only mode](#27-optional-http-only-mode).
 
+If you want Claude to manage apps over MCP (list / upload / replace / enable as tool calls), see [the MCP server guide](mcp.md) — it's opt-in (`MCP_ENABLED=true` plus the `mcp` extra, or `--build-arg INSTALL_MCP=true` for the image).
+
 If you want to build from source instead (for development or local patches), skip the Quickstart and use the **Build from source** section after the troubleshooting block.
 
 ---

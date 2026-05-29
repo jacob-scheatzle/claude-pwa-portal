@@ -5,7 +5,7 @@ brute-force login attempts and scanner traffic on a self-hosted portal.
 
 | File | Goes to | What it does |
 |---|---|---|
-| `filter.d/pwa-portal-login.conf` | `/etc/fail2ban/filter.d/` | Matches `FAILED_LOGIN` / `LOGIN_RATE_LIMITED` lines in `data/security.log` |
+| `filter.d/pwa-portal-login.conf` | `/etc/fail2ban/filter.d/` | Matches `FAILED_LOGIN` / `LOGIN_RATE_LIMITED` (cookie login) and `MCP_AUTH_FAILED` / `API_AUTH_FAILED` (bearer/MCP token) lines in `data/security.log` |
 | `filter.d/pwa-portal-caddy.conf` | `/etc/fail2ban/filter.d/` | Matches scanner-bait paths (`/.env`, `/.git/`, `/wp-admin/`, …) in Caddy's JSON access log |
 | `jail.d/pwa-portal.conf` | `/etc/fail2ban/jail.d/` | Wires the two filters with sensible thresholds |
 | `jail.d/sshd.conf`       | `/etc/fail2ban/jail.d/` | sshd brute-force protection (separate from portal so the portal can't ban your own SSH) |

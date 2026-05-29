@@ -16,7 +16,16 @@ COPY pyproject.toml ./
 COPY portal/ ./portal/
 COPY alembic.ini ./
 COPY alembic/ ./alembic/
-RUN pip install --no-cache-dir .
+# The image bundles the MCP app-management server's dependency by default
+# (docs/mcp.md), so /mcp comes up automatically when the container starts
+# (mcp_enabled defaults to auto-on-when-importable). Build a lean image without
+# it via: docker compose build --build-arg INSTALL_MCP=false
+ARG INSTALL_MCP=true
+RUN if [ "$INSTALL_MCP" = "true" ]; then \
+		pip install --no-cache-dir ".[mcp]"; \
+	else \
+		pip install --no-cache-dir .; \
+	fi
 
 WORKDIR /
 USER portal

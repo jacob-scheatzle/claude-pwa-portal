@@ -1,6 +1,6 @@
 [project]
 name = "pwa-portal"
-version = "0.6.8"
+version = "0.7.0"
 description = "Open-source PWA hosting portal for small businesses"
 license = "AGPL-3.0-or-later"
 license-files = ["LICENSE"]
@@ -21,6 +21,14 @@ dependencies = [
     "email-validator>=2.1",
     "weasyprint>=60",
 ]
+
+[project.optional-dependencies]
+# Opt-in: enables the portal-hosted MCP app-management server at /mcp (see
+# docs/mcp.md). Kept out of the base deps so the default install and the Docker
+# image stay lean; install with `pip install 'pwa-portal[mcp]'` or build the
+# image with --build-arg INSTALL_MCP=true. Also requires MCP_ENABLED=true at
+# runtime.
+mcp = ["mcp>=1.27"]
 
 [build-system]
 requires = ["setuptools>=68"]
