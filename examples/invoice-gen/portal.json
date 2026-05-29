@@ -1,7 +1,7 @@
 {
   "slug": "invoice-gen",
   "name": "Invoice Generator",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Build line-item invoices, generate a branded PDF, and email it to the customer.",
   "icon": "icon.png",
   "entry": "index.html",
@@ -9,5 +9,39 @@
   "permissions": {
     "network": []
   },
+  "tools": [
+    {
+      "name": "create_invoice",
+      "description": "Render an invoice PDF and return a shareable link.",
+      "params": [
+        {"name": "customer", "type": "string", "required": true},
+        {"name": "invoice_number", "type": "string", "required": true},
+        {"name": "amount", "type": "number", "required": true, "description": "Amount due in USD"},
+        {"name": "items", "type": "string", "required": false, "description": "Line items, one per line"},
+        {"name": "due_date", "type": "string", "required": false, "description": "e.g. 2026-06-15"}
+      ],
+      "render": {
+        "html": "<style>body{font-family:system-ui,-apple-system,sans-serif;color:#1c1917}h1{font-size:20pt;margin:0 0 4pt}.sub{color:#57534e;margin-bottom:16pt}.items{white-space:pre-wrap;color:#44403c}.tot{font-size:16pt;font-weight:700;margin-top:16pt;border-top:2px solid #1c1917;padding-top:8pt}.due{margin-top:8pt;color:#57534e}</style><h1>Invoice {{ invoice_number }}</h1><div class='sub'>Billed to {{ customer }}</div><div class='items'>{{ items }}</div><div class='tot'>Amount due: ${{ '%.2f'|format(amount) }}</div>{% if due_date %}<div class='due'>Due {{ due_date }}</div>{% endif %}",
+        "filename": "invoice.pdf",
+        "branded": true
+      },
+      "deliver": {"kind": "share", "ttl_days": 60}
+    },
+    {
+      "name": "email_invoice",
+      "description": "Email an invoice summary to the customer.",
+      "params": [
+        {"name": "to", "type": "string", "required": true, "description": "Customer email"},
+        {"name": "customer", "type": "string", "required": true},
+        {"name": "invoice_number", "type": "string", "required": true},
+        {"name": "amount", "type": "number", "required": true, "description": "Amount due in USD"}
+      ],
+      "render": {
+        "html": "<div style='font-family:system-ui,-apple-system,sans-serif;color:#1c1917;font-size:14px;line-height:1.6'><p>Hi {{ customer }},</p><p>Invoice <strong>{{ invoice_number }}</strong> for <strong>${{ '%.2f'|format(amount) }}</strong> is ready. Thank you!</p></div>",
+        "branded": true
+      },
+      "deliver": {"kind": "email", "to": "{{ to }}", "subject": "Invoice {{ invoice_number }}"}
+    }
+  ],
   "min_portal_version": "0.1.0"
 }

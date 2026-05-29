@@ -4,15 +4,22 @@ Drop-in PWAs you can upload to a portal to see the SDK in action. Each
 directory is the raw bundle — zip it up (or use the Claude skill's
 `package.py`) and upload via **Admin → Apps**.
 
-| App | SDK services used | What it does |
-| --- | --- | --- |
-| [hello-receipt](hello-receipt/) | `user`, `pdf`, `email`, `storage` | Canonical reference — exercises every SDK service in one tiny app. |
-| [mileage-log](mileage-log/) | `pdf`, `storage` | Log business trips with miles and purpose; export an IRS-ready deduction PDF. |
-| [time-tracker](time-tracker/) | `pdf`, `email`, `storage` | Track billable time by client/project; export a clean timesheet PDF. |
-| [expense-logger](expense-logger/) | `pdf`, `storage` | Log expenses by category and export a monthly PDF report. |
-| [customer-directory](customer-directory/) | `email`, `storage` | Lightweight CRM — track customers, tag them, send quick emails. |
-| [quote-builder](quote-builder/) | `pdf`, `email`, `storage`, `share` | Build itemized quotes, generate a PDF, share a link the customer can open. |
-| [invoice-gen](invoice-gen/) | `pdf`, `email`, `storage` | Build line-item invoices, generate a branded PDF, email it to the customer. |
+Every app here also declares **MCP tools** in its `portal.json`, so an
+MCP-connected Claude can run them directly — e.g. "create a quote for Acme at
+$1,250 and share it." Each tool renders an HTML template to a PDF and then
+shares / emails / stores it; no app code runs server-side. See
+[`docs/mcp.md`](../docs/mcp.md).
+
+| App | SDK services | MCP tools | What it does |
+| --- | --- | --- | --- |
+| [hello-receipt](hello-receipt/) | `user` `pdf` `email` `storage` | `create_receipt`, `email_receipt` | Canonical reference — exercises every SDK service in one tiny app. |
+| [work-order](work-order/) | `pdf` `email` `storage` | `create_work_order`, `email_work_order` | Log a field-service job (labor + materials), then PDF / share / email it. |
+| [mileage-log](mileage-log/) | `pdf` `storage` | `mileage_report` | Log business trips with miles and purpose; export an IRS-ready deduction PDF. |
+| [time-tracker](time-tracker/) | `pdf` `email` `storage` | `create_timesheet` | Track billable time by client/project; export a clean timesheet PDF. |
+| [expense-logger](expense-logger/) | `pdf` `storage` | `expense_report` | Log expenses by category and export a monthly PDF report. |
+| [customer-directory](customer-directory/) | `email` `storage` | `email_customer` | Lightweight CRM — track customers, tag them, send quick emails. |
+| [quote-builder](quote-builder/) | `pdf` `email` `storage` | `create_quote` | Build itemized quotes, generate a PDF, share a link the customer can open. |
+| [invoice-gen](invoice-gen/) | `pdf` `email` `storage` | `create_invoice`, `email_invoice` | Build line-item invoices, generate a branded PDF, email it to the customer. |
 
 ## Install one
 

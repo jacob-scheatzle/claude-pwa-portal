@@ -1,7 +1,7 @@
 {
   "slug": "time-tracker",
   "name": "Time Tracker",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Track billable time by client and project, then export a clean timesheet PDF.",
   "icon": "icon.png",
   "entry": "index.html",
@@ -9,5 +9,23 @@
   "permissions": {
     "network": []
   },
+  "tools": [
+    {
+      "name": "create_timesheet",
+      "description": "Render a timesheet PDF for a client and period and return a shareable link.",
+      "params": [
+        {"name": "client", "type": "string", "required": true},
+        {"name": "period", "type": "string", "required": true, "description": "e.g. May 1-15, 2026"},
+        {"name": "hours", "type": "number", "required": true},
+        {"name": "rate", "type": "number", "required": true, "description": "Hourly rate in USD"},
+        {"name": "notes", "type": "string", "required": false}
+      ],
+      "render": {
+        "html": "<style>body{font-family:system-ui,-apple-system,sans-serif;color:#1c1917}h1{font-size:20pt;margin:0 0 4pt}.sub{color:#57534e;margin-bottom:16pt}table{border-collapse:collapse;margin-top:8pt}td{padding:4pt 16pt 4pt 0}.tot{font-size:15pt;font-weight:700;margin-top:16pt;border-top:2px solid #1c1917;padding-top:8pt}.notes{white-space:pre-wrap;color:#44403c;margin-top:12pt}</style><h1>Timesheet</h1><div class='sub'>{{ client }} &middot; {{ period }}</div><table><tr><td>Hours</td><td>{{ '%.2f'|format(hours) }}</td></tr><tr><td>Rate</td><td>${{ '%.2f'|format(rate) }}/hr</td></tr></table><div class='tot'>Total: ${{ '%.2f'|format(hours * rate) }}</div><div class='notes'>{{ notes }}</div>",
+        "filename": "timesheet.pdf"
+      },
+      "deliver": {"kind": "share", "ttl_days": 30}
+    }
+  ],
   "min_portal_version": "0.1.0"
 }

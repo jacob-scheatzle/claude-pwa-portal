@@ -218,14 +218,15 @@ class PortalAppTool(BaseModel):
 
     def required_services(self) -> set[str]:
         """Portal services this tool's recipe needs — drives the manifest
-        cross-check below and execution-time gating. Rendering always needs
-        ``pdf``; emailing needs ``email``; storing needs ``storage``."""
-        needed = {"pdf"}
+        cross-check below and execution-time gating. ``share``/``download``
+        render a PDF (``pdf``); ``store`` renders then saves it (``pdf`` +
+        ``storage``); ``email`` sends the rendered HTML as the message body,
+        so it needs only ``email`` — no PDF is produced."""
         if self.deliver.kind == "email":
-            needed.add("email")
-        elif self.deliver.kind == "store":
-            needed.add("storage")
-        return needed
+            return {"email"}
+        if self.deliver.kind == "store":
+            return {"pdf", "storage"}
+        return {"pdf"}  # share, download
 
 
 class PortalAppManifest(BaseModel):

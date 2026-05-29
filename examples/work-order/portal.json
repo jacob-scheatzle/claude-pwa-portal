@@ -1,0 +1,48 @@
+{
+  "slug": "work-order",
+  "name": "Work Order",
+  "version": "1.0.0",
+  "description": "Log a field-service job — labor, materials, total — then generate, share, or email a work-order PDF.",
+  "icon": "icon.png",
+  "entry": "index.html",
+  "services": ["pdf", "email", "storage"],
+  "permissions": {
+    "network": []
+  },
+  "tools": [
+    {
+      "name": "create_work_order",
+      "description": "Render a work-order PDF (labor + materials + total) and return a shareable link.",
+      "params": [
+        {"name": "customer", "type": "string", "required": true},
+        {"name": "site_address", "type": "string", "required": false, "description": "Job site address"},
+        {"name": "description", "type": "string", "required": true, "description": "Work performed"},
+        {"name": "hours", "type": "number", "required": true, "description": "Labor hours"},
+        {"name": "rate", "type": "number", "required": true, "description": "Labor rate, USD per hour"},
+        {"name": "materials", "type": "number", "required": false, "description": "Materials cost in USD"}
+      ],
+      "render": {
+        "html": "<style>body{font-family:system-ui,-apple-system,sans-serif;color:#1c1917}h1{font-size:20pt;margin:0 0 4pt}.sub{color:#57534e;margin-bottom:12pt}.desc{white-space:pre-wrap;color:#44403c;margin-bottom:12pt}table{border-collapse:collapse;margin-top:8pt}td{padding:4pt 16pt 4pt 0}.tot{font-size:16pt;font-weight:700;margin-top:16pt;border-top:2px solid #1c1917;padding-top:8pt}</style><h1>Work Order</h1><div class='sub'>For {{ customer }}{% if site_address %} &middot; {{ site_address }}{% endif %}</div><div class='desc'>{{ description }}</div><table><tr><td>Labor</td><td>{{ '%.2f'|format(hours) }} hr &times; ${{ '%.2f'|format(rate) }} = ${{ '%.2f'|format(hours * rate) }}</td></tr><tr><td>Materials</td><td>${{ '%.2f'|format(materials | default(0, true)) }}</td></tr></table><div class='tot'>Total: ${{ '%.2f'|format((hours * rate) + (materials | default(0, true))) }}</div>",
+        "filename": "work-order.pdf",
+        "branded": true
+      },
+      "deliver": {"kind": "share", "ttl_days": 30}
+    },
+    {
+      "name": "email_work_order",
+      "description": "Email a work-order summary to the customer.",
+      "params": [
+        {"name": "to", "type": "string", "required": true, "description": "Customer email"},
+        {"name": "customer", "type": "string", "required": true},
+        {"name": "description", "type": "string", "required": true, "description": "Work performed"},
+        {"name": "total", "type": "number", "required": true, "description": "Total in USD"}
+      ],
+      "render": {
+        "html": "<div style='font-family:system-ui,-apple-system,sans-serif;color:#1c1917;font-size:14px;line-height:1.6'><p>Hi {{ customer }},</p><p>Here is a summary of the work completed:</p><div style='white-space:pre-wrap;color:#44403c'>{{ description }}</div><p>Total: <strong>${{ '%.2f'|format(total) }}</strong>. Thank you!</p></div>",
+        "branded": true
+      },
+      "deliver": {"kind": "email", "to": "{{ to }}", "subject": "Your work order"}
+    }
+  ],
+  "min_portal_version": "0.1.0"
+}
