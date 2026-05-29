@@ -234,7 +234,7 @@ COOKIES_SECURE=true   # client → LB is still HTTPS, so cookies stay Secure-fla
 SITE_URL=portal.example.com   # the public hostname your users see at the LB
 ```
 
-The LB should forward to the portal VPS on port 80 and set `X-Forwarded-Proto: https`. uvicorn already trusts that header (we set `--proxy-headers --forwarded-allow-ips=*` in the container CMD), so cookies, launch-redirect URLs, and CSP `frame-ancestors` all come out HTTPS at the browser.
+The LB should forward to the portal VPS on port 80 and set `X-Forwarded-Proto: https`. The bundled Caddy is still the immediate proxy in front of uvicorn (it just listens on 80 in `HTTP_ONLY` mode), and uvicorn trusts Caddy on the Docker bridge (`--proxy-headers`, `--forwarded-allow-ips` defaults to the private ranges), so the forwarded proto propagates and cookies, launch-redirect URLs, and CSP `frame-ancestors` all come out HTTPS at the browser. (Only if you drop Caddy and point the LB straight at the portal from a public IP do you need to set `FORWARDED_ALLOW_IPS` to the LB's address.)
 
 Port 443 in `docker-compose.yml` is harmless to leave (Caddy won't bind it in HTTP_ONLY mode) — comment it out if something else on the host needs that port.
 
@@ -495,23 +495,9 @@ The reset command prompts you for the new password.
 - **Token blast radius:** API tokens act as the user who created them. Treat admin-created tokens like admin passwords; revoke unused ones.
 - **Backups encryption:** SQLite files contain hashed passwords (bcrypt) but also plaintext SMTP credentials. Encrypt backup destinations.
 - **Outbound network:** if your VPS firewall blocks outbound traffic, allow your SMTP host on the relevant port (usually 587 or 465). Public SMTP usage is often blocked on residential ISPs; cloud VPSes are typically fine.
-- **Trust the right client IP behind the proxy.** The container runs uvicorn with `--forwarded-allow-ips=*`, which trusts the *client-supplied* `X-Forwarded-For` header. Caddy appends the real peer to the **right** of that header, but with `*` uvicorn reads the **left-most** entry — so a request carrying a forged `X-Forwarded-For:` sets `request.client.host` to whatever the sender chose. That IP is what the in-app login throttle keys on and what the portal writes to its fail2ban security log, so a spoofer could both sidestep the per-IP login limit and get an arbitrary (e.g. a competitor's, or a shared CDN's) IP banned. bcrypt + the password policy remain the real authentication defense, but to make the logged/throttled IP trustworthy, stop trusting arbitrary `X-Forwarded-For`: pin the compose network to a fixed subnet and tell uvicorn to trust only that hop, so it walks the header from the right and stops at the real client. In `docker-compose.yml`:
-
-  ```yaml
-  services:
-    portal:
-      # Override the image default (--forwarded-allow-ips=*) so uvicorn trusts
-      # X-Forwarded-For only from Caddy on the bridge, not from clients.
-      command: ["uvicorn", "portal.main:app", "--host", "0.0.0.0", "--port", "8000",
-                "--proxy-headers", "--forwarded-allow-ips", "172.28.0.0/16"]
-  networks:
-    default:
-      ipam:
-        config:
-          - subnet: 172.28.0.0/16
-  ```
-
-  This only surfaces true client IPs in combination with `userland-proxy: false` (see the fail2ban section above) — otherwise Caddy itself sees the bridge gateway as the peer. After `docker compose up -d`, confirm the portal security log shows real client IPs, not the gateway (`172.28.0.1`); if every request logs the gateway, the subnet doesn't match Caddy's container and you've made all clients share one throttle key — widen/correct it. (Simpler alternative if you'd rather keep `*`: have Caddy overwrite the header at the trusted edge — `header_up X-Forwarded-For {http.request.remote.host}` inside the `reverse_proxy` block — then verify the security log the same way.)
+- **Client-IP trust (handled by default).** uvicorn derives the client IP — used for login throttling and the fail2ban security log — from `X-Forwarded-For`. The image trusts that header only from the **private ranges** (`--forwarded-allow-ips=127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16`), so it honors the hop Caddy adds on the Docker bridge but ignores a **client-supplied** `X-Forwarded-For`: uvicorn walks the header from the right and stops at the real client. (The previous `*` setting trusted the spoofable *left-most* entry, which let a forged header choose the throttled/logged IP — sidestepping the per-IP login limit, or getting an arbitrary IP banned.) Two operational notes:
+    - Real client IPs only surface with Docker `userland-proxy: false` (see the fail2ban section above); otherwise Caddy itself sees the bridge gateway as the peer and every request logs `172.x.0.1`.
+    - If you drop the bundled Caddy and put the portal directly behind a TLS-terminating load balancer on a **public** IP, set `FORWARDED_ALLOW_IPS` (in `.env`) to that LB's IP/CIDR — otherwise uvicorn won't trust it and all requests collapse to a single throttle bucket.
 
 ## Production hardening checklist
 
@@ -524,7 +510,7 @@ Run through these before you point real users at the portal:
 - [ ] Plan for `SECRET_KEY` rotation — it boots every user out, so ideally only rotate on confirmed compromise.
 - [ ] Restrict outbound network on the VPS to your SMTP host(s) (egress firewall / security group).
 - [ ] *(If unused)* set `MCP_ENABLED=false` to drop the `/mcp` app-management endpoint. It's on by default in the image and admin-token-gated, with auth failures fed to the fail2ban jail — but if you never connect Claude to this portal, turning it off removes the surface. See [docs/mcp.md](mcp.md).
-- [ ] *(Recommended if exposed to the internet)* Make the logged/throttled client IP unspoofable — pin the compose subnet + tighten `--forwarded-allow-ips` (with `userland-proxy: false`). See "Trust the right client IP behind the proxy" under [Hardening notes](#hardening-notes). Without it, a forged `X-Forwarded-For` can dodge the login throttle and frame arbitrary IPs in the fail2ban log.
+- [ ] Set Docker `userland-proxy: false` (see the [fail2ban section](#optional-fail2ban)) so Caddy — and therefore the login throttle and fail2ban log — see real client IPs. Client-supplied `X-Forwarded-For` is already ignored by default (the image trusts only private-range proxy hops), but without `userland-proxy: false` every request still logs the bridge gateway.
 - [ ] Don't share the host with untrusted users — the SQLite DB on disk contains SMTP credentials (encrypted, but the decryption key lives next to it in `.env`).
 - [ ] The Dockerfile now runs as UID 1001. The `data/` directory on the host must be writable by that uid; if you see permission errors after first boot, run `chown -R 1001:1001 data/` on the host and `docker compose restart portal`.
 - [ ] *(Optional, further hardening)* Try `read_only: true` on the portal service in `docker-compose.yml`. The container already gets `tmpfs: [/tmp]` for scratch space; `/data` stays writable via the bind mount. Test thoroughly before relying on it — some libraries write outside the expected paths.

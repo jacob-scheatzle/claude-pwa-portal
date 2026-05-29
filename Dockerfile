@@ -49,9 +49,16 @@ ENV HOME=/tmp
 ENV ALEMBIC_DIR=/build/alembic
 ENV ALEMBIC_INI=/build/alembic.ini
 EXPOSE 8000
-# --proxy-headers + --forwarded-allow-ips=* makes uvicorn honor X-Forwarded-For/Proto
-# from Caddy. Caddy is the only thing in front of uvicorn and sits on the Docker
-# bridge network (so it's not 127.0.0.1, which is uvicorn's default trust scope);
-# without this, request.client.host is Caddy's container IP for every request and
-# the (IP, email) login rate-limit collapses to a single bucket.
-CMD ["uvicorn", "portal.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips=*"]
+# --proxy-headers makes uvicorn honor X-Forwarded-For/Proto from Caddy, which
+# sits on the Docker bridge in front of us. --forwarded-allow-ips lists the proxy
+# hops uvicorn trusts: the default is the RFC1918 private ranges, so it trusts
+# Caddy on the bridge but NOT a client-supplied X-Forwarded-For. (With "*" uvicorn
+# reads the left-most, client-spoofable entry — letting a forged header choose the
+# IP used for login throttling and the fail2ban security log. With a real proxy
+# hop trusted instead, uvicorn walks the header from the right and stops at the
+# genuine client.) Override FORWARDED_ALLOW_IPS only if a TLS-terminating load
+# balancer forwards to the portal from a PUBLIC IP without Caddy in front. NOTE:
+# surfacing real client IPs also needs Docker `userland-proxy: false` so Caddy
+# sees the true peer — see docs/deploying.md. Shell form + exec so the env var
+# expands while uvicorn stays PID 1 (clean SIGTERM on `docker stop`).
+CMD ["sh", "-c", "exec uvicorn portal.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips \"${FORWARDED_ALLOW_IPS:-127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}\""]

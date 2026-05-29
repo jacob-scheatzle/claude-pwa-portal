@@ -1083,6 +1083,18 @@ def admin_apps_delete(
     if dest.exists():
         shutil.rmtree(dest, ignore_errors=True)
 
+    # Drop the app's scratch lock dir (data/locks/<slug>/) so it doesn't linger.
+    # Per-user storage under data/storage/<slug>/ is deliberately left in place —
+    # reinstalling the same slug keeps its data.
+    locks_root = Path(settings.data_dir).resolve() / "locks"
+    lock_dir = (locks_root / app_row.slug).resolve()
+    try:
+        lock_dir.relative_to(locks_root)
+    except ValueError:
+        lock_dir = None
+    if lock_dir is not None and lock_dir.exists():
+        shutil.rmtree(lock_dir, ignore_errors=True)
+
     name = app_row.name
     slug_for_audit = app_row.slug
     if app_row.id is not None:

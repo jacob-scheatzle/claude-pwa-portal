@@ -28,6 +28,11 @@ services:
       # Blank = auto (on; the image bundles the mcp dep). Set MCP_ENABLED=false
       # in .env to disable the /mcp endpoint. See docs/mcp.md.
       MCP_ENABLED: ${MCP_ENABLED:-}
+      # Proxy hops whose X-Forwarded-For uvicorn trusts when deriving the client
+      # IP. Blank → the image default (private ranges: trusts Caddy, ignores a
+      # client-spoofed header). Set to your LB's IP/CIDR only if it terminates
+      # TLS on a public address with no Caddy in front. See docs/deploying.md.
+      FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-}
     volumes:
       - ./data:/data
     expose:
