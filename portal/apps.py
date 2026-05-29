@@ -122,9 +122,39 @@ class PortalAppPermissions(BaseModel):
 TOOL_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
 MAX_TOOLS = 20
 MAX_TOOL_PARAMS = 20
+MAX_TOOL_FIELDS = 12
 MAX_TOOL_TEMPLATE_BYTES = 100 * 1024
-TOOL_PARAM_TYPES = {"string", "number", "boolean"}
+TOOL_PARAM_TYPES = {"string", "number", "boolean"}        # scalar + array-element types
+TOOL_PARAM_TYPES_TOP = TOOL_PARAM_TYPES | {"array"}        # a top-level param may also be an array of objects
 TOOL_DELIVER_KINDS = {"share", "download", "email", "store"}
+
+
+class PortalToolField(BaseModel):
+    """One field of an array param's element object. Scalars only — an array
+    param holds a flat list of objects (e.g. invoice line items), not nested
+    arrays."""
+    name: str = Field(min_length=1, max_length=40)
+    type: str = "string"
+    required: bool = False
+    description: str = Field(default="", max_length=200)
+
+    @field_validator("name")
+    @classmethod
+    def _name_ok(cls, v: str) -> str:
+        if not TOOL_NAME_RE.match(v):
+            raise ValueError(
+                f"field name '{v}' must be lowercase snake_case (a-z, 0-9, _)"
+            )
+        return v
+
+    @field_validator("type")
+    @classmethod
+    def _type_ok(cls, v: str) -> str:
+        if v not in TOOL_PARAM_TYPES:
+            raise ValueError(
+                f"field type '{v}' must be one of {sorted(TOOL_PARAM_TYPES)}"
+            )
+        return v
 
 
 class PortalToolParam(BaseModel):
@@ -132,6 +162,9 @@ class PortalToolParam(BaseModel):
     type: str = "string"
     required: bool = False
     description: str = Field(default="", max_length=200)
+    # Only meaningful when ``type == "array"``: the object shape of each list
+    # element. The template iterates with ``{% for item in <name> %}``.
+    fields: list[PortalToolField] = Field(default_factory=list)
 
     @field_validator("name")
     @classmethod
@@ -145,11 +178,36 @@ class PortalToolParam(BaseModel):
     @field_validator("type")
     @classmethod
     def _type_ok(cls, v: str) -> str:
-        if v not in TOOL_PARAM_TYPES:
+        if v not in TOOL_PARAM_TYPES_TOP:
             raise ValueError(
-                f"param type '{v}' must be one of {sorted(TOOL_PARAM_TYPES)}"
+                f"param type '{v}' must be one of {sorted(TOOL_PARAM_TYPES_TOP)}"
             )
         return v
+
+    @model_validator(mode="after")
+    def _array_fields_ok(self) -> "PortalToolParam":
+        if self.type == "array":
+            if not self.fields:
+                raise ValueError(
+                    f"array param '{self.name}' requires a non-empty 'fields' list"
+                )
+            if len(self.fields) > MAX_TOOL_FIELDS:
+                raise ValueError(
+                    f"array param '{self.name}' has too many fields "
+                    f"({len(self.fields)} > {MAX_TOOL_FIELDS})"
+                )
+            names = [f.name for f in self.fields]
+            dups = sorted({n for n in names if names.count(n) > 1})
+            if dups:
+                raise ValueError(
+                    f"duplicate field names in array param '{self.name}': {dups}"
+                )
+        elif self.fields:
+            raise ValueError(
+                f"param '{self.name}' is type '{self.type}' but declares 'fields' "
+                "(only 'array' params may)"
+            )
+        return self
 
 
 class PortalToolRender(BaseModel):

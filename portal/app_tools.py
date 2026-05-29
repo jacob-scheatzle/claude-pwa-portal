@@ -50,16 +50,39 @@ _HTML_ENV = SandboxedEnvironment(autoescape=True, undefined=StrictUndefined)
 _TEXT_ENV = SandboxedEnvironment(autoescape=False, undefined=StrictUndefined)
 
 
+def _param_json_schema(p: dict) -> dict:
+    """JSON-Schema for one declared param — a scalar, or an array of objects."""
+    ptype = p.get("type", "string")
+    if ptype == "array":
+        iprops: dict[str, Any] = {}
+        ireq: list[str] = []
+        for f in p.get("fields", []):
+            fs: dict[str, Any] = {"type": f["type"]}
+            if f.get("description"):
+                fs["description"] = f["description"]
+            iprops[f["name"]] = fs
+            if f.get("required"):
+                ireq.append(f["name"])
+        item: dict[str, Any] = {
+            "type": "object", "properties": iprops, "additionalProperties": False,
+        }
+        if ireq:
+            item["required"] = ireq
+        schema: dict[str, Any] = {"type": "array", "items": item}
+    else:
+        schema = {"type": ptype}
+    if p.get("description"):
+        schema["description"] = p["description"]
+    return schema
+
+
 def tool_input_schema(tool: dict) -> dict:
     """Build a JSON-Schema ``inputSchema`` for an MCP tool from its declared
     params. Used by the MCP server when listing tools."""
     props: dict[str, Any] = {}
     required: list[str] = []
     for p in tool.get("params", []):
-        schema: dict[str, Any] = {"type": p.get("type", "string")}
-        if p.get("description"):
-            schema["description"] = p["description"]
-        props[p["name"]] = schema
+        props[p["name"]] = _param_json_schema(p)
         if p.get("required"):
             required.append(p["name"])
     out: dict[str, Any] = {"type": "object", "properties": props, "additionalProperties": False}
@@ -68,33 +91,58 @@ def tool_input_schema(tool: dict) -> dict:
     return out
 
 
+def _coerce_scalar(value: Any, ptype: str, where: str) -> Any:
+    try:
+        if ptype == "number" and not isinstance(value, (int, float)):
+            return float(value)
+        if ptype == "boolean" and not isinstance(value, bool):
+            return str(value).strip().lower() in ("1", "true", "yes", "on")
+        if ptype == "string":
+            return str(value)
+    except (TypeError, ValueError):
+        raise AppToolError(f"{where} must be a {ptype}")
+    return value
+
+
 def _build_context(tool: dict, args: dict) -> dict:
     """Validate ``args`` against the tool's declared params and coerce types.
 
     Missing required params raise; missing optional params default to a blank
-    string so templates render cleanly.
+    string (or an empty list for arrays) so templates render cleanly. An array
+    param becomes a list of dicts the template iterates with ``{% for %}``;
+    each element's declared fields are coerced and missing optional fields are
+    zero-filled so arithmetic like ``item.qty * item.rate`` never blows up.
     """
     ctx: dict[str, Any] = {}
     for p in tool.get("params", []):
         name = p["name"]
+        ptype = p.get("type", "string")
         present = name in args and args[name] is not None
         if not present:
             if p.get("required"):
                 raise AppToolError(f"missing required parameter '{name}'")
-            ctx[name] = ""
+            ctx[name] = [] if ptype == "array" else ""
             continue
         value = args[name]
-        ptype = p.get("type", "string")
-        try:
-            if ptype == "number" and not isinstance(value, (int, float)):
-                value = float(value)
-            elif ptype == "boolean" and not isinstance(value, bool):
-                value = str(value).strip().lower() in ("1", "true", "yes", "on")
-            elif ptype == "string":
-                value = str(value)
-        except (TypeError, ValueError):
-            raise AppToolError(f"parameter '{name}' must be a {ptype}")
-        ctx[name] = value
+        if ptype == "array":
+            if not isinstance(value, list):
+                raise AppToolError(f"parameter '{name}' must be a list")
+            field_types = {f["name"]: f.get("type", "string") for f in p.get("fields", [])}
+            rows: list[dict] = []
+            for el in value:
+                if not isinstance(el, dict):
+                    raise AppToolError(f"each item in '{name}' must be an object")
+                row: dict[str, Any] = {}
+                for fname, ftype in field_types.items():
+                    fv = el.get(fname)
+                    if fv is None:
+                        row[fname] = "" if ftype == "string" else (0 if ftype == "number" else False)
+                    else:
+                        row[fname] = _coerce_scalar(fv, ftype, f"field '{fname}' in '{name}'")
+                rows.append(row)
+            ctx[name] = rows
+        else:
+            ctx[name] = _coerce_scalar(value, ptype, f"parameter '{name}'")
     return ctx
 
 

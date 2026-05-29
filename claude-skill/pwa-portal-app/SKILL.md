@@ -359,14 +359,40 @@ it. Uploaded app code never runs server-side.
 ```
 
 - `name`: snake_case, unique; Claude sees it as `<slug>__<name>`.
-- `params[]`: `{name, type (string|number|boolean), required, description}` — the tool's inputs.
-- `render.html`: inline template; `{{ param }}` values are autoescaped and rendered to PDF (no external fetches — embed images/fonts as `data:` URIs). `branded: true` prepends the portal header.
+- `params[]`: each `{name, type, required, description}`. `type` is `string` | `number` | `boolean`, or `array` for a list of objects — an array param adds `fields: [{name, type, required, description}]` describing each element (see "Line items" below).
+- `render.html`: a sandboxed, autoescaping Jinja template rendered to PDF. `{{ param }}` values are escaped; `{% for %}`, `{% if %}`, arithmetic, `{{ '%.2f'|format(n) }}`, `namespace(...)` totals, and `{{ x | default(0, true) }}` all work. No external fetches — embed images/fonts as `data:` URIs. `branded: true` prepends the portal header.
 - `deliver.kind`: `share` (→ `{url}`), `download` (→ base64 PDF), `store` (→ saves at `key`), or `email` (→ sends the HTML to `to` with `subject`). `to` / `subject` / `key` may use `{{ param }}`.
 - A tool may only use services you also list in `services` — `share`/`download` need `pdf`, `store` needs `pdf` + `storage`, `email` needs `email` — the upload is rejected otherwise, and an admin can revoke the capability per-app.
 
 **Authoring rules**: keep templates self-contained (inline CSS); template
 storage keys from IDs, not free-text names (spaces/punctuation are rejected as
 storage keys).
+
+#### Line items (array params)
+
+For invoices, quotes, work orders — anything with a variable list — use an
+`array` param and loop it, accumulating a total with a `namespace`:
+
+```json
+{
+  "name": "create_invoice",
+  "description": "Render an itemized invoice PDF and return a share link.",
+  "params": [
+    {"name": "customer", "type": "string", "required": true},
+    {"name": "items", "type": "array", "required": true,
+     "fields": [
+       {"name": "description", "type": "string", "required": true},
+       {"name": "qty", "type": "number", "required": true},
+       {"name": "rate", "type": "number", "required": true}
+     ]}
+  ],
+  "render": { "html": "<table>{% set ns = namespace(t=0) %}{% for it in items %}<tr><td>{{ it.description }}</td><td>${{ '%.2f'|format(it.qty * it.rate) }}</td></tr>{% set ns.t = ns.t + it.qty * it.rate %}{% endfor %}</table><p>Total: ${{ '%.2f'|format(ns.t) }}</p>", "branded": true },
+  "deliver": { "kind": "share", "ttl_days": 30 }
+}
+```
+
+Full, working versions ship in `examples/invoice-gen`, `examples/quote-builder`,
+and `examples/work-order`.
 
 ## Portal SDK — how apps call services
 

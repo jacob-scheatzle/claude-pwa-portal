@@ -1,8 +1,8 @@
 {
   "slug": "work-order",
   "name": "Work Order",
-  "version": "1.0.0",
-  "description": "Log a field-service job — labor, materials, total — then generate, share, or email a work-order PDF.",
+  "version": "1.1.0",
+  "description": "Log a field-service job — labor + itemized parts — then generate, share, or email a work-order PDF.",
   "icon": "icon.png",
   "entry": "index.html",
   "services": ["pdf", "email", "storage"],
@@ -12,17 +12,22 @@
   "tools": [
     {
       "name": "create_work_order",
-      "description": "Render a work-order PDF (labor + materials + total) and return a shareable link.",
+      "description": "Render a work-order PDF (labor + itemized parts + total) and return a shareable link.",
       "params": [
         {"name": "customer", "type": "string", "required": true},
         {"name": "site_address", "type": "string", "required": false, "description": "Job site address"},
         {"name": "description", "type": "string", "required": true, "description": "Work performed"},
         {"name": "hours", "type": "number", "required": true, "description": "Labor hours"},
         {"name": "rate", "type": "number", "required": true, "description": "Labor rate, USD per hour"},
-        {"name": "materials", "type": "number", "required": false, "description": "Materials cost in USD"}
+        {"name": "parts", "type": "array", "required": false, "description": "Parts / materials used",
+          "fields": [
+            {"name": "name", "type": "string", "required": true},
+            {"name": "qty", "type": "number", "required": true},
+            {"name": "price", "type": "number", "required": true, "description": "Unit price in USD"}
+          ]}
       ],
       "render": {
-        "html": "<style>body{font-family:system-ui,-apple-system,sans-serif;color:#1c1917}h1{font-size:20pt;margin:0 0 4pt}.sub{color:#57534e;margin-bottom:12pt}.desc{white-space:pre-wrap;color:#44403c;margin-bottom:12pt}table{border-collapse:collapse;margin-top:8pt}td{padding:4pt 16pt 4pt 0}.tot{font-size:16pt;font-weight:700;margin-top:16pt;border-top:2px solid #1c1917;padding-top:8pt}</style><h1>Work Order</h1><div class='sub'>For {{ customer }}{% if site_address %} &middot; {{ site_address }}{% endif %}</div><div class='desc'>{{ description }}</div><table><tr><td>Labor</td><td>{{ '%.2f'|format(hours) }} hr &times; ${{ '%.2f'|format(rate) }} = ${{ '%.2f'|format(hours * rate) }}</td></tr><tr><td>Materials</td><td>${{ '%.2f'|format(materials | default(0, true)) }}</td></tr></table><div class='tot'>Total: ${{ '%.2f'|format((hours * rate) + (materials | default(0, true))) }}</div>",
+        "html": "<style>body{font-family:system-ui,-apple-system,sans-serif;color:#1c1917}h1{font-size:20pt;margin:0 0 2pt}.sub{color:#57534e;margin-bottom:12pt}.desc{white-space:pre-wrap;color:#44403c;margin-bottom:12pt}table{width:100%;border-collapse:collapse;margin-top:8pt}th{text-align:left;font-size:9pt;text-transform:uppercase;letter-spacing:.05em;color:#78716c;border-bottom:2px solid #1c1917;padding:4pt 6pt}td{padding:5pt 6pt;border-bottom:1px solid #e7e5e4}.r{text-align:right}.totals{margin-top:10pt;margin-left:auto;width:18rem}.totals td{border:0;padding:2pt 6pt}.grand td{font-weight:700;font-size:13pt;border-top:2px solid #1c1917;padding-top:5pt}</style><h1>Work Order</h1><div class='sub'>For {{ customer }}{% if site_address %} &middot; {{ site_address }}{% endif %}</div><div class='desc'>{{ description }}</div>{% set ns = namespace(parts=0) %}{% if parts %}<table><thead><tr><th>Part</th><th class='r'>Qty</th><th class='r'>Price</th><th class='r'>Amount</th></tr></thead><tbody>{% for p in parts %}<tr><td>{{ p.name }}</td><td class='r'>{{ '%.2f'|format(p.qty) }}</td><td class='r'>${{ '%.2f'|format(p.price) }}</td><td class='r'>${{ '%.2f'|format(p.qty * p.price) }}</td></tr>{% set ns.parts = ns.parts + p.qty * p.price %}{% endfor %}</tbody></table>{% endif %}<table class='totals'><tr><td>Labor ({{ '%.2f'|format(hours) }} hr &times; ${{ '%.2f'|format(rate) }})</td><td class='r'>${{ '%.2f'|format(hours * rate) }}</td></tr><tr><td>Parts</td><td class='r'>${{ '%.2f'|format(ns.parts) }}</td></tr><tr class='grand'><td>Total</td><td class='r'>${{ '%.2f'|format((hours * rate) + ns.parts) }}</td></tr></table>",
         "filename": "work-order.pdf",
         "branded": true
       },

@@ -1,7 +1,7 @@
 {
   "slug": "invoice-gen",
   "name": "Invoice Generator",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Build line-item invoices, generate a branded PDF, and email it to the customer.",
   "icon": "icon.png",
   "entry": "index.html",
@@ -12,16 +12,22 @@
   "tools": [
     {
       "name": "create_invoice",
-      "description": "Render an invoice PDF and return a shareable link.",
+      "description": "Render an itemized invoice PDF from line items (with optional tax) and return a shareable link.",
       "params": [
         {"name": "customer", "type": "string", "required": true},
         {"name": "invoice_number", "type": "string", "required": true},
-        {"name": "amount", "type": "number", "required": true, "description": "Amount due in USD"},
-        {"name": "items", "type": "string", "required": false, "description": "Line items, one per line"},
-        {"name": "due_date", "type": "string", "required": false, "description": "e.g. 2026-06-15"}
+        {"name": "items", "type": "array", "required": true, "description": "Invoice line items",
+          "fields": [
+            {"name": "description", "type": "string", "required": true},
+            {"name": "qty", "type": "number", "required": true},
+            {"name": "rate", "type": "number", "required": true, "description": "Unit price in USD"}
+          ]},
+        {"name": "tax_rate", "type": "number", "required": false, "description": "Tax percent, e.g. 8.5"},
+        {"name": "due_date", "type": "string", "required": false, "description": "e.g. 2026-06-15"},
+        {"name": "notes", "type": "string", "required": false}
       ],
       "render": {
-        "html": "<style>body{font-family:system-ui,-apple-system,sans-serif;color:#1c1917}h1{font-size:20pt;margin:0 0 4pt}.sub{color:#57534e;margin-bottom:16pt}.items{white-space:pre-wrap;color:#44403c}.tot{font-size:16pt;font-weight:700;margin-top:16pt;border-top:2px solid #1c1917;padding-top:8pt}.due{margin-top:8pt;color:#57534e}</style><h1>Invoice {{ invoice_number }}</h1><div class='sub'>Billed to {{ customer }}</div><div class='items'>{{ items }}</div><div class='tot'>Amount due: ${{ '%.2f'|format(amount) }}</div>{% if due_date %}<div class='due'>Due {{ due_date }}</div>{% endif %}",
+        "html": "<style>body{font-family:system-ui,-apple-system,sans-serif;color:#1c1917}h1{font-size:20pt;margin:0 0 2pt}.sub{color:#57534e;margin-bottom:14pt}table{width:100%;border-collapse:collapse;margin-top:8pt}th{text-align:left;font-size:9pt;text-transform:uppercase;letter-spacing:.05em;color:#78716c;border-bottom:2px solid #1c1917;padding:4pt 6pt}td{padding:5pt 6pt;border-bottom:1px solid #e7e5e4}.r{text-align:right}.totals{margin-top:10pt;margin-left:auto;width:16rem}.totals td{border:0;padding:2pt 6pt}.grand td{font-weight:700;font-size:13pt;border-top:2px solid #1c1917;padding-top:5pt}.due{margin-top:10pt;color:#57534e}.notes{margin-top:12pt;white-space:pre-wrap;color:#44403c}</style><h1>Invoice {{ invoice_number }}</h1><div class='sub'>Billed to {{ customer }}</div><table><thead><tr><th>Description</th><th class='r'>Qty</th><th class='r'>Rate</th><th class='r'>Amount</th></tr></thead><tbody>{% set ns = namespace(sub=0) %}{% for it in items %}<tr><td>{{ it.description }}</td><td class='r'>{{ '%.2f'|format(it.qty) }}</td><td class='r'>${{ '%.2f'|format(it.rate) }}</td><td class='r'>${{ '%.2f'|format(it.qty * it.rate) }}</td></tr>{% set ns.sub = ns.sub + it.qty * it.rate %}{% endfor %}</tbody></table>{% set tax = ns.sub * (tax_rate | default(0, true)) / 100 %}<table class='totals'><tr><td>Subtotal</td><td class='r'>${{ '%.2f'|format(ns.sub) }}</td></tr>{% if tax_rate %}<tr><td>Tax ({{ tax_rate }}%)</td><td class='r'>${{ '%.2f'|format(tax) }}</td></tr>{% endif %}<tr class='grand'><td>Total</td><td class='r'>${{ '%.2f'|format(ns.sub + tax) }}</td></tr></table>{% if due_date %}<div class='due'>Due {{ due_date }}</div>{% endif %}{% if notes %}<div class='notes'>{{ notes }}</div>{% endif %}",
         "filename": "invoice.pdf",
         "branded": true
       },

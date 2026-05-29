@@ -74,8 +74,104 @@ _INSTRUCTIONS = (
     "Tools named '<slug>__<tool>' are operations a specific app declared (e.g. "
     "render a document and email/share/store it) — call list_apps or get_app to "
     "see an app's tools and their parameters. Everything runs as the token's "
-    "owner and is recorded in the portal audit log."
+    "owner and is recorded in the portal audit log. Before building or changing "
+    "an app, call authoring_guide for the manifest schema and the tool DSL "
+    "(params, render templates, deliver kinds, array line items)."
 )
+
+# Self-contained app-authoring guide returned by the ``authoring_guide`` tool so
+# an MCP-connected Claude can build cutting-edge apps WITHOUT the local
+# pwa-portal-app skill or the repo checked out. Kept in sync with SKILL.md /
+# docs/mcp.md / docs/app-authoring.md.
+_AUTHORING_GUIDE = """# Authoring a PWA Portal app
+
+An app is a folder zipped into a .zip and installed with `upload_app`
+(base64-encode the zip into `zip_base64`; `replace=true` updates in place and
+preserves per-user storage). The zip root holds at least:
+
+- `portal.json` — the manifest (below)
+- `index.html` — the entry page (HTML/CSS/JS; load the SDK with
+  `<script src="/portal-sdk.js"></script>`)
+- `icon.png` — a 192x192 icon
+
+## portal.json
+
+```json
+{
+  "slug": "my-app",                          // kebab-case, 2-40 chars, unique
+  "name": "My App",
+  "version": "1.0.0",
+  "description": "One line.",
+  "icon": "icon.png",
+  "entry": "index.html",
+  "services": ["pdf", "email", "storage"],   // SDK + tool services this app uses
+  "permissions": { "network": [] },          // external https origins the UI fetches
+  "tools": [ ... ]                           // optional MCP tools (below)
+}
+```
+
+## Tools — what Claude runs over MCP
+
+A tool is a *declaration*, not code: the portal renders an HTML template you
+supply to a PDF, then shares / downloads / emails / stores it. The app's own
+code never runs server-side. Each enabled app's tools appear as `<slug>__<tool>`.
+
+```json
+{
+  "name": "create_invoice",                  // snake_case, unique in the app
+  "description": "What it does (shown to Claude).",
+  "params": [
+    {"name": "customer", "type": "string", "required": true},
+    {"name": "items", "type": "array", "required": true,
+     "fields": [
+       {"name": "description", "type": "string", "required": true},
+       {"name": "qty", "type": "number", "required": true},
+       {"name": "rate", "type": "number", "required": true}
+     ]},
+    {"name": "tax_rate", "type": "number", "required": false}
+  ],
+  "render": {
+    "html": "<table>{% set ns = namespace(t=0) %}{% for it in items %}<tr><td>{{ it.description }}</td><td>${{ '%.2f'|format(it.qty * it.rate) }}</td></tr>{% set ns.t = ns.t + it.qty * it.rate %}{% endfor %}</table><p>Total: ${{ '%.2f'|format(ns.t) }}</p>",
+    "filename": "invoice.pdf",
+    "branded": true
+  },
+  "deliver": {"kind": "share", "ttl_days": 60}
+}
+```
+
+### params
+- `type` is `string` | `number` | `boolean`, or `array` for a list of objects.
+- An `array` param adds `fields: [{name, type, required, description}]` — the
+  shape of each element (scalars only; no nested arrays). Great for line items.
+
+### render.html — a sandboxed, autoescaping Jinja template
+- `{{ param }}` is substituted HTML-**escaped**, so a value can't break the doc.
+- Supported: `{% for it in items %}`, `{% if x %}`, arithmetic
+  (`it.qty * it.rate`), `{{ '%.2f'|format(n) }}`, running totals with
+  `{% set ns = namespace(t=0) %}` + `{% set ns.t = ns.t + ... %}`, and
+  `{{ x | default(0, true) }}` for optional numbers.
+- No external resources are fetched — embed images/fonts as `data:` URIs.
+- `branded: true` prepends the portal's business-name/logo header.
+
+### deliver.kind
+- `share` -> public link `{url, expires_at}` (`ttl_days`, max 90)
+- `download` -> `{filename, pdf_base64}`
+- `store` -> save the PDF in storage at `key` (may use `{{ param }}`) -> `{key, size}`
+- `email` -> send the rendered HTML to `to` (templated) with `subject` -> `{count}`
+  (sends HTML as the body, not a PDF attachment)
+
+### services a tool needs (must appear in the manifest's `services`)
+- `share` / `download` -> `pdf`
+- `store` -> `pdf` + `storage`
+- `email` -> `email`
+The manifest is rejected at upload if a tool uses an undeclared service.
+
+## Notes
+- Tool calls run as the connected admin user, in that user's per-app storage,
+  send email as the business, and share the SDK's per-user PDF/email rate limits.
+- The `invoice-gen`, `quote-builder`, and `work-order` example apps in the repo
+  ship full, working line-item tools to copy from.
+"""
 
 
 # ----- serialization helpers -----
@@ -121,6 +217,14 @@ _MGMT_TOOLS = [
         inputSchema={**_OBJ, "properties": {}},
     ),
     types.Tool(
+        name="authoring_guide",
+        description="Return the full guide for building a portal app and declaring "
+        "tools — manifest schema, the tool DSL (params incl. array line items, "
+        "render templates, deliver kinds), and a worked example. Read this before "
+        "creating or modifying an app, especially without the local skill.",
+        inputSchema={**_OBJ, "properties": {}},
+    ),
+    types.Tool(
         name="list_apps",
         description="List every child app on the portal (slug, name, version, "
         "enabled, services, and the names of any tools it exposes).",
@@ -141,7 +245,8 @@ _MGMT_TOOLS = [
         description="Install a packaged child-app .zip (base64-encoded). "
         "replace=false installs new (fails if the slug exists); replace=true "
         "updates in place, preserving per-user storage. Slug/name/version come "
-        "from the bundle's portal.json.",
+        "from the bundle's portal.json. Call authoring_guide first for the "
+        "manifest schema and tool DSL.",
         inputSchema={
             **_OBJ,
             "properties": {
@@ -422,9 +527,11 @@ def build_mcp_app():
         return tools
 
     @server.call_tool()
-    async def _call_tool(name: str, arguments: dict) -> dict:
+    async def _call_tool(name: str, arguments: dict):
         if name == "whoami":
             return _ctx_user()
+        if name == "authoring_guide":
+            return [types.TextContent(type="text", text=_AUTHORING_GUIDE)]
         if name == "list_apps":
             return _do_list_apps()
         if name == "get_app":

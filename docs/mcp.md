@@ -171,10 +171,37 @@ that declares them is uploaded/enabled and disappear when it's disabled, named
 |---|---|
 | `name` | snake_case, unique within the app. Exposed as `<slug>__<name>`. |
 | `description` | what the tool does — shown to Claude. |
-| `params[]` | `{name, type: string\|number\|boolean, required, description}` → the tool's input schema. |
+| `params[]` | each `{name, type, required, description}`. `type` is `string`/`number`/`boolean`, or `array` for a list of objects — an array param adds `fields: [{name, type, required, description}]` for the element shape (line items). Becomes the tool's input schema. |
 | `render.html` | inline template; `{{ param }}` placeholders are substituted with **autoescaped** values via a sandboxed Jinja environment, then rendered to PDF (no external resources are fetched). |
 | `render.branded` | prepend the portal's branding header (business name + logo). |
 | `deliver.kind` | what to do with the rendered PDF — see below. |
+
+### Line items (array params)
+
+For invoices, quotes, work orders — anything with a variable-length list — use
+an `array` param and iterate it in the template. The sandboxed Jinja supports
+`{% for %}` / `{% if %}`, arithmetic, `{{ '%.2f'|format(n) }}`, running totals
+via `{% set ns = namespace(t=0) %}` + `{% set ns.t = ns.t + ... %}`, and
+`{{ x | default(0, true) }}` for optional numbers.
+
+```json
+{
+  "name": "create_invoice",
+  "params": [
+    {"name": "customer", "type": "string", "required": true},
+    {"name": "items", "type": "array", "required": true,
+     "fields": [
+       {"name": "description", "type": "string", "required": true},
+       {"name": "qty", "type": "number", "required": true},
+       {"name": "rate", "type": "number", "required": true}
+     ]}
+  ],
+  "render": {"html": "<table>{% set ns = namespace(t=0) %}{% for it in items %}<tr><td>{{ it.description }}</td><td>${{ '%.2f'|format(it.qty * it.rate) }}</td></tr>{% set ns.t = ns.t + it.qty * it.rate %}{% endfor %}</table><p>Total: ${{ '%.2f'|format(ns.t) }}</p>", "branded": true},
+  "deliver": {"kind": "share"}
+}
+```
+
+(Full versions ship in `examples/invoice-gen`, `quote-builder`, and `work-order`.)
 
 ### Deliver kinds
 

@@ -1,7 +1,7 @@
 {
   "slug": "quote-builder",
   "name": "Quote Builder",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Build itemized quotes, generate a PDF, and share a link the customer can open.",
   "icon": "icon.png",
   "entry": "index.html",
@@ -12,14 +12,20 @@
   "tools": [
     {
       "name": "create_quote",
-      "description": "Render a quote PDF and return a shareable link.",
+      "description": "Render an itemized quote PDF from line items (with optional discount) and return a shareable link.",
       "params": [
         {"name": "customer", "type": "string", "required": true},
-        {"name": "amount", "type": "number", "required": true, "description": "Quote total in USD"},
-        {"name": "summary", "type": "string", "required": false, "description": "What the quote covers"}
+        {"name": "items", "type": "array", "required": true, "description": "Quote line items",
+          "fields": [
+            {"name": "description", "type": "string", "required": true},
+            {"name": "qty", "type": "number", "required": true},
+            {"name": "rate", "type": "number", "required": true, "description": "Unit price in USD"}
+          ]},
+        {"name": "discount", "type": "number", "required": false, "description": "Flat discount in USD"},
+        {"name": "notes", "type": "string", "required": false, "description": "Scope / terms"}
       ],
       "render": {
-        "html": "<style>body{font-family:system-ui,-apple-system,sans-serif;color:#1c1917}h1{font-size:20pt;margin:0 0 4pt}.sub{color:#57534e;margin-bottom:16pt}.summary{white-space:pre-wrap;color:#44403c}.tot{font-size:16pt;font-weight:700;margin-top:16pt;border-top:2px solid #1c1917;padding-top:8pt}</style><h1>Quote</h1><div class='sub'>Prepared for {{ customer }}</div><div class='summary'>{{ summary }}</div><div class='tot'>Total: ${{ '%.2f'|format(amount) }}</div>",
+        "html": "<style>body{font-family:system-ui,-apple-system,sans-serif;color:#1c1917}h1{font-size:20pt;margin:0 0 2pt}.sub{color:#57534e;margin-bottom:14pt}table{width:100%;border-collapse:collapse;margin-top:8pt}th{text-align:left;font-size:9pt;text-transform:uppercase;letter-spacing:.05em;color:#78716c;border-bottom:2px solid #1c1917;padding:4pt 6pt}td{padding:5pt 6pt;border-bottom:1px solid #e7e5e4}.r{text-align:right}.totals{margin-top:10pt;margin-left:auto;width:16rem}.totals td{border:0;padding:2pt 6pt}.grand td{font-weight:700;font-size:13pt;border-top:2px solid #1c1917;padding-top:5pt}.notes{margin-top:12pt;white-space:pre-wrap;color:#44403c}</style><h1>Quote</h1><div class='sub'>Prepared for {{ customer }}</div><table><thead><tr><th>Description</th><th class='r'>Qty</th><th class='r'>Rate</th><th class='r'>Amount</th></tr></thead><tbody>{% set ns = namespace(sub=0) %}{% for it in items %}<tr><td>{{ it.description }}</td><td class='r'>{{ '%.2f'|format(it.qty) }}</td><td class='r'>${{ '%.2f'|format(it.rate) }}</td><td class='r'>${{ '%.2f'|format(it.qty * it.rate) }}</td></tr>{% set ns.sub = ns.sub + it.qty * it.rate %}{% endfor %}</tbody></table>{% set disc = discount | default(0, true) %}<table class='totals'><tr><td>Subtotal</td><td class='r'>${{ '%.2f'|format(ns.sub) }}</td></tr>{% if disc %}<tr><td>Discount</td><td class='r'>-${{ '%.2f'|format(disc) }}</td></tr>{% endif %}<tr class='grand'><td>Total</td><td class='r'>${{ '%.2f'|format(ns.sub - disc) }}</td></tr></table>{% if notes %}<div class='notes'>{{ notes }}</div>{% endif %}",
         "filename": "quote.pdf",
         "branded": true
       },
