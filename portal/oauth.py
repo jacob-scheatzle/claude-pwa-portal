@@ -375,6 +375,20 @@ def _login_redirect(txn: str) -> RedirectResponse:
     return RedirectResponse(f"/login?next={nxt}", status_code=303)
 
 
+def _client_redirect(request: Request, user, url: str):
+    """Send the browser back to the OAuth client's redirect_uri.
+
+    Returns a small interstitial that meta-refreshes to ``url`` rather than a
+    302 off the consent form POST. The consent page's CSP carries
+    ``form-action 'self'``, and WebKit/Safari enforces form-action against the
+    *redirect target* of a form submission — which silently blocks a 302 to the
+    external client (e.g. claude.ai), the cause of "Approve does nothing". The
+    POST returns to 'self' (allowed); the meta-refresh then makes the
+    cross-origin hop, which form-action does not govern. See oauth_redirect.html.
+    """
+    return render(request, "oauth_redirect.html", user=user, redirect_url=url)
+
+
 def _client_name(db: Session, client_id: str) -> str:
     row = db.get(OAuthClient, client_id)
     if row and isinstance(row.client_info, dict):
@@ -429,17 +443,18 @@ def consent_submit(
 
     redirect_uri = pending.redirect_uri
     state = pending.state
+    client_id = pending.client_id  # capture before the row is deleted below
 
     if decision != "approve":
         db.delete(pending)
         db.commit()
         from portal.audit import record_event
         record_event(db, actor=user, action="oauth.deny", request=request,
-                     target=f"client:{pending.client_id}")
+                     target=f"client:{client_id}")
         params = {"error": "access_denied"}
         if state:
             params["state"] = state
-        return RedirectResponse(construct_redirect_uri(redirect_uri, **params), status_code=302)
+        return _client_redirect(request, user, construct_redirect_uri(redirect_uri, **params))
 
     # Approve: mint a single-use authorization code bound to this admin.
     raw_code = _gen()
@@ -461,12 +476,12 @@ def consent_submit(
 
     from portal.audit import record_event
     record_event(db, actor=user, action="oauth.authorize", request=request,
-                 target=f"client:{pending.client_id}")
+                 target=f"client:{client_id}")
 
     params = {"code": raw_code}
     if state:
         params["state"] = state
-    return RedirectResponse(construct_redirect_uri(redirect_uri, **params), status_code=302)
+    return _client_redirect(request, user, construct_redirect_uri(redirect_uri, **params))
 
 
 # ----- route assembly (called from main.py when MCP is enabled) -----

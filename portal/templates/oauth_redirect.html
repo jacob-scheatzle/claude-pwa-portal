@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	{# Complete the OAuth flow by navigating back to the client's redirect_uri.
+	   We use meta-refresh (a navigation), NOT a server 302 off the form POST,
+	   on purpose: the consent page's CSP carries ``form-action 'self'`` and
+	   WebKit/Safari enforces form-action against the *redirect target* of a form
+	   submission — which would silently block a 302 to the external OAuth client
+	   (e.g. claude.ai). The POST returns to 'self' (allowed); this meta-refresh
+	   then makes the cross-origin hop, which form-action does not govern. #}
+	<meta http-equiv="refresh" content="0; url={{ redirect_url }}">
+	<title>Connecting…</title>
+	<meta name="robots" content="noindex">
+</head>
+<body style="font-family: system-ui, -apple-system, sans-serif; padding: 2.5rem; color: #1c1917; line-height: 1.5;">
+	<p>Connecting you back to Claude…</p>
+	<p>If you are not redirected automatically,
+		<a href="{{ redirect_url }}">click here to continue</a>.</p>
+</body>
+</html>

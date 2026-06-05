@@ -177,9 +177,14 @@
 			   sideways scroll otherwise. Individual elements still get their
 			   own ``overflow-wrap`` rules below so the content remains
 			   visible; this just makes sure the document itself can't
-			   overflow horizontally. */
+			   overflow horizontally.
+			   Use ``clip`` (not ``hidden``): ``overflow-x: hidden`` forces the
+			   paired ``overflow-y`` to compute to ``auto``, which turns the body
+			   into a clip container that cut off the floating Administrator
+			   dropdown. ``clip`` leaves ``overflow-y: visible`` so the menu
+			   shows in full. */
 			max-width: 100%;
-			overflow-x: hidden;
+			overflow-x: clip;
 		}
 
 		body {
@@ -294,6 +299,11 @@
 			right: 0;
 			top: calc(100% + 0.55rem);
 			z-index: 11;
+			/* The admin menu has many items; cap it to the viewport and let it
+			   scroll internally so the lower entries are never cut off the
+			   bottom of the screen on a short window. */
+			max-height: calc(100vh - 5rem);
+			overflow-y: auto;
 		}
 		.nav-menu-items .nav-link {
 			padding: 0.35rem 0.5rem;
@@ -371,6 +381,10 @@
 				border: 1px solid var(--border);
 				border-radius: var(--radius);
 				box-shadow: var(--shadow-md);
+				/* The open drawer (with the admin items inlined) can be taller
+				   than a phone screen — cap + scroll so nothing is cut off. */
+				max-height: calc(100vh - 4rem);
+				overflow-y: auto;
 			}
 			.topbar nav.open { display: flex; }
 			.topbar nav .nav-link,
@@ -393,6 +407,10 @@
 				background: transparent;
 				min-width: 0;
 				margin-top: 0.25rem;
+				/* Inlined in the drawer (which owns the scroll) — drop the
+				   desktop dropdown's own cap so it doesn't nest a scrollbar. */
+				max-height: none;
+				overflow-y: visible;
 			}
 			.nav-signout-email { display: none; }
 			.topbar nav .linkish { padding: 0.55rem 0.65rem; text-align: left; }
