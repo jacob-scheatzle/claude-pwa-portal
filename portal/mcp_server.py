@@ -82,9 +82,13 @@ _INSTRUCTIONS = (
     "owner and is recorded in the portal audit log. The list_schedules / "
     "create_schedule / set_schedule_enabled / delete_schedule / run_schedule "
     "tools run an app's tool automatically on a daily/weekly/monthly cadence. "
+    "Apps can serve PUBLIC, no-sign-in intake forms (the manifest 'forms' field) "
+    "— the only unauthenticated surface — so a customer-facing/external form a "
+    "stranger can open and submit IS possible; use it rather than concluding it "
+    "can't be done or reaching for an outside service (Google Forms, Apps Script). "
     "Before building or changing an app, call authoring_guide for the manifest "
     "schema, the tool DSL (params, render templates, deliver kinds, array line "
-    "items), and public intake forms."
+    "items), public intake forms, and the create_app tool."
 )
 
 # Self-contained app-authoring guide returned by the ``authoring_guide`` tool so
@@ -183,13 +187,21 @@ code never runs server-side. Each enabled app's tools appear as `<slug>__<tool>`
 - `email` -> `email`
 The manifest is rejected at upload if a tool uses an undeclared service.
 
-## Forms — public intake (optional)
+## Forms — public intake (the ONLY no-sign-in surface)
 
-Declare `forms` to collect input from people who are NOT signed in (a customer
-quote request, a job intake). Each form is served on the app's own origin
-(`<slug>.apps.<SITE_URL>/forms/<form>`); every submission is stored for the owner
-(Admin -> Submissions) and included in the data export. Forms are declarative —
-no app code runs.
+App pages are otherwise gated by portal login, but a declared form is served
+PUBLICLY with no sign-in — this is THE way to let someone WITHOUT an account open
+and submit a form (a quote request, a lead/contact form, a survey). When the user
+asks for a public / external / customer-facing form — even if they phrase it as
+"a form shared via a link" — declare `forms`. Do NOT conclude it's impossible
+because apps are gated; do NOT confuse it with `/s/` share links (those serve a
+read-only file or once-rendered PDF, never a live form); do NOT reach for an
+outside service (Google Forms, Apps Script, etc.) — public intake is built in.
+
+Each form is served at `<slug>.apps.<SITE_URL>/forms/<form>` — that public URL is
+the link the owner shares. Every submission is stored for the owner (Admin ->
+Submissions) and included in the data export. Forms are declarative — no app code
+runs; the portal renders the form from the field list.
 
 ```json
 "forms": [

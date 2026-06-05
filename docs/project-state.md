@@ -106,6 +106,22 @@ project up on a different machine or after a break.
     image lib). `build_app_zip` / `generate_default_icon_svg` are module-level +
     unit-tested (12/12: auto-icon, base64 icon, inline SVG, real install, bad
     input). See [mcp.md](mcp.md).
+  - **v0.16.1** — connected **public intake forms** with the **share-link**
+    feature in the guidance: an app that collects public submissions and then
+    needs to hand a result back (a generated PDF/file) gets cross-references
+    between `forms` and `/s/<token>` shares in both the skill and the MCP
+    `authoring_guide`, so Claude builds the two halves together.
+  - **v0.16.2** — **made public intake forms unmissable** in the guidance. A
+    claude.ai session had read the skill, concluded a public no-sign-in form was
+    impossible ("every child app is gated behind portal login"), and proposed an
+    external Google Apps Script workaround. Both the skill (intro capability line,
+    the login-gating note's explicit `forms` exception, and a rewritten "Public
+    intake forms" section) and the MCP side (the `authoring_guide` Forms section +
+    the always-seen server `_INSTRUCTIONS`) now state plainly that `forms` is the
+    one public, no-sign-in surface — with three standing corrections: don't
+    conclude it's impossible, don't confuse it with read-only `/s/` share links,
+    and don't reach for an outside service (Google Forms, Apps Script, etc.).
+    Guidance-only; no code-path change.
 
 ---
 

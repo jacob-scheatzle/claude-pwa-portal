@@ -9,6 +9,8 @@ This skill builds child PWAs ("apps") that live inside a self-hosted **PWA Porta
 
 The portal provides shared services that apps call from JavaScript via a built-in SDK: **PDF generation, email, per-user/per-app storage, and user info**.
 
+Apps can also declare **public, no-sign-in intake forms** that the portal serves to people *without* an account — the one part of an app reachable without login. This is the built-in way to collect input from the public (a quote request, a lead/contact form, a survey); see **Public intake forms** below. (So "can a stranger fill out a form on the portal?" is **yes** — don't conclude otherwise or reach for an outside form service.)
+
 ## When to use this skill
 
 Use when the user asks you to:
@@ -398,11 +400,24 @@ and `examples/work-order`.
 
 ## Public intake forms (let non-users submit data)
 
-When the business needs input from someone who *isn't* a portal user — a
-customer requesting a quote, a lead form on their website — declare `forms`.
-Each is served on the app's own origin (`<slug>.apps.<SITE_URL>/forms/<form>`) you can share; submissions
-collect under **Admin → Submissions** (CSV export available) and in the data
-export. No app code runs server-side.
+**This is THE way to make something on the portal that a person without an
+account can open and fill out.** When the user asks for a public / external /
+no-login / customer-facing / "shareable" form — a quote request, a lead or
+contact form, a survey — even if they phrase it as *"a form shared via a link"*,
+the answer is `forms`. Specifically:
+
+- **Don't conclude it's impossible** because "apps are gated by login" — forms
+  are the explicit public exception.
+- **Don't confuse it with `/s/` share links** — those serve a *read-only* file
+  or once-rendered PDF, never a live form a stranger fills out.
+- **Don't reach for an outside service** (Google Forms, Apps Script, Typeform,
+  etc.) — public intake is built into the portal.
+
+Declare `forms` and the portal serves each one as a public, no-sign-in page at
+`<slug>.apps.<SITE_URL>/forms/<form>` — **that public URL is the link you share.**
+Submissions collect under **Admin → Submissions** (CSV export) and in the data
+export. No app code runs server-side; the portal renders the form from your
+field list.
 
 ```json
 "forms": [
@@ -765,4 +780,4 @@ for updates. Avoid deleting and re-uploading — deletion wipes per-user storage
 - **The skill is non-interactive.** Don't expect to prompt during a build — gather inputs up front.
 - **Read the portal's error.** If `upload.py` prints an HTTP error, the message body is the portal's validation feedback. Adjust `portal.json` or the bundle accordingly.
 - **Storage is per `(app_slug, user_id)`** — Alice's data in `expense-tracker` is invisible to Bob in `expense-tracker` and to Alice in `quote-calc`.
-- **Apps are gated by portal login.** You don't need to add auth — the portal handles it.
+- **App *pages* are gated by portal login** (you don't add auth — the portal handles it) — **EXCEPT public intake forms.** A declared `forms` page is served with **no sign-in** at `<slug>.apps.<SITE_URL>/forms/<form>`, so a stranger can open and submit it. If the user wants a public / external / customer-facing form (even phrased as "share it via a link" — the form's URL *is* that link), use `forms`; don't conclude it's impossible because apps are gated, and never reach for an outside service (Google Forms, Apps Script, etc.). See "Public intake forms."
