@@ -32,9 +32,12 @@ from __future__ import annotations
 
 import base64
 import binascii
+import io
+import json
 import logging
 import os
 import tempfile
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -90,9 +93,14 @@ _INSTRUCTIONS = (
 # docs/mcp.md / docs/app-authoring.md.
 _AUTHORING_GUIDE = """# Authoring a PWA Portal app
 
-An app is a folder zipped into a .zip and installed with `upload_app`
-(base64-encode the zip into `zip_base64`; `replace=true` updates in place and
-preserves per-user storage). The zip root holds at least:
+An app is a small folder of files. Over MCP the reliable way to install it is
+`create_app`: pass `files` as a map of {filename: text content} (include
+`portal.json` and the entry HTML) and the portal assembles + installs the bundle
+— no zip, no base64. The icon is optional: pass `icon_base64`, include an `.svg`
+icon in `files`, or let one be generated. `upload_app` is the alternative when
+you already have a packaged `.zip` (base64 into `zip_base64`), but large bundles
+can be truncated over MCP — prefer the web UI for those. `replace=true` updates
+in place and preserves per-user storage. The bundle root holds at least:
 
 - `portal.json` — the manifest (below)
 - `index.html` — the entry page (HTML/CSS/JS; load the SDK with
@@ -242,6 +250,97 @@ def _app_detail(a: App) -> dict:
     return d
 
 
+# ----- app bundle assembly from text files (the create_app tool) -----
+
+def generate_default_icon_svg(name: str) -> str:
+    """A generated fallback icon following the skill's icon rules: a 192×192
+    square in the portal accent (#059669) with the app's initial in white.
+
+    The skill prefers a hand-drawn pictogram, but the MCP create_app path has no
+    way to draw one server-side — this keeps a freshly-created app from falling
+    back to the generic portal placeholder. A real pictogram can be uploaded
+    later. SVG (a supported icon format) so no image library is needed.
+    """
+    letter = (name.strip()[:1] or "A").upper()
+    letter = (
+        letter.replace("&", "&amp;").replace("<", "&lt;")
+        .replace(">", "&gt;").replace('"', "&quot;")
+    )
+    return (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="192" height="192" '
+        'viewBox="0 0 192 192" role="img">'
+        '<rect width="192" height="192" rx="36" fill="#059669"/>'
+        '<text x="96" y="104" text-anchor="middle" dominant-baseline="central" '
+        'font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" '
+        f'font-size="108" font-weight="700" fill="#ffffff">{letter}</text>'
+        "</svg>"
+    )
+
+
+def build_app_zip(files: Any, icon_base64: Optional[str] = None) -> bytes:
+    """Assemble an installable child-app .zip from text source files.
+
+    ``files`` maps filename → text content and must include ``portal.json`` (and
+    the entry file it names). The icon is resolved in order: ``icon_base64`` (a
+    binary icon), else an ``.svg`` icon already present in ``files``, else a
+    generated fallback (see ``generate_default_icon_svg``) — and ``portal.json``'s
+    ``icon`` field is updated to match. Returns the zip bytes; raises
+    ``ValueError`` on malformed input. Kept module-level so it's unit-testable
+    independent of the MCP request context.
+    """
+    if not isinstance(files, dict) or not files:
+        raise ValueError("files must be a non-empty object of {filename: text content}")
+    clean: dict[str, str] = {}
+    for fname, content in files.items():
+        if not isinstance(fname, str) or not isinstance(content, str):
+            raise ValueError("each file must be a string filename mapped to string content")
+        parts = Path(fname).parts
+        if fname.startswith("/") or "\\" in fname or ".." in parts or not parts:
+            raise ValueError(f"unsafe filename in files: {fname!r}")
+        clean[fname] = content
+    if "portal.json" not in clean:
+        raise ValueError("files must include portal.json")
+    try:
+        manifest = json.loads(clean["portal.json"])
+    except Exception as e:
+        raise ValueError(f"portal.json is not valid JSON: {e}")
+    if not isinstance(manifest, dict):
+        raise ValueError("portal.json must be a JSON object")
+
+    icon_name = (manifest.get("icon") or "").strip()
+    icon_bytes: Optional[bytes] = None
+    if icon_base64:
+        try:
+            icon_bytes = base64.b64decode("".join(icon_base64.split()), validate=True)
+        except (binascii.Error, ValueError):
+            raise ValueError("icon_base64 is not valid base64")
+        if not icon_name:
+            icon_name = "icon.png"
+        clean.pop(icon_name, None)  # a supplied binary icon wins over any text version
+        manifest["icon"] = icon_name
+    elif icon_name and icon_name in clean and icon_name.lower().endswith(".svg"):
+        pass  # an SVG icon was provided inline as a text file
+    else:
+        icon_name = "icon.svg"
+        manifest["icon"] = icon_name
+        clean[icon_name] = generate_default_icon_svg(
+            str(manifest.get("name") or manifest.get("slug") or "App")
+        )
+
+    clean["portal.json"] = json.dumps(manifest, indent=2)
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for fname, content in clean.items():
+            z.writestr(fname, content)
+        if icon_bytes is not None:
+            z.writestr(icon_name, icon_bytes)
+    data = buf.getvalue()
+    if len(data) > MAX_ZIP_BYTES:
+        raise ValueError(f"assembled bundle exceeds {MAX_ZIP_BYTES // (1024 * 1024)}MB limit")
+    return data
+
+
 # ----- management tool declarations (static schemas) -----
 
 _OBJ = {"type": "object", "additionalProperties": False}
@@ -294,6 +393,34 @@ _MGMT_TOOLS = [
                 "replace": {"type": "boolean", "description": "update in place if slug exists"},
             },
             "required": ["filename", "zip_base64"],
+        },
+    ),
+    types.Tool(
+        name="create_app",
+        description="Create or update a child app from its source files as TEXT — "
+        "the reliable way to ship an app over MCP (no zip, no base64 except an "
+        "optional icon). 'files' maps each filename to its text content and MUST "
+        "include portal.json and the entry file it names (e.g. index.html). The "
+        "portal assembles the bundle and installs it. Provide a 192x192 icon via "
+        "icon_base64 (PNG/JPEG/WebP) or include an .svg icon in 'files'; if "
+        "neither is given a default icon is generated. replace=true updates an "
+        "existing slug in place (preserves per-user storage). Call authoring_guide "
+        "first for the manifest schema and tool DSL.",
+        inputSchema={
+            **_OBJ,
+            "properties": {
+                "files": {
+                    "type": "object",
+                    "additionalProperties": {"type": "string"},
+                    "description": "filename -> text content; must include portal.json + the entry HTML",
+                },
+                "icon_base64": {
+                    "type": "string",
+                    "description": "optional base64 of a 192x192 PNG/JPEG/WebP icon; omit to auto-generate",
+                },
+                "replace": {"type": "boolean", "description": "update in place if the slug exists"},
+            },
+            "required": ["files"],
         },
     ),
     types.Tool(
@@ -570,6 +697,39 @@ def build_mcp_app():
                 "version": result.version, "replaced": result.replaced,
             }
 
+    async def _do_create_app(args: dict) -> dict:
+        ident = _ctx_user()
+        # Assemble the bundle from text files (+ optional / generated icon). Bad
+        # input raises ValueError, surfaced to the caller as a tool error.
+        data = build_app_zip(args.get("files"), args.get("icon_base64"))
+        fd, tmp_name = tempfile.mkstemp(suffix=".zip")
+        os.close(fd)
+        tmp_path = Path(tmp_name)
+        tmp_path.write_bytes(data)
+        with Session(engine) as db:
+            user = db.get(User, ident["id"])
+            if user is None:
+                tmp_path.unlink(missing_ok=True)
+                raise ValueError("Authenticated user no longer exists.")
+            try:
+                result = await install_bundle_from_path(
+                    db, user, tmp_path,
+                    allow_replace=bool(args.get("replace", False)),
+                    expected_slug=None,
+                )
+            except UploadError as e:
+                raise ValueError(str(e))
+            record_event(
+                db, actor=user,
+                action="app.replace" if result.replaced else "app.upload",
+                request=_ctx_request(), target=f"app:{result.slug}",
+                details={"name": result.name, "version": result.version, "via": "mcp/create_app"},
+            )
+            return {
+                "slug": result.slug, "name": result.name,
+                "version": result.version, "replaced": result.replaced,
+            }
+
     def _do_set_enabled(args: dict) -> dict:
         ident = _ctx_user()
         slug = args.get("slug")
@@ -796,6 +956,8 @@ def build_mcp_app():
             return _do_get_app(arguments)
         if name == "upload_app":
             return await _do_upload_app(arguments)
+        if name == "create_app":
+            return await _do_create_app(arguments)
         if name == "set_app_enabled":
             return _do_set_enabled(arguments)
         if name == "list_schedules":

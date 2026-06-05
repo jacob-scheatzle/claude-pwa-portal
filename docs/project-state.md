@@ -95,6 +95,17 @@ project up on a different machine or after a break.
     one-time consent. Verified end-to-end (9/9): create → authorize/consent/token
     with the pre-registered client → `/mcp` auth → wrong-secret rejected →
     delete revokes the client + its tokens.
+  - **v0.15.1** — hardened `upload_app` base64 decode: tolerate line-wrapped
+    base64, and distinguish "not valid base64" from "decoded but isn't a ZIP"
+    (the usual sign of a payload truncated over the MCP tool channel).
+  - **v0.16.0** — new **`create_app`** MCP tool: install/update an app from its
+    source **files as text** (`files` map + optional `icon_base64`), assembled +
+    installed server-side — reliable over MCP with no zip/base64 for the
+    (text) app code. If no icon is supplied, one is generated following the
+    skill's icon rules (192×192 accent square + the app's initial, as SVG, no
+    image lib). `build_app_zip` / `generate_default_icon_svg` are module-level +
+    unit-tested (12/12: auto-icon, base64 icon, inline SVG, real install, bad
+    input). See [mcp.md](mcp.md).
 
 ---
 
