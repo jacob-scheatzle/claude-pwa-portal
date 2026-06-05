@@ -80,6 +80,15 @@ def init_db() -> None:
             purge_expired_launch_tokens(db)
             prune_logs(db)
             prune_audit_log(db)
+            # OAuth cleanup is optional — the module imports the `mcp` auth
+            # package, which a lean (no-MCP) install won't have. Guard it so its
+            # absence never blocks the rest of startup cleanup.
+            try:
+                from portal.oauth import prune_oauth
+
+                prune_oauth(db)
+            except Exception:
+                pass
     except Exception:
         pass
 

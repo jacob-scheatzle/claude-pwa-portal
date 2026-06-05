@@ -372,7 +372,20 @@ def _client_ip(headers: dict, scope) -> str:
 
 
 async def _send_json_error(scope, receive, send, status: int, message: str) -> None:
-    headers = {"WWW-Authenticate": "Bearer"} if status == 401 else None
+    headers = None
+    if status == 401:
+        # Point OAuth-capable clients (the Claude.ai connector) at the
+        # protected-resource metadata so they can discover the authorization
+        # server and start the OAuth flow. Falls back to a bare Bearer challenge
+        # if OAuth isn't available.
+        challenge = "Bearer"
+        try:
+            from portal.oauth import resource_metadata_url
+
+            challenge = f'Bearer resource_metadata="{resource_metadata_url()}"'
+        except Exception:
+            pass
+        headers = {"WWW-Authenticate": challenge}
     await JSONResponse({"error": message}, status_code=status, headers=headers)(
         scope, receive, send
     )
@@ -417,6 +430,16 @@ class _AuthASGIApp:
         ip = _client_ip(headers, scope)
         with Session(engine) as db:
             user = authenticate_bearer(db, authz)
+            if user is None:
+                # Not a static API token — try an OAuth access token (the
+                # Claude.ai connector path). Lazy import so an OAuth-module hiccup
+                # degrades to static-token-only rather than breaking /mcp.
+                try:
+                    from portal.oauth import authenticate_oauth_token
+
+                    user = authenticate_oauth_token(db, authz)
+                except Exception:
+                    user = None
             if user is None:
                 reason = "bad_token" if (authz and authz.lower().startswith("bearer ")) else "missing_token"
                 emit_security_line("MCP_AUTH_FAILED", ip, reason=reason)

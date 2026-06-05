@@ -1,10 +1,10 @@
 # MCP server — manage the portal from Claude
 
 The portal can expose a **Model Context Protocol (MCP)** endpoint at `/mcp` so
-Claude (Claude Code, Claude Desktop, or a claude.ai connector) connects with a
-URL + an admin API token and manages your child apps **as tool calls** — list,
-inspect, upload, replace, enable/disable — instead of the skill's
-`upload.py` + `~/.config/pwa-portal/config.json` plumbing.
+Claude (Claude Code, Claude Desktop, or a claude.ai connector) connects — with an
+admin API token, or via OAuth for claude.ai — and manages your child apps **as
+tool calls** — list, inspect, upload, replace, enable/disable — instead of the
+skill's `upload.py` + `~/.config/pwa-portal/config.json` plumbing.
 
 It's **on by default in the Docker image** (the dependency is bundled and the
 toggle auto-enables) but inert without a valid admin token. It's a
@@ -42,28 +42,46 @@ pip install 'pwa-portal[mcp]'
 
 ## Connect
 
-### 1. Mint an admin API token
+Two ways to authenticate, depending on the client:
 
-In the portal: **Admin → Tokens → New token**. The raw token is shown **once** —
-copy it. It must belong to an **admin** user; app management requires it.
+- **Static admin API token** — Claude Code and Claude Desktop. Mint a token,
+  send it as a bearer header.
+- **OAuth** — **claude.ai** custom connectors. claude.ai can't use a static
+  token; it runs a browser OAuth sign-in instead (nothing to copy — you
+  authorize as a portal admin). Requires the portal to be reachable over
+  **HTTPS at a public domain**: the OAuth issuer must be HTTPS (localhost is
+  allowed for dev).
 
-### 2. Add the connector
+### Claude Code / Claude Desktop (API token)
 
-**Claude Code:**
+1. **Mint an admin API token** — **Admin → Tokens → New token**. The raw token
+   is shown **once**; it must belong to an **admin** user.
+2. **Add the connector** (Claude Code):
+   ```bash
+   claude mcp add --transport http portal https://<your-portal>/mcp \
+     --header "Authorization: Bearer <your-token>"
+   ```
+   (Local dev: `http://localhost:8000/mcp`.) In Claude Desktop, add a custom
+   HTTP/streamable MCP server at `https://<your-portal>/mcp` with the same
+   `Authorization: Bearer <token>` header.
 
-```bash
-claude mcp add --transport http portal https://<your-portal>/mcp \
-  --header "Authorization: Bearer <your-token>"
-```
+### claude.ai (OAuth)
 
-(Local dev: `http://localhost:8000/mcp`. Check `claude mcp add --help` for your
-version's exact flags.)
+1. In claude.ai, add a **custom connector** pointing at
+   `https://<your-portal>/mcp` — no token or header.
+2. Click **Connect**. claude.ai discovers the portal's OAuth server, registers
+   itself dynamically, and sends you to the portal to sign in.
+3. Sign in as an **admin** and **Approve** on the consent screen. The connection
+   completes and refreshes silently afterward. (Non-admins are refused — MCP is
+   admin-only.)
 
-**Claude Desktop / claude.ai:** add a custom HTTP/streamable MCP connector
-pointing at `https://<your-portal>/mcp` with an `Authorization: Bearer <token>`
-header. Exact UI varies by client version; the URL and header are the same.
+Under the hood the portal runs the OAuth endpoints the connector needs —
+authorization-server + protected-resource metadata, dynamic client registration
+(RFC 7591), the PKCE authorization-code grant, and refresh — built on the MCP
+SDK's auth framework. OAuth access carries the **same privilege as an admin API
+token**; disconnect from claude.ai (or revoke server-side) to end it.
 
-### 3. Verify
+### Verify
 
 Ask Claude to call **`whoami`**. It should return your admin user
 (`{"id": …, "email": …, "role": "admin"}`). If it does, you're connected.
@@ -114,8 +132,14 @@ ship with the MCP tool — or keep using the upload script; nothing is removed.
 - **On by default in the Docker image** (the dep is bundled and the toggle
   auto-enables) — but it's inert without a valid admin token. Set
   `MCP_ENABLED=false` to remove the endpoint entirely.
-- **Admin token only.** Auth reuses the portal's existing bearer-token
-  validation; non-admin tokens get `403`, missing/invalid tokens get `401`.
+- **Admin only, either way.** Auth accepts a static admin bearer token *or* an
+  OAuth access token; both must resolve to an **admin** (non-admin → `403`,
+  missing/invalid → `401`). OAuth tokens are minted only after an admin signs in
+  and approves the consent screen; the authorization-code grant is **PKCE-only**
+  (S256), client secrets/codes/access+refresh tokens are random and stored as
+  SHA-256 hashes, refresh tokens rotate on use, and access is admin-equivalent.
+  The OAuth issuer must be HTTPS (the SDK allows localhost for dev), so OAuth is
+  effectively for real (HTTPS) deployments; static tokens cover everything else.
 - **Auth failures are logged + banned.** Every 401/403 on `/mcp` writes an
   `MCP_AUTH_FAILED` line to `data/security.log`; the bundled fail2ban filter
   bans IPs that flood it (see [fail2ban.md](fail2ban.md)). Tokens are

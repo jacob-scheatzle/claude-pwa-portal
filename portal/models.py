@@ -102,6 +102,76 @@ class ApiToken(SQLModel, table=True):
     last_used_at: Optional[datetime] = None
 
 
+# ----- OAuth 2.1 Authorization Server (for the /mcp connector) -----
+#
+# Claude.ai's remote-MCP connector authenticates via OAuth (it can't use the
+# static ApiToken bearer the way Claude Code/Desktop do). The portal acts as a
+# small OAuth Authorization Server using the mcp SDK's auth framework; these
+# four tables back the provider (portal/oauth.py). Secrets, codes, and tokens
+# are random + stored as sha256 hashes — only the prefix/metadata is plaintext.
+# OAuth access maps to an admin User, same privilege as an admin ApiToken.
+
+
+class OAuthClient(SQLModel, table=True):
+    # A dynamically-registered client (RFC 7591). Claude.ai registers itself at
+    # POST /register; we persist the metadata so /authorize + /token can
+    # validate it later.
+    client_id: str = Field(primary_key=True)
+    # sha256 of the issued client_secret (confidential client); None if public.
+    client_secret_hash: Optional[str] = None
+    # The full OAuthClientInformationFull as JSON (redirect_uris, grant_types,
+    # scope, client_name, …) — the SDK round-trips this object verbatim.
+    client_info: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+class OAuthPendingAuthorization(SQLModel, table=True):
+    # A /authorize request parked while the admin signs in + consents. Keyed by
+    # an opaque txn id carried in the consent URL; converted to an OAuthCode on
+    # approval, dropped on denial/expiry.
+    txn: str = Field(primary_key=True)
+    client_id: str = Field(index=True)
+    redirect_uri: str
+    redirect_uri_provided_explicitly: bool = Field(default=True)
+    code_challenge: str
+    scope: str = Field(default="")  # space-delimited
+    state: Optional[str] = None
+    resource: Optional[str] = None  # RFC 8707 resource indicator
+    created_at: datetime = Field(default_factory=_utcnow)
+    expires_at: datetime = Field(default_factory=_utcnow)
+
+
+class OAuthCode(SQLModel, table=True):
+    # Authorization code (PKCE), short-lived + single-use, stored hashed.
+    code_hash: str = Field(primary_key=True)
+    client_id: str = Field(index=True)
+    user_id: int = Field(foreign_key="user.id", index=True)
+    redirect_uri: str
+    redirect_uri_provided_explicitly: bool = Field(default=True)
+    code_challenge: str
+    scope: str = Field(default="")  # space-delimited
+    resource: Optional[str] = None
+    expires_at: datetime = Field(default_factory=_utcnow)
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+class OAuthToken(SQLModel, table=True):
+    # An issued access token (+ optional refresh token), stored hashed. Maps a
+    # bearer token back to its owning admin User; the /mcp auth wrapper resolves
+    # it. Refresh rotation revokes the old row and writes a new one.
+    id: Optional[int] = Field(default=None, primary_key=True)
+    access_token_hash: str = Field(index=True, unique=True)
+    refresh_token_hash: Optional[str] = Field(default=None, index=True)
+    client_id: str = Field(index=True)
+    user_id: int = Field(foreign_key="user.id", index=True)
+    scope: str = Field(default="")  # space-delimited
+    resource: Optional[str] = None
+    access_expires_at: datetime = Field(default_factory=_utcnow)
+    refresh_expires_at: Optional[datetime] = None
+    revoked_at: Optional[datetime] = None
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
 class UserSession(SQLModel, table=True):
     # Server-side session record. The cookie payload only carries the opaque
     # ``id`` (a random token); auth state lives here so logout / password

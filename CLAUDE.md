@@ -20,7 +20,8 @@ portal/
   api.py              /api/v1/* (JSON; cookie + bearer auth; storage / pdf / email)
   apps.py             /admin/apps/* + /apps/<slug>/* + child-app zip upload/validation/serving
   admin.py            /admin/{settings,tokens,users} (HTML form routes)
-  mcp_server.py       Optional /mcp MCP server (low-level Server, dynamic list_tools) — app-mgmt tools + each app's declared tools; admin-bearer ASGI auth; gated by MCP_ENABLED + [mcp] extra
+  mcp_server.py       Optional /mcp MCP server (low-level Server, dynamic list_tools) — app-mgmt tools + each app's declared tools; ASGI auth accepts admin API token OR OAuth access token; gated by MCP_ENABLED + [mcp] extra
+  oauth.py            OAuth 2.1 AS for the /mcp connector (claude.ai can't use static tokens): mcp-SDK provider over OAuth* tables + /oauth/consent (reuses admin login). DCR + PKCE + refresh; admin-only
   app_tools.py        Phase 2 executor — runs an app's declared tools (sandboxed-Jinja template → PDF → share/email/store/download) over trusted primitives
   models.py           SQLModel tables: User, Setting, App, ApiToken, UserSession
   sessions.py         Helpers for the server-side UserSession (create/revoke/touch)
@@ -219,3 +220,18 @@ in-app **Backup** button is gated off (use RDS snapshots + S3 versioning); and
 the security log goes to stdout/CloudWatch (WAF replaces fail2ban). The app
 stays **single-task** (`desired_count=1`, recreate deploys) because the
 scheduler + rate limiters are in-process. See [aws/README.md](aws/README.md).
+
+The `/mcp` endpoint also supports **OAuth** (`portal/oauth.py`) so the
+**claude.ai** connector can authenticate — it can't send a static API token.
+Built on the `mcp` SDK's auth framework (`mcp.server.auth`): the SDK serves
+`/authorize`, `/token`, `/register` (DCR), `/revoke`, and the AS +
+protected-resource metadata; we supply a storage-backed provider over the
+`OAuth{Client,PendingAuthorization,Code,Token}` tables (migration `2154c41b0659`)
+plus a `/oauth/consent` page that reuses the portal's **admin** login. PKCE
+(S256) is mandatory, refresh tokens rotate, and codes/tokens/secrets are stored
+as SHA-256 hashes. The `_AuthASGIApp` wrapper now accepts an admin API token
+**or** an OAuth access token, and its 401 carries
+`WWW-Authenticate: …resource_metadata=…` for discovery. OAuth is wired only when
+MCP is on and the issuer is a valid OAuth issuer (HTTPS, or localhost for dev) —
+otherwise static tokens still work. Routes are appended in `main.py`'s MCP block
+before the catch-all GET. See [docs/mcp.md](docs/mcp.md).

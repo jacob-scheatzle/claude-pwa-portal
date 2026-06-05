@@ -61,6 +61,21 @@ project up on a different machine or after a break.
   S3(MinIO)+SQLite, and S3+Postgres — 21/21 each; Alembic migrates a fresh
   Postgres cleanly; `terraform validate` passes. The Docker/Caddy + SQLite path
   is unchanged and remains the default. See [aws/README.md](../aws/README.md).
+- **Update (June 5, 2026, later):** the `/mcp` server now supports **OAuth** so
+  the **claude.ai** connector can authenticate (it can't use a static API
+  token). New `portal/oauth.py` implements an OAuth 2.1 AS on the `mcp` SDK's
+  auth framework — `/authorize`, `/token`, `/register` (dynamic client
+  registration), `/revoke`, AS + protected-resource metadata, and a
+  `/oauth/consent` page that reuses the portal's admin login. Adds four tables
+  (`OAuth{Client,PendingAuthorization,Code,Token}`, migration `2154c41b0659`).
+  PKCE (S256) mandatory, refresh-token rotation, codes/tokens/secrets stored
+  hashed; OAuth access is admin-equivalent and the `/mcp` wrapper now accepts an
+  admin API token **or** an OAuth token (401 carries `resource_metadata` for
+  discovery). Static tokens (Claude Code/Desktop) are unchanged. Verified
+  end-to-end with a PKCE TestClient flow (DCR → authorize → consent → token →
+  /mcp → refresh) plus negatives (PKCE mismatch, reused refresh, non-admin
+  consent, static-token regression) — **18/18 on both SQLite and Postgres**. See
+  [mcp.md](mcp.md).
 
 ---
 

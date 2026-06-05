@@ -173,6 +173,29 @@ if _mcp_setting is None or _mcp_setting:
         app.router.routes.append(_Route("/mcp/", _mcp_asgi, methods=_mcp_methods))
         logger.info("MCP management server available at /mcp")
 
+        # OAuth Authorization Server for the /mcp connector. Claude.ai's remote
+        # connector authenticates via OAuth (it can't send a static API token);
+        # Claude Code/Desktop keep using API tokens. The SDK provides /authorize,
+        # /token, /register (DCR), /revoke + metadata; the consent routes
+        # (/oauth/consent) reuse the portal's admin login. Appended here, before
+        # the catch-all GET, so the well-known + /authorize GET routes match.
+        # Skipped (static tokens still work) when the issuer isn't a valid OAuth
+        # issuer — the SDK requires HTTPS, except localhost for dev.
+        try:
+            from portal.oauth import build_oauth_routes, issuer_url, oauth_router
+            app.include_router(oauth_router)
+            for _oauth_route in build_oauth_routes():
+                app.router.routes.append(_oauth_route)
+            logger.info("MCP OAuth authorization server enabled (issuer %s)", issuer_url())
+        except ValueError as exc:
+            logger.warning(
+                "MCP OAuth disabled: %s. Static admin API tokens still work on "
+                "/mcp; Claude.ai's connector needs an HTTPS issuer — set SITE_URL "
+                "to your public https domain.", exc,
+            )
+        except ImportError:
+            logger.warning("MCP OAuth unavailable: the 'mcp' auth module is missing.")
+
 
 email_adapter = TypeAdapter(EmailStr)
 
