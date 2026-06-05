@@ -168,7 +168,10 @@ code never runs server-side. Each enabled app's tools appear as `<slug>__<tool>`
 - `branded: true` prepends the portal's business-name/logo header.
 
 ### deliver.kind
-- `share` -> public link `{url, expires_at}` (`ttl_days`, max 90)
+- `share` -> the portal share-link system: a public, expiring, revocable
+  `/s/<token>` link to the rendered PDF, returned as `{url, expires_at}`
+  (`ttl_days`, max 90). This is how an app hands a document to someone who isn't
+  signed in — pair it with a public intake form (see Forms) to collect-then-reply.
 - `download` -> `{filename, pdf_base64}`
 - `store` -> save the PDF in storage at `key` (may use `{{ param }}`) -> `{key, size}`
 - `email` -> send the rendered HTML to `to` (templated) with `subject` -> `{count}`
@@ -207,6 +210,19 @@ no app code runs.
 
 Field `type` is `text` | `email` | `tel` | `number` | `textarea`. Forms need no
 `services`. The public endpoint is rate-limited per IP and has a spam honeypot.
+
+The form's public URL — `<slug>.apps.<SITE_URL>/forms/<form>`, shown under
+Admin -> Submissions — IS the link the owner hands out (put it on a website,
+email it, text it). After creating a form app, surface this URL so they can
+share it.
+
+Pair forms with share links to close the loop: a form *collects* a request, and
+a tool with `deliver: {kind: "share"}` *sends a document back* as a public,
+expiring `/s/<token>` link. The canonical intake app ships both — e.g. a
+`quote_request` form AND a `create_quote` tool that renders the quote PDF and
+delivers `kind: share` (declare the `pdf` service for that tool; the form half
+needs no services). Build the share half whenever the workflow ends in giving
+the customer a document.
 
 ## Notes
 - Tool calls run as the connected admin user, in that user's per-app storage,

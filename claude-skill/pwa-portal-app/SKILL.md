@@ -424,6 +424,19 @@ export. No app code runs server-side.
 Field `type` is `text` | `email` | `tel` | `number` | `textarea`. Forms need no
 `services`. The public endpoint is rate-limited per IP and has a spam honeypot.
 
+**The form URL is what you share.** `<slug>.apps.<SITE_URL>/forms/<form>` (shown
+under **Admin → Submissions**) is a public link — the owner puts it on a website,
+emails it, or texts it to customers. When you build a form app, surface this URL
+to the user so they know what to hand out.
+
+**Pair forms with share links** (see "Share links" below) to close the loop: a
+form *collects* a request; a share link *sends a document back*. After a request
+arrives, render the result to a PDF and reply with a public, expiring,
+revocable `/s/<token>` link — `portal.share.create({ kind: "pdf", … })` from app
+JS, or `deliver: { kind: "share" }` on a declarative tool. A typical intake app
+ships **both**: the `quote_request` form *and* a quote-builder that returns a
+share link.
+
 **Scheduling:** any tool can run on a recurring schedule (daily/weekly/monthly)
 from **Admin → Schedules**, or via Claude over MCP (`create_schedule`) — handy
 for "email the monthly report" with nobody clicking a button. Schedules aren't
@@ -537,6 +550,13 @@ updates what recipients see. PDF shares are rendered once and frozen.
 
 Requires the corresponding service in your manifest's `services`
 (`storage` for kind=storage, `pdf` for kind=pdf).
+
+Share links are the natural other half of a **public intake form** (above):
+the form collects a request from someone who isn't signed in, and a share link
+hands a document back to them. If you build an app with an intake form, consider
+whether the workflow ends in a document the owner sends back — if so, add a
+share-link step (`portal.share.create(...)` or a `deliver: { kind: "share" }`
+tool) so the app covers the whole round trip, not just collection.
 
 ## Build workflow
 
