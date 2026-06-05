@@ -46,6 +46,7 @@ from mcp.server.auth.settings import ClientRegistrationOptions, RevocationOption
 from mcp.shared.auth import OAuthClientInformationFull
 from mcp.shared.auth import OAuthToken as OAuthTokenResponse
 
+from portal.audit import emit_security_line
 from portal.config import settings
 from portal.db import engine, get_db
 from portal.deps import current_user
@@ -334,11 +335,23 @@ def prune_oauth(db: Session) -> None:
     Called opportunistically at startup (db.init_db), like the other rolling
     tables. Cutoff is naive UTC to match how datetimes are stored on SQLite."""
     cutoff = _utcnow().replace(tzinfo=None)
+    client_cutoff = (_utcnow() - timedelta(days=7)).replace(tzinfo=None)
     try:
         db.exec(delete(OAuthPendingAuthorization).where(OAuthPendingAuthorization.expires_at < cutoff))
         db.exec(delete(OAuthCode).where(OAuthCode.expires_at < cutoff))
         # Drop tokens whose refresh window has fully lapsed (access already dead).
         db.exec(delete(OAuthTokenRow).where(OAuthTokenRow.refresh_expires_at < cutoff))
+        # Bound open dynamic-client registration: drop clients older than a week
+        # that never produced a token. A completed connection always has a token
+        # row, so this only sweeps abandoned or spam /register entries — live
+        # connectors are kept regardless of age.
+        used_clients = select(OAuthTokenRow.client_id).distinct()
+        db.exec(
+            delete(OAuthClient).where(
+                OAuthClient.created_at < client_cutoff,
+                OAuthClient.client_id.not_in(used_clients),
+            )
+        )
         db.commit()
     except Exception:
         try:
@@ -458,6 +471,59 @@ def consent_submit(
 
 # ----- route assembly (called from main.py when MCP is enabled) -----
 
+# The OAuth AS endpoints that carry credentials/codes — wrapped below so their
+# auth failures feed fail2ban. Discovery/metadata GETs are deliberately excluded
+# (a 4xx there isn't abuse and shouldn't ban anyone).
+_AUDITED_PATHS = {"/authorize", "/token", "/register", "/revoke"}
+
+
+def _ip_from_scope(scope) -> str:
+    headers = {
+        k.decode("latin-1").lower(): v.decode("latin-1")
+        for k, v in (scope.get("headers") or [])
+    }
+    xff = headers.get("x-forwarded-for", "")
+    if xff:
+        return xff.split(",")[0].strip() or "-"
+    client = scope.get("client")
+    return client[0] if client else "-"
+
+
+class _OAuthAuditASGI:
+    """Wrap an OAuth AS endpoint so a 400/401 emits ``OAUTH_AUTH_FAILED`` to
+    security.log. This gives the fail2ban login jail a signal to ban
+    client-secret / code / PKCE guessing + bad-registration floods on the OAuth
+    endpoints — the same way ``MCP_AUTH_FAILED`` covers bad bearer tokens on
+    /mcp. Successful (2xx) and redirect (3xx) responses are passed through
+    untouched, so legitimate authorize/token/refresh traffic is never logged.
+    """
+
+    def __init__(self, app, label: str):
+        self._app = app
+        self._label = label
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            await self._app(scope, receive, send)
+            return
+        seen = {"status": None}
+
+        async def _send(message):
+            if message["type"] == "http.response.start":
+                seen["status"] = message["status"]
+            await send(message)
+
+        await self._app(scope, receive, _send)
+        if seen["status"] in (400, 401):
+            try:
+                emit_security_line(
+                    "OAUTH_AUTH_FAILED", _ip_from_scope(scope),
+                    endpoint=self._label, status=str(seen["status"]),
+                )
+            except Exception:
+                pass
+
+
 def build_oauth_routes() -> list:
     """Build the SDK's OAuth AS + protected-resource Starlette routes.
 
@@ -480,4 +546,10 @@ def build_oauth_routes() -> list:
         scopes_supported=[SCOPE],
         resource_name="PWA Portal MCP",
     )
+    # Wrap the credential-bearing endpoints so their auth failures reach
+    # fail2ban (see _OAuthAuditASGI). Route.app is the compiled ASGI app the
+    # route dispatches to; replacing it keeps routing + CORS intact.
+    for route in routes:
+        if getattr(route, "path", None) in _AUDITED_PATHS:
+            route.app = _OAuthAuditASGI(route.app, route.path)
     return routes

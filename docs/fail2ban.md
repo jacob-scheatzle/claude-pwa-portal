@@ -16,7 +16,7 @@ Three layers, independently useful:
 
 | Layer | What it bans | Reads | Latency to ban |
 |---|---|---|---|
-| **Portal auth** | repeated failed `/login` POSTs **or** bad / missing / non-admin bearer tokens on `/mcp` and `/api/v1/*`, from the same IP | `data/security.log` written by `portal/audit.py` | Instant (fail2ban tails the file) |
+| **Portal auth** | repeated failed `/login` POSTs, bad / missing / non-admin bearer tokens on `/mcp` and `/api/v1/*`, **or** OAuth failures (`/token`, `/register`, `/revoke`, `/authorize`), from the same IP | `data/security.log` written by `portal/audit.py` | Instant (fail2ban tails the file) |
 | **Caddy scanner sweep** | IPs hitting `/.env`, `/.git/`, `/wp-admin/`, `/actuator/`, `/boaform/`, etc. (60+ patterns) | Caddy JSON access log in journald | Instant |
 | **sshd** | 5 failed SSH auth attempts in 10 min | systemd's sshd journal | Instant |
 
@@ -181,6 +181,7 @@ fixed format:
 2026-05-27T14:36:02Z LOGIN_RATE_LIMITED ip=45.88.138.44 email=admin@example.com reason=rate_limited
 2026-05-29T12:00:00Z MCP_AUTH_FAILED ip=45.88.138.44 reason=bad_token
 2026-05-29T12:00:01Z API_AUTH_FAILED ip=45.88.138.44 reason=bad_token
+2026-06-05T12:00:02Z OAUTH_AUTH_FAILED ip=45.88.138.44 endpoint=/token status=401
 ```
 
 - **`FAILED_LOGIN`** — bad password, missing user, or any other auth-time
@@ -195,6 +196,14 @@ fixed format:
   against the portal's machine-facing surfaces. The tokens are
   high-entropy, so banning here is about cutting DoS noise, not stopping a
   feasible brute force.
+- **`OAUTH_AUTH_FAILED`** — a `400`/`401` on the OAuth authorization-server
+  endpoints (`/token`, `/register`, `/revoke`, `/authorize`): a wrong client
+  secret, a bad/expired authorization code, a failed PKCE check, or an invalid
+  dynamic-client registration. Same purpose — ban guessing / registration
+  floods against the OAuth surface the claude.ai connector uses. (Successful
+  and redirect responses are never logged, so a normal sign-in flow can't trip
+  it. Abandoned/spam registrations that *succeed* are bounded separately — the
+  portal prunes dynamic clients that never produce a token after a week.)
 
 The file lives at `./data/security.log` on the host (it's the same
 bind-mounted data dir that holds `portal.db`). A `RotatingFileHandler`

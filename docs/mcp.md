@@ -141,9 +141,15 @@ ship with the MCP tool — or keep using the upload script; nothing is removed.
   The OAuth issuer must be HTTPS (the SDK allows localhost for dev), so OAuth is
   effectively for real (HTTPS) deployments; static tokens cover everything else.
 - **Auth failures are logged + banned.** Every 401/403 on `/mcp` writes an
-  `MCP_AUTH_FAILED` line to `data/security.log`; the bundled fail2ban filter
-  bans IPs that flood it (see [fail2ban.md](fail2ban.md)). Tokens are
+  `MCP_AUTH_FAILED` line to `data/security.log`, and a 400/401 on the OAuth
+  endpoints (`/token`, `/register`, `/revoke`, `/authorize`) writes an
+  `OAUTH_AUTH_FAILED` line; the bundled fail2ban filter bans IPs that flood
+  either (see [fail2ban.md](fail2ban.md)). Tokens/secrets/codes are
   high-entropy, so this is DoS/observability hardening, not anti-brute-force.
+- **Dynamic client registration is bounded.** `/register` is open (as the spec
+  intends), but registrations that never complete a connection (no token after
+  a week) are pruned, so a registration flood can't grow the client table
+  unbounded. On the AWS deploy, the edge WAF rate-limit also blunts floods.
 - **Portal origin only.** `/mcp` returns `404` on any child-app subdomain
   (`<slug>.apps.<SITE_URL>`), so an uploaded app can't reach the management
   surface even though it shares the registrable domain.
