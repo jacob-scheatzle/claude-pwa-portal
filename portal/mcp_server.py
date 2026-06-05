@@ -282,7 +282,10 @@ _MGMT_TOOLS = [
         "replace=false installs new (fails if the slug exists); replace=true "
         "updates in place, preserving per-user storage. Slug/name/version come "
         "from the bundle's portal.json. Call authoring_guide first for the "
-        "manifest schema and tool DSL.",
+        "manifest schema and tool DSL. NOTE: zip_base64 must be the actual file "
+        "bytes base64-encoded (e.g. `base64 -w0 app.zip`) — it cannot be "
+        "hand-generated, and large bundles can be truncated over MCP, so prefer "
+        "the web UI (Admin → Apps → Upload) for anything but a small app.",
         inputSchema={
             **_OBJ,
             "properties": {
@@ -512,14 +515,32 @@ def build_mcp_app():
         filename = (args.get("filename") or "").strip()
         if not filename.lower().endswith(".zip"):
             raise ValueError("filename must end with .zip")
+        # Tolerate line-wrapped base64 (some clients/transports insert newlines,
+        # which validate=True would otherwise reject as "not valid base64").
+        raw_b64 = "".join((args.get("zip_base64") or "").split())
+        if not raw_b64:
+            raise ValueError("zip_base64 is required")
         try:
-            data = base64.b64decode(args.get("zip_base64") or "", validate=True)
+            data = base64.b64decode(raw_b64, validate=True)
         except (binascii.Error, ValueError):
-            raise ValueError("zip_base64 is not valid base64")
+            raise ValueError(
+                "zip_base64 is not valid base64. Encode the actual file bytes "
+                "(e.g. `base64 -w0 app.zip`) — it can't be hand-generated."
+            )
         if not data:
             raise ValueError("decoded zip is empty")
         if len(data) > MAX_ZIP_BYTES:
             raise ValueError(f"zip exceeds {MAX_ZIP_BYTES // (1024 * 1024)}MB limit")
+        # The base64 decoded but the bytes aren't a ZIP — almost always means the
+        # payload was truncated or altered in transit (common for large bundles
+        # over the MCP tool channel). Distinguish this from "not valid base64".
+        if data[:2] != b"PK":
+            raise ValueError(
+                f"zip_base64 decoded to {len(data)} bytes that aren't a ZIP "
+                f"(starts with {data[:4]!r}) — it was likely truncated or altered "
+                "in transit. For anything but a tiny app, upload via the web UI "
+                "(Admin → Apps → Upload) or the HTTP API instead of MCP base64."
+            )
 
         fd, tmp_name = tempfile.mkstemp(suffix=".zip")
         os.close(fd)
