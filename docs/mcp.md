@@ -81,6 +81,21 @@ authorization-server + protected-resource metadata, dynamic client registration
 SDK's auth framework. OAuth access carries the **same privilege as an admin API
 token**; disconnect from claude.ai (or revoke server-side) to end it.
 
+#### Pre-registered client (optional)
+
+The default flow above needs nothing pre-configured — claude.ai registers
+itself. If your connector instead asks for an explicit **Client ID** and
+**Client Secret**, create one under **Admin → MCP OAuth clients**: enter a name
+and the connector's redirect URI (for claude.ai, typically
+`https://claude.ai/api/mcp/auth_callback`), and the portal mints a client ID +
+secret (the secret is shown once). Enter those in the connector's OAuth settings
+alongside the `…/mcp` URL.
+
+This only skips the automatic *registration* step — the one-time browser
+sign-in + **Approve** still happens (that's inherent to the authorization-code
+grant; there's no way to connect claude.ai without it). Deleting the client
+revokes it and any tokens it issued.
+
 ### Verify
 
 Ask Claude to call **`whoami`**. It should return your admin user

@@ -52,6 +52,8 @@ from portal.models import (
     AppLaunchToken,
     AuditEvent,
     FormSubmission,
+    OAuthClient,
+    OAuthToken,
     ScheduledRun,
     User,
     UserAppAccess,
@@ -468,6 +470,136 @@ def tokens_delete(
     )
     flash(request, f"Token '{name}' revoked.")
     return RedirectResponse("/admin/tokens", status_code=303)
+
+
+# ----- OAuth clients (pre-registered, for the claude.ai connector) -----
+#
+# Most clients (claude.ai included) self-register via dynamic client
+# registration and never need this. These let an admin pre-mint a client_id +
+# secret to paste into a connector's advanced OAuth settings instead of relying
+# on auto-registration. The authorization-code + consent flow is unchanged —
+# pre-registration only skips the automatic /register step.
+
+# claude.ai's connector OAuth callback, shown as a hint. Admins paste the exact
+# redirect URI(s) their client uses; the OAuth layer validates against these.
+_CLAUDE_REDIRECT_HINT = "https://claude.ai/api/mcp/auth_callback"
+
+
+def _connector_url() -> str:
+    scheme = "https" if settings.cookies_secure else "http"
+    return f"{scheme}://{settings.site_url}/mcp"
+
+
+def _oauth_client_view(row: OAuthClient) -> dict:
+    info = row.client_info if isinstance(row.client_info, dict) else {}
+    return {
+        "client_id": row.client_id,
+        "name": (info.get("client_name") or "").strip() or "(unnamed)",
+        "redirect_uris": list(info.get("redirect_uris") or []),
+        "created_at": row.created_at,
+    }
+
+
+def _render_oauth_clients(request, admin, db, new_client=None):
+    rows = db.exec(select(OAuthClient).order_by(OAuthClient.created_at.desc())).all()
+    return render(
+        request, "admin_oauth_clients.html",
+        user=admin,
+        clients=[_oauth_client_view(r) for r in rows],
+        new_client=new_client,
+        redirect_hint=_CLAUDE_REDIRECT_HINT,
+        connector_url=_connector_url(),
+        mcp_disabled=(settings.mcp_enabled is False),
+    )
+
+
+@router.get("/admin/oauth-clients")
+def oauth_clients_list(request: Request, db: DbDep, admin: AdminDep):
+    return _render_oauth_clients(request, admin, db)
+
+
+@router.post("/admin/oauth-clients")
+def oauth_clients_create(
+    request: Request, db: DbDep, admin: AdminDep,
+    name: Annotated[str, Form()] = "",
+    redirect_uris: Annotated[str, Form()] = "",
+    csrf: Annotated[str, Form(alias="_csrf")] = "",
+):
+    check_csrf(request, csrf)
+
+    def _back(msg: str):
+        flash(request, msg, level="error")
+        return RedirectResponse("/admin/oauth-clients", status_code=303)
+
+    name = name.strip()
+    uris = [u.strip() for u in redirect_uris.replace(",", "\n").splitlines() if u.strip()]
+    if not name:
+        return _back("Client name is required.")
+    if not uris:
+        return _back("At least one redirect URI is required.")
+    # Only https or loopback http — never an open http:// redirector.
+    for u in uris:
+        if not (u.startswith("https://") or u.startswith("http://localhost") or u.startswith("http://127.0.0.1")):
+            return _back(f"Redirect URI must be https:// (or http://localhost): {u}")
+
+    try:
+        from mcp.shared.auth import OAuthClientInformationFull
+    except ImportError:
+        return _back("OAuth is unavailable: the 'mcp' package isn't installed.")
+
+    client_id = "portal-" + secrets.token_urlsafe(12)
+    client_secret = secrets.token_urlsafe(32)
+    try:
+        info = OAuthClientInformationFull(
+            client_id=client_id,
+            client_secret=client_secret,
+            redirect_uris=uris,
+            grant_types=["authorization_code", "refresh_token"],
+            response_types=["code"],
+            token_endpoint_auth_method="client_secret_post",
+            scope="mcp",
+            client_name=name,
+            client_id_issued_at=int(datetime.now(timezone.utc).timestamp()),
+            client_secret_expires_at=0,  # never expires
+        )
+    except Exception as e:
+        return _back(f"Invalid redirect URI: {e}")
+
+    db.add(OAuthClient(client_id=client_id, client_info=info.model_dump(mode="json")))
+    db.commit()
+    record_event(
+        db, actor=admin, action="oauth_client.create", request=request,
+        target=f"client:{client_id}", details={"name": name},
+    )
+    # Show the secret once, rendered directly so it never round-trips the session.
+    return _render_oauth_clients(
+        request, admin, db,
+        new_client={"client_id": client_id, "client_secret": client_secret, "name": name},
+    )
+
+
+@router.post("/admin/oauth-clients/{client_id}/delete")
+def oauth_clients_delete(
+    request: Request, db: DbDep, admin: AdminDep,
+    client_id: str,
+    csrf: Annotated[str, Form(alias="_csrf")] = "",
+):
+    check_csrf(request, csrf)
+    row = db.get(OAuthClient, client_id)
+    if row is None:
+        raise HTTPException(404)
+    info = row.client_info if isinstance(row.client_info, dict) else {}
+    name = (info.get("client_name") or "").strip() or client_id
+    # Cut off access: drop the client AND any tokens it issued.
+    db.exec(delete(OAuthToken).where(OAuthToken.client_id == client_id))
+    db.delete(row)
+    db.commit()
+    record_event(
+        db, actor=admin, action="oauth_client.delete", request=request,
+        target=f"client:{client_id}", details={"name": name},
+    )
+    flash(request, f"OAuth client '{name}' deleted.")
+    return RedirectResponse("/admin/oauth-clients", status_code=303)
 
 
 # ----- Users -----

@@ -76,6 +76,25 @@ project up on a different machine or after a break.
   /mcp → refresh) plus negatives (PKCE mismatch, reused refresh, non-admin
   consent, static-token regression) — **18/18 on both SQLite and Postgres**. See
   [mcp.md](mcp.md).
+- **Update (June 5, 2026, OAuth follow-ups):** post-release fixes + a feature,
+  all verified.
+  - **v0.14.1** — OAuth endpoint failures now log `OAUTH_AUTH_FAILED` to
+    `security.log` (fail2ban filter updated) and stale dynamic clients (no token
+    after a week) are pruned, bounding open `/register`.
+  - **v0.14.2** — fixed two reported bugs: the consent **Approve** button did
+    nothing on Safari/WebKit (the `form-action 'self'` CSP blocks a form POST's
+    cross-origin *redirect*; the POST now returns a same-origin meta-refresh
+    interstitial — `oauth_redirect.html` — which form-action doesn't govern),
+    and the **Administrator dropdown** was clipped (`overflow-x: hidden` on
+    `html,body` forced `overflow-y:auto`; switched to `overflow-x: clip` + a
+    viewport cap on the menu/drawer).
+  - **v0.15.0** — **admin-managed pre-registered OAuth clients** at
+    **Admin → MCP OAuth clients** (`portal/admin.py` + `admin_oauth_clients.html`):
+    mint a client_id + secret (+ redirect URIs) to paste into a connector's
+    OAuth settings instead of relying on dynamic registration. Still uses the
+    one-time consent. Verified end-to-end (9/9): create → authorize/consent/token
+    with the pre-registered client → `/mcp` auth → wrong-secret rejected →
+    delete revokes the client + its tokens.
 
 ---
 
