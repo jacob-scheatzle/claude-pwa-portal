@@ -32,6 +32,7 @@ from sqlmodel import Session
 
 from portal.config import settings
 from portal.models import App, ShareLink, User
+from portal.storage_backend import get_storage
 
 # Reasonable bounds. A share that's too short isn't useful; too long
 # starts becoming a leak risk if the recipient mishandles the link.
@@ -48,13 +49,6 @@ MAX_VIEW_LIMIT = 1000
 # render. Matches the storage object cap so /s/ doesn't become a way to
 # bypass per-namespace quotas.
 MAX_PDF_BYTES = 10 * 1024 * 1024
-
-
-def shares_dir() -> Path:
-    """Resolve (and create) the directory holding rendered share PDFs."""
-    p = Path(settings.data_dir).resolve() / "shares"
-    p.mkdir(parents=True, exist_ok=True)
-    return p
 
 
 def _clamp_ttl(ttl_seconds: Optional[int]) -> int:
@@ -134,10 +128,9 @@ def create_pdf_share(
         raise RuntimeError("PDF service unavailable: WeasyPrint not installed")
 
     token = secrets.token_urlsafe(24)
-    target = shares_dir() / f"{token}.pdf"
 
     # Render to bytes first so we can enforce the size cap before
-    # committing anything to disk. WeasyPrint can balloon a small HTML
+    # committing anything to storage. WeasyPrint can balloon a small HTML
     # input into a many-MB PDF if pathological CSS is used.
     import io
 
@@ -148,7 +141,7 @@ def create_pdf_share(
         raise RuntimeError(
             f"Rendered PDF exceeds {MAX_PDF_BYTES // (1024 * 1024)}MB share cap"
         )
-    target.write_bytes(body)
+    get_storage().write(f"shares/{token}.pdf", body, content_type="application/pdf")
 
     expires_at = datetime.now(timezone.utc) + timedelta(
         seconds=_clamp_ttl(ttl_seconds)
@@ -262,19 +255,14 @@ def revoke(db: Session, row: ShareLink) -> None:
 
 
 def delete_share_files(token_filenames: list[str]) -> None:
-    """Remove on-disk PDFs for share rows that have been deleted from the DB."""
-    base = shares_dir()
+    """Remove stored PDFs for share rows that have been deleted from the DB."""
+    storage = get_storage()
     for name in token_filenames:
-        if not name:
-            continue
-        # Defensive: only delete files inside the shares dir.
-        target = (base / name).resolve()
-        try:
-            target.relative_to(base)
-        except ValueError:
+        # Defensive: skip anything that isn't a single, separator-free filename
+        # so the key can only address one object under the shares/ prefix.
+        if not name or "/" in name or "\\" in name or ".." in name:
             continue
         try:
-            if target.is_file():
-                target.unlink()
-        except OSError:
+            storage.delete(f"shares/{name}")
+        except Exception:
             pass

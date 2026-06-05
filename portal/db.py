@@ -7,11 +7,28 @@ from portal.config import ensure_data_dir, settings
 
 ensure_data_dir()
 
-engine = create_engine(
-    settings.database_url,
-    echo=False,
-    connect_args={"check_same_thread": False} if settings.database_url.startswith("sqlite") else {},
-)
+
+def _engine_kwargs() -> dict:
+    """SQLAlchemy engine kwargs tuned per database.
+
+    SQLite (local/default) needs ``check_same_thread=False`` because FastAPI
+    runs sync handlers in a threadpool. PostgreSQL (RDS, AWS deploy) gets a
+    small connection pool with ``pool_pre_ping`` so a connection RDS dropped
+    while idle is detected and replaced instead of erroring on the next
+    request; ``pool_recycle`` proactively retires long-lived connections.
+    Sized for a single Fargate task (desired_count=1).
+    """
+    if settings.database_url.startswith("sqlite"):
+        return {"connect_args": {"check_same_thread": False}}
+    return {
+        "pool_pre_ping": True,
+        "pool_size": 5,
+        "max_overflow": 5,
+        "pool_recycle": 1800,
+    }
+
+
+engine = create_engine(settings.database_url, echo=False, **_engine_kwargs())
 
 
 def init_db() -> None:

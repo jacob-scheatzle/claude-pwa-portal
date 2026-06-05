@@ -20,9 +20,19 @@ COPY alembic/ ./alembic/
 # (docs/mcp.md), so /mcp comes up automatically when the container starts
 # (mcp_enabled defaults to auto-on-when-importable). Build a lean image without
 # it via: docker compose build --build-arg INSTALL_MCP=false
+#
+# INSTALL_AWS adds the AWS deployment backends (boto3 for S3 + psycopg for
+# PostgreSQL/RDS). Off by default so the standard Docker/Caddy image stays lean;
+# the AWS image (aws/) builds with --build-arg INSTALL_AWS=true. psycopg ships a
+# binary wheel and boto3 is pure Python, so no extra system libraries are needed.
 ARG INSTALL_MCP=true
-RUN if [ "$INSTALL_MCP" = "true" ]; then \
-		pip install --no-cache-dir ".[mcp]"; \
+ARG INSTALL_AWS=false
+RUN extras=""; \
+	if [ "$INSTALL_MCP" = "true" ]; then extras="${extras}mcp,"; fi; \
+	if [ "$INSTALL_AWS" = "true" ]; then extras="${extras}aws,"; fi; \
+	extras="$(echo "$extras" | sed 's/,$//')"; \
+	if [ -n "$extras" ]; then \
+		pip install --no-cache-dir ".[$extras]"; \
 	else \
 		pip install --no-cache-dir .; \
 	fi

@@ -473,18 +473,19 @@ def portal_sdk():
 # malicious DB value can't traverse out of the branding directory.
 @app.get("/branding/{name}", include_in_schema=False)
 def branding_logo(name: str):
-    from portal.branding import _safe_logo_name, branding_dir
+    from portal.branding import _safe_logo_name
+    from portal.storage_backend import get_storage
 
+    # _safe_logo_name already rejects path separators / ``..`` so the name maps
+    # to a single object under the branding/ prefix.
     if not _safe_logo_name(name):
         raise HTTPException(404)
-    target = (branding_dir() / name).resolve()
     try:
-        target.relative_to(branding_dir())
-    except ValueError:
+        return get_storage().file_response(
+            f"branding/{name}", headers={"Cache-Control": "public, max-age=300"}
+        )
+    except (FileNotFoundError, ValueError):
         raise HTTPException(404)
-    if not target.is_file():
-        raise HTTPException(404)
-    return FileResponse(target, headers={"Cache-Control": "public, max-age=300"})
 
 
 # ----- First-run wizard -----
@@ -751,9 +752,9 @@ def health():
 def share_view(token: str, db: DbDep):
     import re
 
-    from fastapi.responses import FileResponse as _FileResponse
-    from portal.shares import lookup_active, record_view, shares_dir
+    from portal.shares import lookup_active, record_view
     from portal.models import App as _App
+    from portal.storage_backend import get_storage
 
     # The token URL-safe alphabet is [A-Za-z0-9_-]. Anything else is a
     # malformed link; reject without hitting the DB.
@@ -765,29 +766,30 @@ def share_view(token: str, db: DbDep):
         raise HTTPException(404)
 
     safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", row.filename or "shared") or "shared"
+    storage = get_storage()
 
     if row.kind == "pdf":
         path_name = (row.payload or {}).get("path") or ""
-        if not path_name:
+        if not path_name or "/" in path_name or ".." in path_name:
             raise HTTPException(404)
-        base = shares_dir()
-        target = (base / path_name).resolve()
-        try:
-            target.relative_to(base)
-        except ValueError:
-            raise HTTPException(404)
-        if not target.is_file():
+        key = f"shares/{path_name}"
+        # Check existence before burning a view, matching the prior is_file()
+        # ordering (a 404 on a missing file shouldn't consume a view).
+        if not storage.exists(key):
             raise HTTPException(404)
         # Atomic claim against ``max_views``. If we lost the race to a
         # concurrent viewer that pushed the count over the cap, treat this
         # like any other saturated/expired share — 404.
         if not record_view(db, row):
             raise HTTPException(404)
-        return _FileResponse(
-            target,
-            media_type="application/pdf",
-            headers={"Content-Disposition": f'inline; filename="{safe_name}"'},
-        )
+        try:
+            return storage.file_response(
+                key,
+                media_type="application/pdf",
+                headers={"Content-Disposition": f'inline; filename="{safe_name}"'},
+            )
+        except FileNotFoundError:
+            raise HTTPException(404)
 
     if row.kind == "storage":
         # Resolve the storage object out of the creator's namespace. The
@@ -803,19 +805,14 @@ def share_view(token: str, db: DbDep):
             raise HTTPException(404)
         # Re-validate the key — defense in depth in case the row was
         # written by a future version with looser rules.
-        from portal.api import _ns_dir, _validate_key
+        from portal.api import _validate_key
 
         try:
             safe_key = _validate_key(key)
         except HTTPException:
             raise HTTPException(404)
-        ns = _ns_dir(app_row.slug, row.created_by)
-        target = (ns / safe_key).resolve()
-        try:
-            target.relative_to(ns)
-        except ValueError:
-            raise HTTPException(404)
-        if not target.is_file():
+        full_key = f"{storage.namespace_prefix(app_row.slug, row.created_by)}/{safe_key}"
+        if not storage.exists(full_key):
             raise HTTPException(404)
         if not record_view(db, row):
             raise HTTPException(404)
@@ -829,12 +826,16 @@ def share_view(token: str, db: DbDep):
         # ``attachment`` for the same reason; this branch had regressed it.
         # PDF shares (above) are safe to serve inline because they're
         # pre-rendered by WeasyPrint on the server and always
-        # application/pdf.
-        return FileResponse(
-            target,
-            media_type="application/octet-stream",
-            headers={"Content-Disposition": f'attachment; filename="{safe_name}"'},
-        )
+        # application/pdf. media_type is forced (not guessed) to keep the
+        # XSS-neutralizing octet-stream.
+        try:
+            return storage.file_response(
+                full_key,
+                media_type="application/octet-stream",
+                headers={"Content-Disposition": f'attachment; filename="{safe_name}"'},
+            )
+        except FileNotFoundError:
+            raise HTTPException(404)
 
     raise HTTPException(404)
 

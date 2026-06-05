@@ -2,6 +2,12 @@
 
 This guide walks through deploying the portal on a small VPS. A box with **1 vCPU and 1–2 GB of RAM** is plenty for a single-business deployment with a handful of apps.
 
+> **Want a cloud-native AWS deployment instead?** There's an ECS Fargate + ALB +
+> CloudFront option — backed by RDS PostgreSQL and S3 — under
+> [`aws/`](../aws/README.md). It runs the same image with pluggable Postgres/S3
+> backends selected at runtime; this VPS guide (SQLite + local disk + Caddy) and
+> the AWS guide are independent and both fully supported.
+
 ## Quickstart (no source clone required)
 
 If you just want a running portal and don't need to modify the source:

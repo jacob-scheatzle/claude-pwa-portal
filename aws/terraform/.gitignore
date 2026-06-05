@@ -1,0 +1,11 @@
+# Terraform working files — never commit state or downloaded providers.
+.terraform/
+*.tfstate
+*.tfstate.*
+terraform.tfvars
+*.tfplan
+crash.log
+crash.*.log
+
+# The provider lock file (.terraform.lock.hcl) IS committed so deploys pin the
+# same provider versions — do not ignore it.

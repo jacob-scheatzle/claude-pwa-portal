@@ -16,6 +16,28 @@ class Settings(BaseSettings):
     secret_key: str = "change-me-before-running-in-production"
     database_url: str = "sqlite:///./data/portal.db"
     data_dir: str = "./data"
+
+    # Where blob state lives — app bundles, per-user storage, branding assets,
+    # and rendered share PDFs. "local" (the default) keeps everything on disk
+    # under ``data_dir``: the existing Docker/Caddy product, unchanged. "s3"
+    # stores blobs in an S3 bucket for the AWS (Fargate) deployment, where the
+    # container filesystem is ephemeral. The database is selected separately
+    # via ``database_url`` (SQLite locally, PostgreSQL/RDS on AWS). See
+    # ``portal/storage_backend.py`` and ``aws/README.md``.
+    storage_backend: str = "local"
+    # S3 backend settings, used only when ``storage_backend == "s3"``.
+    #   s3_bucket       — required in s3 mode; the bucket holding all blobs.
+    #   s3_prefix       — optional key prefix so several portals can share a
+    #                     bucket (e.g. "portal/"). No leading slash.
+    #   s3_region       — optional; if unset, boto3's standard region chain
+    #                     (AWS_REGION / instance metadata) applies.
+    #   s3_endpoint_url — optional; point at MinIO / LocalStack to exercise the
+    #                     S3 path locally without a real AWS account.
+    s3_bucket: Optional[str] = None
+    s3_prefix: str = ""
+    s3_region: Optional[str] = None
+    s3_endpoint_url: Optional[str] = None
+
     cookies_secure: bool = False
     # When True, the bundled Caddy serves plain HTTP only (no auto-HTTPS, no
     # Let's Encrypt, no on-demand TLS). Two intended use cases:
@@ -80,6 +102,15 @@ if settings.secret_key == "change-me-before-running-in-production" and settings.
         "SECRET_KEY is the placeholder value; refusing to start with "
         f"site_url={settings.site_url!r}. Set SECRET_KEY in .env."
     )
+
+if settings.storage_backend not in ("local", "s3"):
+    raise RuntimeError(
+        f"STORAGE_BACKEND={settings.storage_backend!r} is invalid; "
+        "expected 'local' or 's3'."
+    )
+
+if settings.storage_backend == "s3" and not settings.s3_bucket:
+    raise RuntimeError("STORAGE_BACKEND=s3 requires S3_BUCKET to be set.")
 
 
 def ensure_data_dir() -> Path:

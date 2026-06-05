@@ -26,13 +26,12 @@ from __future__ import annotations
 import base64
 import mimetypes
 import re
-from pathlib import Path
 from typing import Optional, TypedDict
 
 from sqlmodel import Session
 
-from portal.config import settings
 from portal.settings_store import get_setting
+from portal.storage_backend import get_storage
 
 DEFAULT_BUSINESS_NAME = "PWA Portal"
 DEFAULT_ACCENT_COLOR = "#059669"
@@ -80,13 +79,6 @@ class Branding(TypedDict):
     favicon_mime: Optional[str]
 
 
-def branding_dir() -> Path:
-    """Resolve (and create) the on-disk directory that holds uploaded logos."""
-    p = Path(settings.data_dir).resolve() / "branding"
-    p.mkdir(parents=True, exist_ok=True)
-    return p
-
-
 def _safe_logo_name(name: str) -> bool:
     if not name or len(name) > 100:
         return False
@@ -105,23 +97,24 @@ def get_branding(db: Session) -> Branding:
     if not _HEX_COLOR_RE.match(accent):
         accent = DEFAULT_ACCENT_COLOR
 
+    storage = get_storage()
+
     logo_name = (get_setting(db, "branding_logo_path") or "").strip()
     logo_url: Optional[str] = None
     if logo_name and _safe_logo_name(logo_name):
-        if (branding_dir() / logo_name).is_file():
+        if storage.exists(f"branding/{logo_name}"):
             logo_url = f"/branding/{logo_name}"
 
     favicon_name = (get_setting(db, "branding_favicon_path") or "").strip()
     favicon_url: Optional[str] = None
     favicon_mime: Optional[str] = None
     if favicon_name and _safe_logo_name(favicon_name):
-        favicon_path = branding_dir() / favicon_name
-        if favicon_path.is_file():
+        if storage.exists(f"branding/{favicon_name}"):
             favicon_url = f"/branding/{favicon_name}"
             # mimetypes.guess_type uses the filename's suffix; the upload
             # handler enforces an extension from ALLOWED_FAVICON_TYPES, so
             # this lookup always resolves to a known image type.
-            mt, _ = mimetypes.guess_type(str(favicon_path))
+            mt, _ = mimetypes.guess_type(favicon_name)
             favicon_mime = mt if mt and mt.startswith("image/") else None
 
     return Branding(
@@ -143,15 +136,11 @@ def get_logo_data_uri(db: Session) -> Optional[str]:
     logo_name = (get_setting(db, "branding_logo_path") or "").strip()
     if not logo_name or not _safe_logo_name(logo_name):
         return None
-    path = branding_dir() / logo_name
-    if not path.is_file():
-        return None
-    mt, _ = mimetypes.guess_type(str(path))
+    mt, _ = mimetypes.guess_type(logo_name)
     if not mt or not mt.startswith("image/"):
         return None
-    try:
-        data = path.read_bytes()
-    except OSError:
+    data = get_storage().read_or_none(f"branding/{logo_name}")
+    if data is None:
         return None
     return f"data:{mt};base64,{base64.b64encode(data).decode('ascii')}"
 

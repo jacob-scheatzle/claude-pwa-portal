@@ -5,31 +5,21 @@ from __future__ import annotations
 
 import io
 import logging
-import mimetypes
-import os
 import re
 import time
 from collections import deque
-from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timezone
 from email.message import EmailMessage
 from pathlib import Path
 from threading import Lock
 from typing import Annotated, Optional
 
-import anyio
-
-try:
-    import fcntl  # POSIX advisory file locking; absent on Windows
-except ImportError:  # pragma: no cover - the portal ships on Linux/macOS
-    fcntl = None
-
 logger = logging.getLogger("portal.api")
 
 from fastapi import (
     APIRouter, Depends, File, Header, HTTPException, Request, Response, UploadFile,
 )
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import update
 from sqlmodel import Session, select
@@ -42,6 +32,7 @@ from portal.models import App, AppLaunchToken, User
 from portal.sessions import create_app_session
 from portal.settings_store import get_setting, smtp_config
 from portal.smtp import send_message
+from portal.storage_backend import get_storage
 
 # Re-export for callers that still import from portal.api (back-compat shim).
 _smtp_send = send_message
@@ -708,95 +699,34 @@ def _validate_key(key: str) -> str:
     return key
 
 
-def _ns_dir(app_slug: str, user_id: int) -> Path:
-    base = Path(settings.data_dir).resolve() / "storage" / app_slug / str(user_id)
-    base.mkdir(parents=True, exist_ok=True)
-    return base
+# Per-user storage is namespaced by (app_slug, user_id) and persisted through
+# the active storage backend (local filesystem by default; S3 on the AWS
+# deploy). These helpers keep the storage handlers and the declarative app-tool
+# ``store`` deliver in app_tools.py speaking one vocabulary.
 
 
-def _ns_usage(ns: Path) -> int:
-    # Skip symlinks: nothing in the portal ever creates one under a namespace
-    # (keys are validated, writes are plain files), so a symlink here would be
-    # an out-of-band plant — don't follow it into another tree or let it skew
-    # quota accounting.
-    return sum(
-        p.stat().st_size for p in ns.rglob("*") if p.is_file() and not p.is_symlink()
-    )
+def _ns_usage(app_slug: str, user_id: int) -> int:
+    """Total bytes stored in one (app_slug, user_id) namespace."""
+    storage = get_storage()
+    return storage.usage(storage.namespace_prefix(app_slug, user_id))
 
 
-# Concurrent writers into one (app_slug, user_id) namespace must serialize, or
-# two near-cap writes can both pass the per-object check, both finish, then both
-# observe an over-cap namespace and delete themselves — losing two
-# successful-looking writes. Two code paths mutate a namespace (the storage PUT
-# below and the declarative app-tool ``store`` deliver in app_tools.py), and the
-# deployment may eventually run more than one worker process, so an in-process
-# asyncio/threading lock isn't enough on its own.
-#
-# Back the lock with an flock on a sentinel file kept OUTSIDE the namespace dir
-# (so it never shows up in a listing or counts toward the quota). flock is tied
-# to the open file description, so one exclusive lock serializes mutators across
-# threads, the asyncio loop, AND separate worker processes on this host — the
-# entire deployment surface (single host, bind-mounted data dir). Where fcntl is
-# unavailable (Windows dev) we fall back to a shared in-process lock, keyed
-# identically so both storage paths still serialize within the process.
-_fallback_ns_locks: dict[tuple[str, int], Lock] = {}
-_fallback_ns_guard = Lock()
-
-
-def _ns_lock_path(app_slug: str, user_id: int) -> Path:
-    base = Path(settings.data_dir).resolve() / "locks" / app_slug
-    base.mkdir(parents=True, exist_ok=True)
-    return base / f"{user_id}.lock"
-
-
-def _acquire_ns_lock(app_slug: str, user_id: int):
-    """Block until this namespace is exclusively ours; return a release handle."""
-    if fcntl is None:  # pragma: no cover - Windows fallback
-        with _fallback_ns_guard:
-            lock = _fallback_ns_locks.setdefault((app_slug, user_id), Lock())
-        lock.acquire()
-        return lock
-    fd = os.open(_ns_lock_path(app_slug, user_id), os.O_CREAT | os.O_RDWR, 0o600)
-    fcntl.flock(fd, fcntl.LOCK_EX)
-    return fd
-
-
-def _release_ns_lock(handle) -> None:
-    if fcntl is None:  # pragma: no cover - Windows fallback
-        handle.release()
-        return
-    try:
-        fcntl.flock(handle, fcntl.LOCK_UN)
-    finally:
-        os.close(handle)
-
-
-@contextmanager
+# Concurrent writers into one namespace must serialize, or two near-cap writes
+# can both pass the per-object check, both finish, then both observe an over-cap
+# namespace and delete themselves — losing two successful-looking writes. Two
+# code paths mutate a namespace (the storage PUT below and the declarative
+# app-tool ``store`` deliver in app_tools.py). The lock is provided by the
+# storage backend so it's correct for the deployment: an flock on a sentinel
+# file for the local backend (serializes threads, the asyncio loop, and worker
+# processes on one host), or a PostgreSQL advisory lock for the S3/RDS backend.
 def namespace_lock(app_slug: str, user_id: int):
-    """Exclusive cross-process lock over one storage namespace, for sync callers
-    (e.g. the app-tool ``store`` deliver, which runs in a worker thread)."""
-    handle = _acquire_ns_lock(app_slug, user_id)
-    try:
-        yield
-    finally:
-        _release_ns_lock(handle)
+    """Exclusive namespace lock for sync callers (e.g. the app-tool deliver)."""
+    return get_storage().namespace_lock(app_slug, user_id)
 
 
-@asynccontextmanager
-async def namespace_lock_async(app_slug: str, user_id: int):
-    """Async variant for the storage PUT handler. Acquires in a worker thread so
-    the blocking flock wait can't stall the event loop; release is instant.
-
-    anyio's default abandon_on_cancel=False is load-bearing here: if the client
-    disconnects while we're blocked in flock(), the await stays shielded until
-    the lock is granted, so the try/finally still runs and the fd/lock can't
-    leak. Do not make this acquisition cancellable.
-    """
-    handle = await anyio.to_thread.run_sync(_acquire_ns_lock, app_slug, user_id)
-    try:
-        yield
-    finally:
-        _release_ns_lock(handle)
+def namespace_lock_async(app_slug: str, user_id: int):
+    """Exclusive namespace lock for the async storage PUT handler."""
+    return get_storage().namespace_lock_async(app_slug, user_id)
 
 
 @router.get("/storage")
@@ -806,14 +736,16 @@ def storage_list(
     me = _require_user(user)
     app_row = _resolve_app_slug(request, me, x_portal_app, db)
     _require_service(app_row, "storage")
-    ns = _ns_dir(app_row.slug, me.id)
+    storage = get_storage()
+    prefix = storage.namespace_prefix(app_row.slug, me.id)
     items = []
     usage = 0
-    for p in ns.rglob("*"):
-        if p.is_file() and not p.is_symlink():
-            size = p.stat().st_size
-            items.append({"key": p.relative_to(ns).as_posix(), "size": size})
-            usage += size
+    for obj in storage.list(prefix):
+        # obj.key is the full logical key ("storage/<slug>/<uid>/<key>"); the
+        # SDK wants the namespace-relative key.
+        rel = obj.key[len(prefix) + 1:]
+        items.append({"key": rel, "size": obj.size})
+        usage += obj.size
     return {"items": items, "usage": usage, "limit": MAX_NAMESPACE_BYTES}
 
 
@@ -826,27 +758,24 @@ def storage_get(
     app_row = _resolve_app_slug(request, me, x_portal_app, db)
     _require_service(app_row, "storage")
     safe = _validate_key(key)
-    ns = _ns_dir(app_row.slug, me.id)
-    target = (ns / safe).resolve()
-    try:
-        target.relative_to(ns)
-    except ValueError:
-        raise HTTPException(404)
-    if not target.is_file():
-        raise HTTPException(404)
-    mt, _ = mimetypes.guess_type(str(target))
+    storage = get_storage()
+    full_key = f"{storage.namespace_prefix(app_row.slug, me.id)}/{safe}"
     # Force download rather than inline rendering. A malicious child app
     # could otherwise stash an `evil.html` then trick the user into clicking
     # /api/v1/storage/evil.html — served same-origin as text/html, that's an
     # XSS pivot into the portal. Content-Disposition: attachment neutralizes
     # it. Sanitize the basename so the filename can't break out of the header.
+    # (media_type omitted → the backend guesses from the key's suffix, the same
+    # mimetypes lookup as before, defaulting to application/octet-stream.)
     basename = Path(safe).name or "download"
     safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", basename) or "download"
-    return FileResponse(
-        target,
-        media_type=mt or "application/octet-stream",
-        headers={"Content-Disposition": f'attachment; filename="{safe_name}"'},
-    )
+    try:
+        return storage.file_response(
+            full_key,
+            headers={"Content-Disposition": f'attachment; filename="{safe_name}"'},
+        )
+    except FileNotFoundError:
+        raise HTTPException(404)
 
 
 @router.put("/storage/{key:path}")
@@ -863,14 +792,9 @@ async def storage_put(
     app_row = _resolve_app_slug(request, me, x_portal_app, db)
     _require_service(app_row, "storage")
     safe = _validate_key(key)
-    ns = _ns_dir(app_row.slug, me.id)
-    target = (ns / safe).resolve()
-    try:
-        target.relative_to(ns)
-    except ValueError:
-        raise HTTPException(400, "invalid key")
-
-    target.parent.mkdir(parents=True, exist_ok=True)
+    storage = get_storage()
+    prefix = storage.namespace_prefix(app_row.slug, me.id)
+    full_key = f"{prefix}/{safe}"
 
     # Read the body into memory (bounded by the per-object cap) BEFORE taking the
     # namespace lock, so a slow client can't hold the cross-process lock for the
@@ -887,19 +811,19 @@ async def storage_put(
     # Critical section: only the quota check + write. Account for the object this
     # key may replace (so a re-PUT isn't double-counted) and check BEFORE writing,
     # so an over-cap PUT leaves any existing value at this key intact instead of
-    # truncating it and then failing.
+    # truncating it and then failing. Backend writes are atomic (temp+rename
+    # locally, a single PutObject on S3), so no partial object can survive a
+    # fault — no manual rollback needed.
     async with namespace_lock_async(app_row.slug, me.id):
-        existing = target.stat().st_size if target.is_file() else 0
-        if _ns_usage(ns) - existing + written > MAX_NAMESPACE_BYTES:
+        existing = storage.size(full_key) or 0
+        if storage.usage(prefix) - existing + written > MAX_NAMESPACE_BYTES:
             raise HTTPException(
                 507,
                 f"storage namespace exceeds {MAX_NAMESPACE_BYTES // (1024 * 1024)}MB limit",
             )
-        try:
-            target.write_bytes(body)
-        except Exception:
-            target.unlink(missing_ok=True)
-            raise
+        storage.write(
+            full_key, bytes(body), content_type=request.headers.get("Content-Type")
+        )
 
     return {
         "key": key,
@@ -919,15 +843,10 @@ def storage_delete(
     app_row = _resolve_app_slug(request, me, x_portal_app, db)
     _require_service(app_row, "storage")
     safe = _validate_key(key)
-    ns = _ns_dir(app_row.slug, me.id)
-    target = (ns / safe).resolve()
-    try:
-        target.relative_to(ns)
-    except ValueError:
+    storage = get_storage()
+    full_key = f"{storage.namespace_prefix(app_row.slug, me.id)}/{safe}"
+    if not storage.delete(full_key):
         raise HTTPException(404)
-    if not target.is_file():
-        raise HTTPException(404)
-    target.unlink()
     return {"deleted": key}
 
 
@@ -980,13 +899,9 @@ def share_create(
         if not body.key:
             raise HTTPException(400, "storage shares require a 'key'")
         safe_key = _validate_key(body.key)
-        ns = _ns_dir(app_row.slug, me.id)
-        target = (ns / safe_key).resolve()
-        try:
-            target.relative_to(ns)
-        except ValueError:
-            raise HTTPException(404, "key not found")
-        if not target.is_file():
+        storage = get_storage()
+        full_key = f"{storage.namespace_prefix(app_row.slug, me.id)}/{safe_key}"
+        if not storage.exists(full_key):
             raise HTTPException(404, "key not found")
         row = create_storage_share(
             db,

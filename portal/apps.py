@@ -37,6 +37,7 @@ from portal.deps import (
 from portal.models import App, AppLaunchToken, User
 from portal.security import check_csrf
 from portal.sessions import revoke_all_app_sessions_for_slug
+from portal.storage_backend import get_storage
 from portal.web import STATIC_DIR, flash, render
 
 # How long a launch token is honored. The token is single-use and is consumed
@@ -472,12 +473,6 @@ class UploadError(Exception):
     pass
 
 
-def _apps_root() -> Path:
-    p = Path(settings.data_dir).resolve() / "apps"
-    p.mkdir(parents=True, exist_ok=True)
-    return p
-
-
 async def _stream_to_temp(upload: UploadFile, max_bytes: int) -> Path:
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
     tmp_name = tmp.name
@@ -609,30 +604,6 @@ def _extract_into(tmp_path: Path, dest: Path) -> None:
     _safe_extract(tmp_path, dest)
 
 
-def _atomic_replace(dest: Path, new_dir: Path) -> None:
-    """Swap `new_dir` into `dest`, moving the old `dest` aside and removing it.
-
-    Both paths must live under the same parent directory so the renames are
-    atomic on POSIX.
-    """
-    suffix = secrets.token_hex(6)
-    old_dir = dest.with_name(dest.name + f".old-{suffix}")
-    if dest.exists():
-        os.rename(dest, old_dir)
-    try:
-        os.rename(new_dir, dest)
-    except OSError:
-        # Roll back: try to restore old_dir if we moved it.
-        if old_dir.exists() and not dest.exists():
-            try:
-                os.rename(old_dir, dest)
-            except OSError:
-                pass
-        raise
-    if old_dir.exists():
-        shutil.rmtree(old_dir, ignore_errors=True)
-
-
 # ----- Deps -----
 
 DbDep = Annotated[Session, Depends(get_db)]
@@ -714,6 +685,7 @@ async def install_bundle_from_path(
     on the main thread. Always removes ``tmp_path`` before returning, on success
     or failure.
     """
+    extract_dir: Optional[Path] = None
     try:
         manifest = await anyio.to_thread.run_sync(_prepare_bundle, tmp_path)
 
@@ -724,8 +696,8 @@ async def install_bundle_from_path(
             )
 
         existing = db.exec(select(App).where(App.slug == manifest.slug)).first()
-        apps_root = _apps_root()
-        dest = apps_root / manifest.slug
+        storage = get_storage()
+        bundle_prefix = f"apps/{manifest.slug}"
 
         if existing is not None and not allow_replace:
             raise UploadError(
@@ -733,17 +705,22 @@ async def install_bundle_from_path(
                 "Use the replace endpoint (--replace in the skill CLI) to update it."
             )
 
+        # Extract the validated zip to a scratch dir, then persist the tree
+        # through the storage backend (atomic dir-swap on the local backend;
+        # upload + stale-key reconcile on S3). The scratch dir is removed in the
+        # finally below alongside tmp_path.
+        extract_dir = Path(await anyio.to_thread.run_sync(tempfile.mkdtemp))
+        await anyio.to_thread.run_sync(_extract_into, tmp_path, extract_dir)
+
         if existing is None:
-            if dest.exists():
+            # Orphan guard: blobs under the prefix with no DB row mean a prior
+            # half-completed delete; refuse rather than silently merging.
+            if storage.list(bundle_prefix):
                 raise UploadError(
-                    f"App directory already exists on disk at {dest}. "
-                    "Remove it manually and try again."
+                    f"App data already exists for slug '{manifest.slug}'. "
+                    "Remove it and try again."
                 )
-            try:
-                await anyio.to_thread.run_sync(_extract_into, tmp_path, dest)
-            except UploadError:
-                shutil.rmtree(dest, ignore_errors=True)
-                raise
+            await anyio.to_thread.run_sync(storage.replace_tree, bundle_prefix, extract_dir)
 
             requested = list(manifest.permissions.network)
             declared_services = list(manifest.services)
@@ -781,14 +758,12 @@ async def install_bundle_from_path(
                 grant_default_access_for_new_app(db, app_row)
                 db.commit()
             except Exception:
-                # The on-disk bundle is already extracted at ``dest``. If the
-                # DB step fails (constraint violation, disk-full on the WAL,
-                # FK error), we'd otherwise leave an orphaned ``apps/<slug>/``
-                # directory that blocks the next upload with the "already
-                # exists on disk" guard above. Roll back the extraction so
-                # the next attempt can proceed.
+                # The bundle is already persisted under ``apps/<slug>``. If the
+                # DB step fails (constraint violation, FK error, etc.), we'd
+                # otherwise leave orphaned blobs that block the next upload via
+                # the orphan guard above. Drop them so the next attempt proceeds.
                 db.rollback()
-                shutil.rmtree(dest, ignore_errors=True)
+                storage.delete_prefix(bundle_prefix)
                 raise
             return InstallResult(
                 slug=app_row.slug,
@@ -797,23 +772,11 @@ async def install_bundle_from_path(
                 replaced=False,
             )
 
-        # Replace path: extract to a sibling temp dir, then atomically swap.
-        staging_name = f".{manifest.slug}.new-{secrets.token_hex(6)}"
-        staging = apps_root / staging_name
-        try:
-            await anyio.to_thread.run_sync(_extract_into, tmp_path, staging)
-        except UploadError:
-            shutil.rmtree(staging, ignore_errors=True)
-            raise
-        except Exception:
-            shutil.rmtree(staging, ignore_errors=True)
-            raise
-
-        try:
-            await anyio.to_thread.run_sync(_atomic_replace, dest, staging)
-        except Exception:
-            shutil.rmtree(staging, ignore_errors=True)
-            raise
+        # Replace path: the validated tree is already extracted at
+        # ``extract_dir``; swap it in through the backend (atomic dir-swap
+        # locally, upload + stale-key reconcile on S3). Per-user storage under
+        # ``storage/<slug>/`` is a separate prefix and is left untouched.
+        await anyio.to_thread.run_sync(storage.replace_tree, bundle_prefix, extract_dir)
 
         # On replace, preserve any origins the admin explicitly revoked
         # (present in the previous requested list but absent from
@@ -862,6 +825,8 @@ async def install_bundle_from_path(
             os.unlink(tmp_path)
         except OSError:
             pass
+        if extract_dir is not None:
+            shutil.rmtree(extract_dir, ignore_errors=True)
 
 
 @router.post("/admin/apps/upload")
@@ -1173,15 +1138,10 @@ def admin_apps_delete(
     if app_row is None:
         raise HTTPException(404)
 
-    apps_root = _apps_root()
-    dest = (apps_root / app_row.slug).resolve()
-    try:
-        dest.relative_to(apps_root)
-    except ValueError:
-        raise HTTPException(500, "App path escape — refusing delete")
-
-    if dest.exists():
-        shutil.rmtree(dest, ignore_errors=True)
+    # Drop the app's bundle blobs (apps/<slug>/...) through the storage backend.
+    # Per-user storage under storage/<slug>/ is deliberately left in place —
+    # reinstalling the same slug keeps its data.
+    get_storage().delete_prefix(f"apps/{app_row.slug}")
 
     # Drop the app's scratch lock dir (data/locks/<slug>/) so it doesn't linger.
     # Per-user storage under data/storage/<slug>/ is deliberately left in place —
@@ -1241,30 +1201,18 @@ def app_icon(
     if not user_can_access_app(db, user, app_row):
         raise HTTPException(404)
 
-    apps_root = _apps_root()
-    app_dir = (apps_root / slug).resolve()
-    try:
-        app_dir.relative_to(apps_root)
-    except ValueError:
-        raise HTTPException(404)
-
-    target = (app_dir / app_row.icon).resolve()
-    try:
-        target.relative_to(app_dir)
-    except ValueError:
-        raise HTTPException(404)
-    if not target.is_file():
-        raise HTTPException(404)
-
     # Short cache: icons rarely change but DO change on app replace, so
     # five minutes is the floor where a re-uploaded icon shows up quickly
-    # without re-fetching on every dashboard render. Starlette's
-    # FileResponse adds ETag/Last-Modified automatically, so the browser
+    # without re-fetching on every dashboard render. Starlette's FileResponse
+    # adds ETag/Last-Modified automatically (local backend), so the browser
     # 304s on the conditional revalidation after max-age expires.
-    return FileResponse(
-        target,
-        headers={"Cache-Control": "public, max-age=300"},
-    )
+    try:
+        return get_storage().file_response(
+            f"apps/{slug}/{app_row.icon}",
+            headers={"Cache-Control": "public, max-age=300"},
+        )
+    except (FileNotFoundError, ValueError):
+        raise HTTPException(404)
 
 
 # ----- Child app serving -----
@@ -1399,24 +1347,12 @@ def _serve_app_file(
     if not user_can_access_app(db, user, app_row):
         raise HTTPException(404)
 
-    apps_root = _apps_root()
-    app_dir = (apps_root / slug).resolve()
-    try:
-        app_dir.relative_to(apps_root)
-    except ValueError:
-        raise HTTPException(404)
-
     if path in ("", "/"):
         path = app_row.entry
-
-    target = (app_dir / path).resolve()
     try:
-        target.relative_to(app_dir)
-    except ValueError:
+        return get_storage().file_response(f"apps/{slug}/{path}")
+    except (FileNotFoundError, ValueError):
         raise HTTPException(404)
-    if not target.is_file():
-        raise HTTPException(404)
-    return FileResponse(target)
 
 
 # ----- App-subdomain serving (the new per-app origin) -----
@@ -1451,55 +1387,49 @@ def _serve_app_subdomain_path(
             headers={"Cache-Control": "no-cache"},
         )
 
-    apps_root = _apps_root()
-    app_dir = (apps_root / slug).resolve()
-    try:
-        app_dir.relative_to(apps_root)
-    except ValueError:
-        raise HTTPException(404)
-
     if path in ("", "/"):
         rel = app_row.entry
     else:
         rel = path
-
-    target = (app_dir / rel).resolve()
-    try:
-        target.relative_to(app_dir)
-    except ValueError:
-        raise HTTPException(404)
-    if not target.is_file():
-        raise HTTPException(404)
+    key = f"apps/{slug}/{rel}"
+    storage = get_storage()
 
     # Nonce-substitute HTML responses for csp_strict apps. Only files under
     # ``_MAX_NONCE_SUB_BYTES`` get the read-into-memory + replace treatment;
     # an app that ships a multi-megabyte index.html (under the zip cap but
     # well past anything reasonable) would otherwise amplify per-request
-    # memory N× under concurrency. Larger HTML falls through to FileResponse
+    # memory N× under concurrency. Larger HTML falls through to a normal serve
     # — the strict CSP will then reject the un-nonced inline script and the
     # app author will see the symptom in DevTools, which is the correct
     # signal to split the HTML or drop inline scripts.
-    if bool(getattr(app_row, "csp_strict", False)):
-        suffix = target.suffix.lower()
-        if suffix in (".html", ".htm"):
-            nonce = getattr(request.state, "csp_nonce", None)
-            if nonce:
+    if bool(getattr(app_row, "csp_strict", False)) and Path(rel).suffix.lower() in (".html", ".htm"):
+        nonce = getattr(request.state, "csp_nonce", None)
+        if nonce:
+            try:
+                size = storage.size(key)
+            except ValueError:
+                raise HTTPException(404)
+            if size is None:
+                raise HTTPException(404)
+            if size <= _MAX_NONCE_SUB_BYTES:
                 try:
-                    if target.stat().st_size > _MAX_NONCE_SUB_BYTES:
-                        return FileResponse(target)
-                    body = target.read_text(encoding="utf-8")
-                except (OSError, UnicodeDecodeError):
-                    # If the file isn't UTF-8 text after all, fall through
-                    # to the binary FileResponse path — the browser will
-                    # complain about an inline script lacking a nonce, which
-                    # is the correct outcome for an app that mis-declared.
-                    return FileResponse(target)
-                body = body.replace("{{NONCE}}", nonce)
-                return Response(
-                    body, media_type="text/html; charset=utf-8"
-                )
+                    body = storage.read(key).decode("utf-8")
+                except (FileNotFoundError, UnicodeDecodeError):
+                    # Not UTF-8 text (or vanished) — fall through to a normal
+                    # serve; the browser will complain about an inline script
+                    # lacking a nonce, the correct outcome for a mis-declared app.
+                    body = None
+                if body is not None:
+                    return Response(
+                        body.replace("{{NONCE}}", nonce),
+                        media_type="text/html; charset=utf-8",
+                    )
+            # else: too big to nonce — fall through to a normal serve.
 
-    return FileResponse(target)
+    try:
+        return storage.file_response(key)
+    except (FileNotFoundError, ValueError):
+        raise HTTPException(404)
 
 
 def _launcher_url(request: Request, slug: str) -> str:

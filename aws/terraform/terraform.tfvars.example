@@ -1,0 +1,23 @@
+# Copy to terraform.tfvars and edit. Only `domain` and `route53_zone_id` are
+# required; the rest have sensible defaults.
+
+# Public hostname for the portal. Child apps are served at <slug>.apps.<domain>.
+domain = "portal.example.com"
+
+# Route53 hosted zone ID that owns the domain above (e.g. "Z0123456789ABCDEFGHIJ").
+# Used to auto-create ACM validation records + the portal/*.apps alias records.
+route53_zone_id = "ZXXXXXXXXXXXXX"
+
+# Region for the regional resources (VPC/ECS/RDS/ALB). CloudFront's cert + WAF
+# always go to us-east-1 automatically.
+region = "us-east-1"
+
+# Optional overrides:
+# project              = "pwa-portal"
+# image_tag            = "latest"
+# task_cpu             = 512
+# task_memory          = 1024
+# db_instance_class    = "db.t4g.micro"
+# db_allocated_storage = 20
+# mcp_enabled          = ""        # "" = auto, "false" disables /mcp, "true" forces it
+# vpc_cidr             = "10.20.0.0/16"

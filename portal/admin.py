@@ -39,10 +39,10 @@ from portal.branding import (
     ALLOWED_LOGO_TYPES,
     DEFAULT_ACCENT_COLOR,
     MAX_LOGO_BYTES,
-    branding_dir,
     get_branding,
 )
 from portal.config import settings
+from portal.storage_backend import get_storage
 from portal.db import engine, get_db
 from portal.deps import require_admin
 from portal.forms import public_form_url
@@ -167,8 +167,7 @@ def _store_logo(upload: UploadFile) -> Optional[str]:
     safe_stem = _LOGO_BASENAME_RE.sub("", stem.replace(" ", "-"))[:40] or "logo"
     final_name = f"{safe_stem}-{secrets.token_hex(4)}{ext}"
 
-    target = branding_dir() / final_name
-    target.write_bytes(blob)
+    get_storage().write(f"branding/{final_name}", blob, content_type=ct)
     return final_name
 
 
@@ -184,10 +183,9 @@ def _clear_existing_logo(db: Session) -> None:
         from portal.branding import _safe_logo_name
 
         if _safe_logo_name(existing):
-            path = branding_dir() / existing
             try:
-                path.unlink()
-            except OSError:
+                get_storage().delete(f"branding/{existing}")
+            except Exception:
                 pass
     set_setting(db, "branding_logo_path", None)
 
@@ -233,8 +231,7 @@ def _store_favicon(upload: UploadFile) -> Optional[str]:
     safe_stem = _LOGO_BASENAME_RE.sub("", stem.replace(" ", "-"))[:40] or "favicon"
     final_name = f"{safe_stem}-{secrets.token_hex(4)}{ext}"
 
-    target = branding_dir() / final_name
-    target.write_bytes(blob)
+    get_storage().write(f"branding/{final_name}", blob, content_type=ct)
     return final_name
 
 
@@ -250,10 +247,9 @@ def _clear_existing_favicon(db: Session) -> None:
         from portal.branding import _safe_logo_name
 
         if _safe_logo_name(existing):
-            path = branding_dir() / existing
             try:
-                path.unlink()
-            except OSError:
+                get_storage().delete(f"branding/{existing}")
+            except Exception:
                 pass
     set_setting(db, "branding_favicon_path", None)
 
@@ -1276,14 +1272,14 @@ def _build_export(data_dir: Path) -> tuple[Path, Path, str]:
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.writestr("data.json", json.dumps(data, indent=2, default=str))
             zf.writestr("README.txt", readme)
-            storage_dir = data_dir / "storage"
-            if storage_dir.is_dir():
-                for p in storage_dir.rglob("*"):
-                    # Skip symlinks defensively; nothing should plant one here.
-                    if p.is_file() and not p.is_symlink():
-                        zf.write(
-                            p, arcname="storage/" + p.relative_to(storage_dir).as_posix()
-                        )
+            # Pull every per-user object from the storage backend (local files
+            # or S3). obj.key is already "storage/<slug>/<uid>/<key>", which is
+            # exactly the archive layout we want.
+            storage = get_storage()
+            for obj in storage.list("storage"):
+                blob = storage.read_or_none(obj.key)
+                if blob is not None:
+                    zf.writestr(obj.key, blob)
         return zip_path, tmp_dir, filename
     except BaseException:
         shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -1395,6 +1391,17 @@ async def backup_download(
     csrf: Annotated[str, Form(alias="_csrf")] = "",
 ):
     check_csrf(request, csrf)
+    # The one-click tarball assumes the local SQLite DB + filesystem layout
+    # (sqlite online-backup + tar of data_dir). On the AWS deployment the DB is
+    # RDS and files are in S3, so neither applies — point operators at the
+    # managed equivalents instead of handing back a broken/empty archive.
+    if settings.storage_backend != "local" or not settings.database_url.startswith("sqlite"):
+        raise HTTPException(
+            400,
+            "The one-click backup is for the local SQLite + filesystem deployment. "
+            "On the AWS deployment use RDS automated snapshots for the database and "
+            "S3 bucket versioning for stored files — see aws/README.md.",
+        )
     data_dir = Path(settings.data_dir).resolve()
     # Run the tar/snapshot work on a worker thread so a large data dir
     # doesn't block the event loop while the response is being prepared.

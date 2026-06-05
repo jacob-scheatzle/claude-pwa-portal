@@ -88,13 +88,22 @@ def _security_log() -> Optional[logging.Logger]:
     if _security_logger is not None:
         return _security_logger
     try:
-        log_path = Path(settings.data_dir) / "security.log"
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        handler = logging.handlers.RotatingFileHandler(
-            log_path,
-            maxBytes=1_000_000,
-            backupCount=5,
-        )
+        if settings.storage_backend == "s3":
+            # AWS deploy: the container filesystem is ephemeral and there's no
+            # host-side fail2ban tailing a file, so write the security lines to
+            # stdout instead — they land in CloudWatch Logs alongside the app
+            # logs, and AWS WAF takes over the rate-limit/ban role at the edge.
+            import sys
+
+            handler: logging.Handler = logging.StreamHandler(sys.stdout)
+        else:
+            log_path = Path(settings.data_dir) / "security.log"
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            handler = logging.handlers.RotatingFileHandler(
+                log_path,
+                maxBytes=1_000_000,
+                backupCount=5,
+            )
         handler.setFormatter(logging.Formatter("%(message)s"))
         lg = logging.getLogger("portal.security")
         lg.setLevel(logging.INFO)

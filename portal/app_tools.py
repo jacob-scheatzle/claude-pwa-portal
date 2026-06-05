@@ -240,12 +240,11 @@ def run_tool(
         _check_email_rate,
         _check_pdf_rate,
         _enforce_recipient_allowlist,
-        _ns_dir,
-        _ns_usage,
         _recipient_domain_allowlist,
         _validate_key,
         namespace_lock,
     )
+    from portal.storage_backend import get_storage
 
     render = tool.get("render") or {}
     deliver = tool.get("deliver") or {}
@@ -324,25 +323,21 @@ def run_tool(
                     raise AppToolError(
                         f"object exceeds {MAX_OBJECT_BYTES // (1024 * 1024)}MB limit"
                     )
-                ns = _ns_dir(app_row.slug, user.id)
-                target = (ns / safe_key).resolve()
-                try:
-                    target.relative_to(ns)
-                except ValueError:
-                    raise AppToolError("invalid storage key")
+                storage = get_storage()
+                prefix = storage.namespace_prefix(app_row.slug, user.id)
+                full_key = f"{prefix}/{safe_key}"
                 # Cross-process lock over the namespace (shared with the SDK's
                 # storage PUT) so two concurrent near-cap writes can't race the
                 # quota check. Check BEFORE writing — accounting for the object
                 # this key may replace — so an over-cap store leaves any prior
                 # value at the key intact instead of truncating then failing.
                 with namespace_lock(app_row.slug, user.id):
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    existing = target.stat().st_size if target.is_file() else 0
-                    if _ns_usage(ns) - existing + len(pdf) > MAX_NAMESPACE_BYTES:
+                    existing = storage.size(full_key) or 0
+                    if storage.usage(prefix) - existing + len(pdf) > MAX_NAMESPACE_BYTES:
                         raise AppToolError(
                             f"storage namespace exceeds {MAX_NAMESPACE_BYTES // (1024 * 1024)}MB limit"
                         )
-                    target.write_bytes(pdf)
+                    storage.write(full_key, pdf, content_type="application/pdf")
                 return {"delivered": "store", "key": safe_key, "size": len(pdf)}
 
             if kind == "email":

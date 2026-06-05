@@ -25,7 +25,7 @@
 #     (behind-LB) — only one matches the real document URL at runtime.
 
 http://{$SITE_URL:localhost} {
-	reverse_proxy portal:8000
+	reverse_proxy {$PORTAL_UPSTREAM:portal:8000}
 
 	encode zstd gzip
 
@@ -71,7 +71,7 @@ http://{$SITE_URL:localhost} {
 # ``<slug>.apps.<SITE_URL>`` to a per-app origin, and AppSession cookies
 # stay scoped to the subdomain.
 http://*.apps.{$SITE_URL} {
-	reverse_proxy portal:8000
+	reverse_proxy {$PORTAL_UPSTREAM:portal:8000}
 
 	encode zstd gzip
 

@@ -61,7 +61,10 @@ def run_migrations_offline() -> None:
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
         compare_type=True,
-        render_as_batch=True,
+        # Batch mode only matters for SQLite (it can't ALTER columns in place,
+        # so Alembic rebuilds the table). On PostgreSQL it forces needless
+        # table rebuilds, so scope it to SQLite.
+        render_as_batch=(url or "").startswith("sqlite"),
     )
 
     with context.begin_transaction():
@@ -86,7 +89,8 @@ def run_migrations_online() -> None:
             connection=connection,
             target_metadata=target_metadata,
             compare_type=True,
-            render_as_batch=True,
+            # SQLite-only — see run_migrations_offline for the rationale.
+            render_as_batch=connection.dialect.name == "sqlite",
         )
 
         with context.begin_transaction():

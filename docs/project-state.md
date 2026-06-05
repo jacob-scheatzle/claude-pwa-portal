@@ -45,6 +45,22 @@ project up on a different machine or after a break.
      (apps/users/submissions/schedules/audit JSON + storage files).
   Adds `App.forms` + `FormSubmission` (migration `1ee4231bf6f8`). Each shipped
   with code + admin UI + MCP parity (scheduler) + docs, individually verified.
+- **Update (June 5, 2026):** added a second, cloud-native **AWS deployment**
+  (`aws/`) alongside the Docker/Caddy product — ECS Fargate + ALB + CloudFront,
+  RDS PostgreSQL, and S3, all in Terraform with `bootstrap`/`deploy` scripts.
+  To support it the app gained **pluggable backends**: a new
+  `portal/storage_backend.py` (`local` default | `s3`) that every blob
+  read/write (app bundles, per-user storage, branding, shares, export) routes
+  through, plus Postgres support (`psycopg`, pooled engine, dialect-scoped
+  Alembic batch). `boto3`+`psycopg` are an opt-in `[aws]` extra
+  (`INSTALL_AWS=true`). On AWS the existing Caddy image runs as an HTTP_ONLY
+  sidecar, the storage `flock` becomes a Postgres advisory lock, the in-app
+  Backup button is gated off (RDS snapshots + S3 versioning instead), WAF
+  replaces fail2ban, and it stays single-task (`desired_count=1`). Verified
+  end-to-end with an HTTP TestClient across local+SQLite (regression),
+  S3(MinIO)+SQLite, and S3+Postgres — 21/21 each; Alembic migrates a fresh
+  Postgres cleanly; `terraform validate` passes. The Docker/Caddy + SQLite path
+  is unchanged and remains the default. See [aws/README.md](../aws/README.md).
 
 ---
 

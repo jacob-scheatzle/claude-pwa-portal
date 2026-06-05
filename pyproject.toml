@@ -1,6 +1,6 @@
 [project]
 name = "pwa-portal"
-version = "0.12.0"
+version = "0.13.0"
 description = "Open-source PWA hosting portal for small businesses"
 license = "AGPL-3.0-or-later"
 license-files = ["LICENSE"]
@@ -29,6 +29,14 @@ dependencies = [
 # image with --build-arg INSTALL_MCP=true. Also requires MCP_ENABLED=true at
 # runtime.
 mcp = ["mcp>=1.27"]
+
+# Opt-in: the AWS deployment backends — PostgreSQL (RDS) via psycopg and S3
+# object storage via boto3. Kept out of the base deps so the default install
+# and the Docker image stay lean (local SQLite + filesystem need neither).
+# Install with `pip install 'pwa-portal[aws]'` or build the image with
+# --build-arg INSTALL_AWS=true. Also requires STORAGE_BACKEND=s3 +
+# DATABASE_URL=postgresql+psycopg://... at runtime. See aws/README.md.
+aws = ["boto3>=1.34", "psycopg[binary]>=3.1"]
 
 [build-system]
 requires = ["setuptools>=68"]
