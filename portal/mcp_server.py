@@ -236,6 +236,150 @@ delivers `kind: share` (declare the `pdf` service for that tool; the form half
 needs no services). Build the share half whenever the workflow ends in giving
 the customer a document.
 
+## Visual style
+
+Embed the portal's design tokens (below) in the app's CSS so it matches the
+portal shell and adapts to light/dark automatically. The whole accent family
+(hover/tint/soft/glow) is *derived* from `--accent` via `color-mix()` — to
+re-brand an app, change only `--accent` and everything follows in both color
+schemes.
+
+```css
+:root {
+  color-scheme: light dark;
+  --bg: #fafaf9;
+  --surface: #ffffff;
+  --surface-2: #f5f5f4;
+  --border: #e7e5e4;
+  --border-strong: #d6d3d1;
+  --text: #1c1917;
+  --text-muted: #57534e;
+  --text-faint: #78716c;
+  /* Accent family is DERIVED from --accent — change one variable to
+     re-skin the app. --lift is what hover mixes toward (black in light,
+     white in dark); the *-amt percentages strengthen tints in dark mode. */
+  --accent: #059669;
+  --accent-fg: #ffffff;
+  --lift: #000000;
+  --tint-amt: 9%;
+  --soft-amt: 14%;
+  --accent-hover: color-mix(in srgb, var(--accent) 85%, var(--lift));
+  --accent-tint: color-mix(in srgb, var(--accent) var(--tint-amt), var(--surface));
+  --accent-soft: color-mix(in srgb, var(--accent) var(--soft-amt), transparent);
+  --accent-glow: color-mix(in srgb, var(--accent) 28%, transparent);
+  --danger: #b91c1c;
+  --danger-tint: #fef2f2;
+  --warn: #b45309;
+  --warn-tint: #fef3c7;
+  --success: #15803d;
+  --success-tint: #ecfdf5;
+  --radius-sm: 0.5rem;
+  --radius: 0.7rem;
+  --radius-lg: 1rem;
+  --shadow-sm: 0 1px 2px rgba(28,25,23,0.06), 0 1px 1px rgba(28,25,23,0.03);
+  --shadow: 0 2px 6px rgba(28,25,23,0.07), 0 1px 2px rgba(28,25,23,0.05);
+  --shadow-md: 0 10px 24px -6px rgba(28,25,23,0.12), 0 3px 8px rgba(28,25,23,0.06);
+  --font-sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI",
+    Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0c0a09;
+    --surface: #1c1917;
+    --surface-2: #292524;
+    --border: #292524;
+    --border-strong: #44403c;
+    --text: #fafaf9;
+    --text-muted: #a8a29e;
+    --text-faint: #78716c;
+    --accent: #10b981;
+    --accent-fg: #0c0a09;
+    --lift: #ffffff;
+    --tint-amt: 18%;
+    --soft-amt: 22%;
+    --danger: #f87171;
+    --danger-tint: #450a0a;
+    --warn: #fbbf24;
+    --warn-tint: #451a03;
+    --success: #4ade80;
+    --success-tint: #052e16;
+    --shadow-sm: 0 1px 2px rgba(0,0,0,0.4), 0 1px 1px rgba(0,0,0,0.25);
+    --shadow: 0 2px 6px rgba(0,0,0,0.5), 0 1px 2px rgba(0,0,0,0.3);
+    --shadow-md: 0 10px 24px -6px rgba(0,0,0,0.6), 0 3px 8px rgba(0,0,0,0.35);
+  }
+}
+```
+
+Then the standard component recipes — copy these, then layer app-specific
+styles on top:
+
+```css
+* { box-sizing: border-box; }
+body {
+  font-family: var(--font-sans);
+  background:
+    radial-gradient(70rem 30rem at 50% -14rem, var(--accent-soft), transparent 70%),
+    var(--bg);
+  color: var(--text);
+  margin: 0;
+  min-height: 100svh;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+::selection { background: var(--accent-soft); }
+
+/* primary button — top-lit gradient over the accent */
+button {
+  display: inline-flex; align-items: center; justify-content: center; gap: 0.4rem;
+  padding: 0.6rem 1.1rem;
+  border: 1px solid color-mix(in srgb, var(--accent) 80%, #000);
+  border-radius: var(--radius-sm);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 88%, #fff), var(--accent));
+  color: var(--accent-fg);
+  font-weight: 600; font-size: 0.925rem; font-family: inherit; cursor: pointer;
+  box-shadow: 0 1px 2.5px var(--accent-glow), inset 0 1px 0 color-mix(in srgb, #fff 28%, transparent);
+  transition: background 0.12s ease, box-shadow 0.12s ease, transform 0.06s ease;
+}
+button:hover { background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 78%, #fff), color-mix(in srgb, var(--accent) 94%, #fff)); }
+button:active { transform: translateY(1px); box-shadow: none; }
+button.secondary {
+  background: var(--surface); color: var(--accent);
+  border: 1px solid var(--border-strong); box-shadow: none;
+}
+button.secondary:hover { background: var(--accent-tint); border-color: var(--accent); }
+a:focus-visible, button:focus-visible, input:focus-visible + label { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+input, textarea, select {
+  width: 100%; padding: 0.65rem 0.85rem;
+  border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  background: var(--surface); color: var(--text);
+  font-size: 0.95rem; font-family: inherit;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+input:focus, textarea:focus, select:focus {
+  outline: 0; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius-lg); padding: 1.5rem 1.6rem; box-shadow: var(--shadow-sm);
+}
+```
+
+Usage:
+- Wrap page content in a shell container: `max-width: 36rem; margin: 0 auto;
+  padding: 2rem 1.5rem 4rem;`.
+- Status/helper text uses `color: var(--text-muted)`; error text uses
+  `color: var(--danger)` (with `--danger-tint` as a background where needed).
+- Pills/badges: `display: inline-block; padding: 0.15rem 0.625rem;
+  border-radius: 9999px; font-size: 0.7rem; font-weight: 600; box-shadow:
+  inset 0 0 0 1px color-mix(in srgb, currentColor 30%, transparent);` — set
+  `color` to `var(--success)` / `var(--warn)` / `var(--danger)` and the
+  background to the matching `*-tint`.
+- Never hardcode one-off hex colors in rules — scope a new CSS variable next
+  to the tokens (e.g. `--chart-line: …`) so it can be themed for both schemes.
+
 ## Notes
 - Tool calls run as the connected admin user, in that user's per-app storage,
   send email as the business, and share the SDK's per-user PDF/email rate limits.

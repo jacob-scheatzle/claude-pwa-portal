@@ -678,7 +678,7 @@ tool) so the app covers the whole round trip, not just collection.
 - **No external CSS frameworks** unless the user specifically asks. Lean styling is fine.
 - **Persistent data goes through `portal.storage`.** Never hit external APIs for user data without asking.
 - **Be defensive about user input** — validate emails, numbers, etc. before sending to the portal API.
-- **Match the portal's visual style.** The portal has a stone-neutral / emerald-accent design system; the basic scaffold at `templates/basic/index.html` already includes the design tokens (CSS variables). When generating new HTML for a child app, **start from the scaffold's `<style>` block** and use the tokens below — apps then look consistent with the portal chrome and adapt to light/dark automatically.
+- **Match the portal's visual style.** The portal has a stone-neutral design system with a **derived accent family**: the hover/tint/soft/glow shades are all computed from a single `--accent` variable (emerald by default) via `color-mix()`, in both light and dark mode. The basic scaffold at `templates/basic/index.html` already includes the design tokens (CSS variables). When generating new HTML for a child app, **start from the scaffold's `<style>` block** and use the tokens below — apps then look consistent with the portal chrome and adapt to light/dark automatically.
 
 ## Visual style — design tokens
 
@@ -695,17 +695,30 @@ Child apps should embed these CSS variables at the top of their `<style>` block.
   --text: #1c1917;
   --text-muted: #57534e;
   --text-faint: #78716c;
-  --accent: #059669;          /* emerald — primary actions, links */
-  --accent-hover: #047857;
+  /* Accent family is DERIVED from --accent — change one variable to
+     re-skin the app. --lift is what hover mixes toward (black in light,
+     white in dark); the *-amt percentages strengthen tints in dark mode. */
+  --accent: #059669;
   --accent-fg: #ffffff;
-  --accent-tint: #ecfdf5;
-  --accent-soft: rgba(5, 150, 105, 0.12);
+  --lift: #000000;
+  --tint-amt: 9%;
+  --soft-amt: 14%;
+  --accent-hover: color-mix(in srgb, var(--accent) 85%, var(--lift));
+  --accent-tint: color-mix(in srgb, var(--accent) var(--tint-amt), var(--surface));
+  --accent-soft: color-mix(in srgb, var(--accent) var(--soft-amt), transparent);
+  --accent-glow: color-mix(in srgb, var(--accent) 28%, transparent);
   --danger: #b91c1c;
+  --danger-tint: #fef2f2;
+  --warn: #b45309;
+  --warn-tint: #fef3c7;
   --success: #15803d;
-  --radius-sm: 0.4rem;
-  --radius: 0.55rem;
-  --shadow-sm: 0 1px 2px rgba(15,23,42,0.05), 0 1px 1px rgba(15,23,42,0.025);
-  --shadow: 0 2px 4px rgba(15,23,42,0.06), 0 1px 2px rgba(15,23,42,0.04);
+  --success-tint: #ecfdf5;
+  --radius-sm: 0.5rem;
+  --radius: 0.7rem;
+  --radius-lg: 1rem;
+  --shadow-sm: 0 1px 2px rgba(28,25,23,0.06), 0 1px 1px rgba(28,25,23,0.03);
+  --shadow: 0 2px 6px rgba(28,25,23,0.07), 0 1px 2px rgba(28,25,23,0.05);
+  --shadow-md: 0 10px 24px -6px rgba(28,25,23,0.12), 0 3px 8px rgba(28,25,23,0.06);
   --font-sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI",
     Roboto, "Helvetica Neue", Arial, sans-serif;
   --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
@@ -719,26 +732,66 @@ Child apps should embed these CSS variables at the top of their `<style>` block.
     --border-strong: #44403c;
     --text: #fafaf9;
     --text-muted: #a8a29e;
+    --text-faint: #78716c;
     --accent: #10b981;
-    --accent-hover: #34d399;
     --accent-fg: #0c0a09;
-    --accent-tint: #064e3b;
-    --accent-soft: rgba(16, 185, 129, 0.18);
+    --lift: #ffffff;
+    --tint-amt: 18%;
+    --soft-amt: 22%;
     --danger: #f87171;
+    --danger-tint: #450a0a;
+    --warn: #fbbf24;
+    --warn-tint: #451a03;
     --success: #4ade80;
+    --success-tint: #052e16;
+    --shadow-sm: 0 1px 2px rgba(0,0,0,0.4), 0 1px 1px rgba(0,0,0,0.25);
+    --shadow: 0 2px 6px rgba(0,0,0,0.5), 0 1px 2px rgba(0,0,0,0.3);
+    --shadow-md: 0 10px 24px -6px rgba(0,0,0,0.6), 0 3px 8px rgba(0,0,0,0.35);
   }
 }
 ```
 
 **Usage conventions:**
-- `body { font-family: var(--font-sans); background: var(--bg); color: var(--text); }`
+- **Derived accent family.** `--accent-hover`, `--accent-tint`, `--accent-soft`, and `--accent-glow` are computed from `--accent` with `color-mix()` — never hard-code their values. **To re-brand an app, change ONLY `--accent` — hover/tint/soft/glow derive from it automatically**, in light and dark mode alike (`--lift` flips between black and white, and the `*-amt` percentages strengthen the tints in dark).
+- Body gets a soft accent wash bleeding down from the top, plus a selection tint:
+  ```css
+  body {
+    font-family: var(--font-sans);
+    background:
+      radial-gradient(70rem 30rem at 50% -14rem, var(--accent-soft), transparent 70%),
+      var(--bg);
+    color: var(--text);
+    margin: 0;
+    min-height: 100svh;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  ::selection { background: var(--accent-soft); }
+  ```
 - Wrap page content in `<main class="shell">` with `max-width: 36rem` for forms / 60rem for wide layouts; padding `2rem 1.5rem 4rem`.
-- Buttons use `background: var(--accent)`, `color: var(--accent-fg)`, `border-radius: var(--radius-sm)`, `box-shadow: var(--shadow-sm)`, hover → `--accent-hover`.
-- Secondary buttons: `background: var(--surface)`, `color: var(--accent)`, `border: 1px solid var(--border-strong)`.
-- Inputs: `background: var(--surface)`, `border: 1px solid var(--border-strong)`, focus → `border-color: var(--accent)` + `box-shadow: 0 0 0 3px var(--accent-soft)`.
+- Primary buttons are top-lit gradients over the accent with an accent-tinted glow shadow, and press down on `:active`:
+  ```css
+  button {
+    display: inline-flex; align-items: center; justify-content: center; gap: 0.4rem;
+    padding: 0.6rem 1.1rem;
+    border: 1px solid color-mix(in srgb, var(--accent) 80%, #000);
+    border-radius: var(--radius-sm);
+    background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 88%, #fff), var(--accent));
+    color: var(--accent-fg);
+    font-weight: 600; font-size: 0.925rem; font-family: inherit; cursor: pointer;
+    box-shadow: 0 1px 2.5px var(--accent-glow), inset 0 1px 0 color-mix(in srgb, #fff 28%, transparent);
+    transition: background 0.12s ease, box-shadow 0.12s ease, transform 0.06s ease;
+  }
+  button:hover { background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 78%, #fff), color-mix(in srgb, var(--accent) 94%, #fff)); }
+  button:active { transform: translateY(1px); box-shadow: none; }
+  ```
+- Secondary buttons: `background: var(--surface)`, `color: var(--accent)`, `border: 1px solid var(--border-strong)`, no shadow; hover → `background: var(--accent-tint)` + `border-color: var(--accent)`.
+- Inputs: `background: var(--surface)`, `border: 1px solid var(--border-strong)`, `border-radius: var(--radius-sm)`, padding `0.65rem 0.85rem`; focus → `border-color: var(--accent)` + `box-shadow: 0 0 0 3px var(--accent-soft)`.
+- Keyboard focus gets an accent outline: `a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }`
 - Headings: `font-weight: 700`, `letter-spacing: -0.025em` for h1.
-- Cards / panels: `background: var(--surface)`, `border: 1px solid var(--border)`, `border-radius: var(--radius)`, optional `box-shadow: var(--shadow-sm)`.
-- Pills / badges: `padding: 0.15rem 0.625rem`, `border-radius: 9999px`, `font-size: 0.7rem`, `font-weight: 600`. Use `--success-tint` / `--success` for "good", `--danger-tint` / `--danger` for "bad", `--accent-tint` / `--accent` for neutral-emphasized.
+- Cards / panels: `background: var(--surface)`, `border: 1px solid var(--border)`, `border-radius: var(--radius-lg)`, `padding: 1.5rem 1.6rem`, `box-shadow: var(--shadow-sm)`.
+- Pills / badges: `padding: 0.15rem 0.625rem`, `border-radius: 9999px`, `font-size: 0.7rem`, `font-weight: 600`, plus a hairline ring in the text color: `box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 30%, transparent)`. Use `--success-tint` / `--success` for "good", `--danger-tint` / `--danger` for "bad", `--warn-tint` / `--warn` for caution, `--accent-tint` / `--accent` for neutral-emphasized.
+- Radii are rounder than they used to be: `--radius-sm: 0.5rem` (buttons, inputs), `--radius: 0.7rem`, `--radius-lg: 1rem` (cards). Shadows are softer and larger; `--shadow-md` is for floating elements like menus and dialogs.
 - Status messages: small text in `--text-muted`; errors in `--danger`; success in `--success`.
 
 If an app needs a one-off color (chart legend, brand callout), invent a CSS variable scoped to that element rather than dropping a hex literal mid-template — keeps the palette legible.
@@ -760,7 +813,7 @@ If an app needs a one-off color (chart legend, brand callout), invent a CSS vari
       --bg: #fafaf9; --surface: #ffffff; --border: #e7e5e4;
       --text: #1c1917; --text-muted: #57534e;
       --accent: #059669; --accent-fg: #ffffff;
-      --radius-sm: 0.4rem;
+      --radius-sm: 0.5rem;
       --font-sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
     }
     @media (prefers-color-scheme: dark) {
