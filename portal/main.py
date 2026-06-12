@@ -2,8 +2,10 @@ import asyncio
 import contextlib
 import logging
 import re
+import threading
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Annotated, Optional
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
@@ -234,6 +236,11 @@ def _safe_next(value: str) -> str:
 _LOGIN_FAIL_WINDOW_SECONDS = 600
 _LOGIN_FAIL_LIMIT = 5
 _login_failures: dict[tuple[str, str], list[float]] = {}
+# Login handlers are sync `def`, so FastAPI runs them in a threadpool — several
+# can mutate ``_login_failures`` concurrently. Guard every read/modify of the
+# dict with this lock so a prune can't race an append (lost update / corrupt
+# list under iteration).
+_login_failures_lock = threading.Lock()
 
 
 def _login_key(request: Request, email: str) -> tuple[str, str]:
@@ -242,9 +249,11 @@ def _login_key(request: Request, email: str) -> tuple[str, str]:
 
 
 def _prune_login_failures(now: float) -> None:
+    # Caller must hold ``_login_failures_lock``. Snapshot the items before
+    # iterating so we never mutate the dict mid-iteration.
     cutoff = now - _LOGIN_FAIL_WINDOW_SECONDS
     stale: list[tuple[str, str]] = []
-    for key, hits in _login_failures.items():
+    for key, hits in list(_login_failures.items()):
         fresh = [t for t in hits if t > cutoff]
         if fresh:
             _login_failures[key] = fresh
@@ -256,19 +265,22 @@ def _prune_login_failures(now: float) -> None:
 
 def _login_blocked(key: tuple[str, str]) -> bool:
     now = time.monotonic()
-    _prune_login_failures(now)
-    hits = _login_failures.get(key, [])
-    return len(hits) >= _LOGIN_FAIL_LIMIT
+    with _login_failures_lock:
+        _prune_login_failures(now)
+        hits = _login_failures.get(key, [])
+        return len(hits) >= _LOGIN_FAIL_LIMIT
 
 
 def _record_login_failure(key: tuple[str, str]) -> None:
     now = time.monotonic()
-    _prune_login_failures(now)
-    _login_failures.setdefault(key, []).append(now)
+    with _login_failures_lock:
+        _prune_login_failures(now)
+        _login_failures.setdefault(key, []).append(now)
 
 
 def _clear_login_failures(key: tuple[str, str]) -> None:
-    _login_failures.pop(key, None)
+    with _login_failures_lock:
+        _login_failures.pop(key, None)
 
 
 # ----- Dashboard -----
@@ -354,7 +366,10 @@ def manifest(db: DbDep):
             "scope": "/",
             "display": "standalone",
             "orientation": "any",
-            "background_color": "#fafaf9",
+            # A mid neutral so the install splash reads acceptably under both
+            # light and dark OS themes (the old near-white "#fafaf9" glared on
+            # dark). theme_color stays the configured accent.
+            "background_color": "#71717a",
             "theme_color": brand["accent_color"],
             "icons": icons,
         },
@@ -490,6 +505,15 @@ def portal_sdk():
     )
 
 
+# Raster image extensions that are safe to serve inline. SVG (and anything
+# else) can embed <script>; served inline with a guessed image/svg+xml type it
+# would execute in the PORTAL origin — an XSS pivot. Mirror storage_get's
+# hardening: serve non-raster branding as an attachment with an octet-stream
+# type so the browser downloads it instead of rendering it. (Agent E separately
+# drops svg from the upload allowlist.)
+_INLINE_BRANDING_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".ico"}
+
+
 # Uploaded logo served by name. Anyone (signed-in or not) can fetch the
 # active logo — same trust level as /favicon.ico. We validate the filename
 # against the same whitelist the upload handler enforces so a stale or
@@ -503,9 +527,16 @@ def branding_logo(name: str):
     # to a single object under the branding/ prefix.
     if not _safe_logo_name(name):
         raise HTTPException(404)
+    headers = {"Cache-Control": "public, max-age=300"}
+    if Path(name).suffix.lower() not in _INLINE_BRANDING_EXTS:
+        # Non-raster (e.g. legacy SVG) — force download, never inline render.
+        headers["Content-Disposition"] = "attachment"
+        media_type: Optional[str] = "application/octet-stream"
+    else:
+        media_type = None  # let the backend guess from the suffix
     try:
         return get_storage().file_response(
-            f"branding/{name}", headers={"Cache-Control": "public, max-age=300"}
+            f"branding/{name}", media_type=media_type, headers=headers
         )
     except (FileNotFoundError, ValueError):
         raise HTTPException(404)

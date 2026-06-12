@@ -276,6 +276,11 @@ class ChildAppCSPMiddleware(BaseHTTPMiddleware):
             if m:
                 slug = m.group(1)
 
+        # No candidate slug at all (the portal shell, /health, /static, …) —
+        # nothing per-app to do; let the response through untouched.
+        if not slug:
+            return await call_next(request)
+
         # Pre-resolve the App row on the request path so file handlers can
         # read ``request.state.csp_nonce`` to substitute ``{{NONCE}}`` in
         # HTML before the response goes out. Strict CSP only applies on the
@@ -283,36 +288,40 @@ class ChildAppCSPMiddleware(BaseHTTPMiddleware):
         # scripts (base.html theme toggle, etc.) and would break under
         # strict mode. Same-origin mode keeps the permissive CSP for the
         # same reason.
+        #
+        # If the slug doesn't resolve to a real App row (bogus subdomain, a
+        # ``/apps/<unknown>/`` probe), short-circuit: skip the per-app CSP
+        # entirely and pass the response through. Real apps below are handled
+        # byte-for-byte as before.
         allowed: list[str] = []
         csp_strict = False
         nonce: Optional[str] = None
-        if slug:
-            try:
-                with Session(self._engine) as db:
-                    from portal.models import App
+        try:
+            with Session(self._engine) as db:
+                from portal.models import App
 
-                    app_row = db.exec(select(App).where(App.slug == slug)).first()
-                    if app_row is not None:
-                        allowed = list(app_row.allowed_origins or [])
-                        # A ``/forms/*`` request on the subdomain is a PORTAL-
-                        # rendered page (base.html chrome with inline styles +
-                        # the theme script), not the app's own bundle — so keep
-                        # it on the permissive CSP even for a csp_strict app, or
-                        # its inline styles/theme would be blocked and the public
-                        # form would render broken.
-                        is_form_page = request.url.path.startswith("/forms/")
-                        if (
-                            on_subdomain
-                            and not is_form_page
-                            and bool(getattr(app_row, "csp_strict", False))
-                        ):
-                            csp_strict = True
-            except Exception:
-                # DB hiccup — fall back to the legacy permissive CSP rather
-                # than block the response. Apps stay functional; the worst
-                # case is one request without strict CSP.
-                allowed = []
-                csp_strict = False
+                app_row = db.exec(select(App).where(App.slug == slug)).first()
+            if app_row is None:
+                return await call_next(request)
+            allowed = list(app_row.allowed_origins or [])
+            # A ``/forms/*`` request on the subdomain is a PORTAL-rendered
+            # page (base.html chrome with inline styles + the theme script),
+            # not the app's own bundle — so keep it on the permissive CSP even
+            # for a csp_strict app, or its inline styles/theme would be blocked
+            # and the public form would render broken.
+            is_form_page = request.url.path.startswith("/forms/")
+            if (
+                on_subdomain
+                and not is_form_page
+                and bool(getattr(app_row, "csp_strict", False))
+            ):
+                csp_strict = True
+        except Exception:
+            # DB hiccup — fall back to the legacy permissive CSP rather
+            # than block the response. Apps stay functional; the worst
+            # case is one request without strict CSP.
+            allowed = []
+            csp_strict = False
 
         if csp_strict:
             # token_urlsafe yields URL-safe base64; the CSP spec accepts any
@@ -323,9 +332,8 @@ class ChildAppCSPMiddleware(BaseHTTPMiddleware):
 
         response = await call_next(request)
 
-        if not slug:
-            return response
-
+        # ``slug`` is guaranteed truthy here (bogus / unknown slugs returned
+        # early above), so this response belongs to a real app — stamp its CSP.
         frame_src: Optional[str] = None
         if on_subdomain:
             frame_ancestors = _subdomain_frame_ancestors(

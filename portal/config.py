@@ -54,12 +54,11 @@ class Settings(BaseSettings):
     http_only: bool = False
     session_max_age: int = 60 * 60 * 24 * 14  # 14 days
 
-    # When True (the current default, preserving today's behavior), child apps
-    # are served same-origin with the portal at ``/apps/<slug>/``. When False,
-    # child apps are served from per-app subdomains at ``<slug>.apps.<SITE_URL>``
-    # with their own isolated AppSession cookie — see
-    # docs/per-app-origin-design.md. Requires a wildcard DNS A record at
-    # ``*.apps.<SITE_URL>`` pointing at this VPS when False.
+    # When True, child apps are served same-origin with the portal at
+    # ``/apps/<slug>/``. When False (the default), child apps are served from
+    # per-app subdomains at ``<slug>.apps.<SITE_URL>`` with their own isolated
+    # AppSession cookie — see docs/per-app-origin-design.md. Requires a wildcard
+    # DNS A record at ``*.apps.<SITE_URL>`` pointing at this VPS when False.
     # Default = False: each child app runs on its own subdomain
     # (<slug>.apps.<SITE_URL>) for browser-origin isolation. Set to True only
     # if you can't or don't want to configure wildcard DNS — the portal falls
@@ -85,6 +84,26 @@ class Settings(BaseSettings):
     smtp_from: Optional[str] = None
     smtp_use_tls: bool = True
 
+    @field_validator("site_url", mode="before")
+    @classmethod
+    def _normalize_site_url(cls, v):
+        # SITE_URL must be a bare hostname (optionally with a port) — the
+        # subdomain matcher in middleware builds ``<slug>.apps.<site_url>`` and
+        # compares Host headers against it, so a stray scheme or trailing path
+        # would silently break that match. Strip a leading scheme and any path
+        # / query / fragment rather than fail at runtime with a confusing "no
+        # app matched" symptom. ``SITE_URL=https://x.com/`` → ``x.com``.
+        if not isinstance(v, str):
+            return v
+        s = v.strip()
+        if "://" in s:
+            s = s.split("://", 1)[1]
+        # Drop anything after the authority (path / query / fragment).
+        for sep in ("/", "?", "#"):
+            if sep in s:
+                s = s.split(sep, 1)[0]
+        return s.strip().rstrip(".")
+
     @field_validator("mcp_enabled", mode="before")
     @classmethod
     def _mcp_enabled_blank_is_auto(cls, v):
@@ -97,10 +116,24 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
-if settings.secret_key == "change-me-before-running-in-production" and settings.site_url != "localhost":
-    raise RuntimeError(
-        "SECRET_KEY is the placeholder value; refusing to start with "
-        f"site_url={settings.site_url!r}. Set SECRET_KEY in .env."
+_PLACEHOLDER_SECRET = "change-me-before-running-in-production"
+if settings.secret_key == _PLACEHOLDER_SECRET:
+    # Refuse the placeholder key on any deployment that looks production-shaped:
+    # a non-localhost site_url OR Secure cookies (which only make sense behind
+    # TLS, i.e. a real deployment). Either signal means a leaked, well-known key
+    # would let anyone forge session cookies / decrypt stored secrets.
+    if settings.site_url != "localhost" or settings.cookies_secure:
+        raise RuntimeError(
+            "SECRET_KEY is the placeholder value; refusing to start "
+            f"(site_url={settings.site_url!r}, cookies_secure="
+            f"{settings.cookies_secure}). Set SECRET_KEY in .env."
+        )
+    # Still allowed for local HTTP-only dev, but make the risk loud.
+    import logging as _logging
+
+    _logging.getLogger("uvicorn.error").warning(
+        "SECRET_KEY is the well-known placeholder value — sessions and stored "
+        "secrets are NOT secure. Set SECRET_KEY in .env before any real use."
     )
 
 if settings.storage_backend not in ("local", "s3"):

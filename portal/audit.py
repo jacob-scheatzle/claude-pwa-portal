@@ -116,9 +116,32 @@ def _security_log() -> Optional[logging.Logger]:
         # only, not the regular uvicorn / stderr stream.
         lg.propagate = False
         _security_logger = lg
-    except Exception:
+    except Exception as exc:
+        # Surface the cause once via the operational logger so an unwritable
+        # data dir (e.g. wrong ownership on the bind mount) is visible in
+        # `docker compose logs` — but never raise: the DB-side audit row is
+        # the source of truth and must keep landing.
+        logging.getLogger("uvicorn.error").warning(
+            "security.log unavailable (%s: %s); security events will land in "
+            "the audit DB only", type(exc).__name__, exc,
+        )
         return None
     return _security_logger
+
+
+def init_security_log() -> None:
+    """Eagerly initialize the security logger at boot.
+
+    Called at import time so an unwritable ``data/`` surfaces a warning in the
+    startup logs rather than only when the first failed login is recorded.
+    Best-effort — ``_security_log`` swallows and logs any error itself.
+    """
+    _security_log()
+
+
+# Probe at import (audit is imported during app construction) so path problems
+# show up at boot, not lazily on the first security event.
+init_security_log()
 
 
 def _sanitize_value(v: object) -> str:
@@ -158,9 +181,12 @@ def _client_ip(request: Optional[Request]) -> str:
     """Pull the client IP out of a Request, honoring proxy headers.
 
     ``request.client.host`` is already populated from X-Forwarded-For when
-    uvicorn runs with ``--proxy-headers --forwarded-allow-ips=*`` (set in
-    the container CMD). Returns an empty string for cases where the
-    handler didn't receive a Request (system-driven events).
+    uvicorn runs with ``--proxy-headers --forwarded-allow-ips=<private CIDRs>``
+    (the container CMD trusts only the Docker bridge ranges
+    ``127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16`` by default, not
+    ``*``, so a client can't spoof its IP through an untrusted hop). Returns an
+    empty string for cases where the handler didn't receive a Request
+    (system-driven events).
     """
     if request is None or request.client is None:
         return ""

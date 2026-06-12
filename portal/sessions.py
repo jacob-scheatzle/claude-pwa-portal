@@ -8,12 +8,21 @@ its signed cookie is still within max_age.
 
 import secrets
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Iterable, Optional
 
 from sqlalchemy import delete
 from sqlmodel import Session, select
 
-from portal.models import AppLaunchToken, AppSession, User, UserSession
+from portal.models import (
+    ApiToken,
+    AppLaunchToken,
+    AppSession,
+    OAuthCode,
+    OAuthToken,
+    ScheduledRun,
+    User,
+    UserSession,
+)
 
 # Bump last_seen_at lazily: writing on every authenticated request would mean
 # a DB commit per request, which is wasteful for an audit-style timestamp.
@@ -161,6 +170,39 @@ def revoke_all_app_sessions_for_user(db: Session, user_id: int) -> int:
     return count
 
 
+def revoke_app_sessions_for_user(
+    db: Session, user_id: int, slugs: Optional[Iterable[str]] = None
+) -> int:
+    """Revoke a user's active AppSessions, optionally scoped to ``slugs``.
+
+    Called when an admin removes a user's access to one or more apps: the
+    per-request access check (portal.access.user_can_access_app) only runs at
+    launch / SDK-auth time, so an already-open AppSession would keep working
+    until it expired. Closing the matching rows kills live sessions for the
+    apps the user just lost. ``slugs=None`` revokes every app session (mirrors
+    ``revoke_all_app_sessions_for_user``). Returns count revoked.
+    """
+    stmt = select(AppSession).where(
+        AppSession.user_id == user_id,
+        AppSession.revoked_at.is_(None),  # type: ignore[union-attr]
+    )
+    if slugs is not None:
+        slug_set = {s for s in slugs}
+        if not slug_set:
+            return 0
+        stmt = stmt.where(AppSession.slug.in_(slug_set))  # type: ignore[attr-defined]
+    rows = db.exec(stmt).all()
+    now = _utcnow()
+    count = 0
+    for row in rows:
+        row.revoked_at = now
+        db.add(row)
+        count += 1
+    if count:
+        db.commit()
+    return count
+
+
 def revoke_all_app_sessions_for_slug(db: Session, slug: str) -> int:
     """Revoke every active AppSession for an app slug. Returns count revoked.
 
@@ -198,6 +240,38 @@ def touch_app_session(db: Session, session: AppSession) -> None:
         session.last_seen_at = now
         db.add(session)
         db.commit()
+
+
+# ----- Full credential cascade on user delete -----
+
+
+def revoke_all_credentials_for_user(db: Session, user_id: int) -> None:
+    """Tear down every credential / token row that references ``user_id``.
+
+    Called from users_delete before the User row is removed. SQLite reuses an
+    INTEGER PRIMARY KEY rowid when the highest-id row is deleted, so any
+    lingering row whose user_id points at the deleted user would silently
+    re-authenticate (or re-fire, for ScheduledRun) as a future new user that
+    inherits the same id. We therefore HARD-DELETE every such row rather than
+    just marking sessions revoked.
+
+    Cascades: ApiToken (by created_by), UserSession, AppSession, AppLaunchToken,
+    OAuthToken, OAuthCode, and ScheduledRun (all by user_id). Note:
+    OAuthPendingAuthorization has no user_id column so it can't be keyed to this
+    user — see the comment below.
+
+    Caller commits.
+    """
+    db.exec(delete(ApiToken).where(ApiToken.created_by == user_id))
+    db.exec(delete(UserSession).where(UserSession.user_id == user_id))
+    db.exec(delete(AppSession).where(AppSession.user_id == user_id))
+    db.exec(delete(AppLaunchToken).where(AppLaunchToken.user_id == user_id))
+    db.exec(delete(OAuthToken).where(OAuthToken.user_id == user_id))
+    db.exec(delete(OAuthCode).where(OAuthCode.user_id == user_id))
+    # OAuthPendingAuthorization has no user_id (it's parked before the admin
+    # signs in + consents), so it can't be keyed to this user. Pending rows are
+    # short-lived and expire on their own; nothing to delete here by user.
+    db.exec(delete(ScheduledRun).where(ScheduledRun.user_id == user_id))
 
 
 # ----- AppLaunchToken maintenance -----

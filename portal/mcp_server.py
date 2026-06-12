@@ -50,7 +50,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from sqlmodel import Session, select
 from starlette.responses import JSONResponse
 
-from portal.app_tools import AppToolError, run_tool, tool_input_schema
+from portal.app_tools import AppToolError, _build_context, run_tool, tool_input_schema
 from portal.apps import MAX_ZIP_BYTES, UploadError, install_bundle_from_path
 from portal.audit import emit_security_line, record_event
 from portal.config import settings
@@ -817,9 +817,27 @@ def build_mcp_app():
             app = db.exec(select(App).where(App.slug == slug)).first()
             if app is None:
                 raise ValueError(f"No app with slug '{slug}'.")
+            if not app.enabled:
+                raise ValueError(f"App '{slug}' is disabled; enable it before scheduling its tools.")
             decl = next((t for t in (app.tools or []) if t.get("name") == tool_name), None)
             if decl is None:
                 raise ValueError(f"App '{slug}' has no tool '{tool_name}'.")
+            # A download-kind tool returns its PDF inline to the caller and has no
+            # recipient/destination, so a scheduled (unattended) run would have
+            # nowhere to put the output — reject it at create time.
+            deliver_kind = ((decl.get("deliver") or {}).get("kind") or "").strip()
+            if deliver_kind == "download":
+                raise ValueError(
+                    f"Tool '{tool_name}' delivers via 'download' and can't be scheduled "
+                    "(no recipient). Use a tool that emails, stores, or shares its output."
+                )
+            # Validate args against the tool's declared params now, so a broken
+            # schedule is rejected at create time rather than failing silently on
+            # its first unattended run. The executor re-validates at run time.
+            try:
+                _build_context(decl, tool_args)
+            except AppToolError as e:
+                raise ValueError(f"invalid args for '{tool_name}': {e}")
             hour = _clamp_int(args.get("hour"), 0, 23, 8)
             minute = _clamp_int(args.get("minute"), 0, 59, 0)
             dow = _clamp_int(args.get("day_of_week"), 0, 6, 0)
@@ -972,7 +990,12 @@ def build_mcp_app():
                     )
         return tools
 
-    @server.call_tool()
+    # validate_input=False: the SDK would otherwise pre-validate args against the
+    # cached inputSchema from the last tools/list. After an in-place app replace
+    # that schema can be stale, wrongly rejecting valid args. The executor
+    # (_build_context in app_tools) re-validates every call against the live
+    # declaration, so skipping the SDK's pre-check is safe and avoids false 4xx.
+    @server.call_tool(validate_input=False)
     async def _call_tool(name: str, arguments: dict):
         if name == "whoami":
             return _ctx_user()

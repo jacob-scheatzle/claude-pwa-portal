@@ -27,11 +27,11 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Optional
 
-from fastapi import APIRouter, Depends, Form, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from pydantic import AnyHttpUrl, AnyUrl
-from sqlalchemy import delete, or_
+from sqlalchemy import delete, or_, update
 from sqlmodel import Session, select
-from starlette.responses import RedirectResponse
+from starlette.responses import JSONResponse, RedirectResponse
 
 from mcp.server.auth.provider import (
     AccessToken,
@@ -50,6 +50,7 @@ from portal.audit import emit_security_line
 from portal.config import settings
 from portal.db import engine, get_db
 from portal.deps import current_user
+from portal.middleware import resolve_app_slug_from_host
 from portal.models import (
     OAuthClient,
     OAuthCode,
@@ -94,6 +95,40 @@ def _hash(raw: str) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+# Client secrets live inside the OAuthClient.client_info JSON. The SDK's
+# ClientAuthenticator compares the presented secret against the cleartext one in
+# that object (constant-time), so we can't hash it — but we can encrypt it at
+# rest with the same Fernet machinery used for the SMTP password
+# (portal.settings_store). We mark the encrypted value with this prefix so
+# get_client only attempts decryption on values we actually wrote, and any
+# legacy plaintext secret keeps working until the client re-registers.
+_SECRET_ENC_PREFIX = "enc:v2:"
+
+
+def _encrypt_client_secret(secret: Optional[str]) -> Optional[str]:
+    if not secret or secret.startswith(_SECRET_ENC_PREFIX):
+        return secret
+    from portal.settings_store import _fernet
+
+    token = _fernet().encrypt(secret.encode("utf-8")).decode("ascii")
+    return _SECRET_ENC_PREFIX + token
+
+
+def _decrypt_client_secret(stored: Optional[str]) -> Optional[str]:
+    if not stored or not stored.startswith(_SECRET_ENC_PREFIX):
+        return stored  # legacy plaintext (or absent) — pass through unchanged
+    from cryptography.fernet import InvalidToken
+
+    from portal.settings_store import _fernet
+
+    try:
+        return _fernet().decrypt(stored[len(_SECRET_ENC_PREFIX):].encode("ascii")).decode("utf-8")
+    except InvalidToken:
+        # SECRET_KEY rotated or row tampered with — treat as no usable secret so
+        # the compare fails closed rather than matching encrypted garbage.
+        return None
+
+
 def issuer_url() -> str:
     """Public OAuth issuer — the portal's own origin. Scheme follows cookies_secure."""
     scheme = "https" if settings.cookies_secure else "http"
@@ -125,12 +160,19 @@ class PortalOAuthProvider:
             if row is None:
                 return None
             # client_info round-trips the full RFC 7591 object incl. the secret,
-            # which the SDK's ClientAuthenticator compares with hmac at /token.
-            return OAuthClientInformationFull.model_validate(row.client_info)
+            # which the SDK's ClientAuthenticator compares (constant-time) at
+            # /token — so decrypt the at-rest secret back to cleartext first.
+            data = dict(row.client_info or {})
+            if data.get("client_secret"):
+                data["client_secret"] = _decrypt_client_secret(data["client_secret"])
+            return OAuthClientInformationFull.model_validate(data)
 
     async def register_client(self, client_info: OAuthClientInformationFull) -> None:
         with Session(engine) as db:
             data = client_info.model_dump(mode="json")
+            # Encrypt the client secret at rest (get_client decrypts it back).
+            if data.get("client_secret"):
+                data["client_secret"] = _encrypt_client_secret(data["client_secret"])
             row = db.get(OAuthClient, client_info.client_id)
             if row is None:
                 db.add(OAuthClient(client_id=client_info.client_id, client_info=data))
@@ -185,15 +227,24 @@ class PortalOAuthProvider:
     async def exchange_authorization_code(
         self, client: OAuthClientInformationFull, authorization_code: AuthorizationCode
     ) -> OAuthTokenResponse:
-        # Single-use: consume the code row, then issue tokens. (The SDK already
-        # verified PKCE, expiry, redirect_uri, and client_id before calling us.)
+        # Single-use: atomically claim the code row, then issue tokens. (The SDK
+        # already verified PKCE, expiry, redirect_uri, and client_id before
+        # calling us.) Read user_id first, then DELETE ... WHERE code_hash=:h and
+        # proceed only if exactly one row was removed — so two concurrent
+        # exchanges of the same code can't both mint tokens (the loser sees 0
+        # rows and is rejected as already-used).
+        code_hash = _hash(authorization_code.code)
         with Session(engine) as db:
-            row = db.get(OAuthCode, _hash(authorization_code.code))
+            row = db.get(OAuthCode, code_hash)
             if row is None:
                 raise TokenError("invalid_grant", "authorization code already used")
             user_id = row.user_id
-            db.delete(row)
+            result = db.exec(
+                delete(OAuthCode).where(OAuthCode.code_hash == code_hash)
+            )
             db.commit()
+            if result.rowcount != 1:
+                raise TokenError("invalid_grant", "authorization code already used")
         return self._issue(
             client.client_id, user_id, authorization_code.scopes, authorization_code.resource
         )
@@ -221,20 +272,35 @@ class PortalOAuthProvider:
         refresh_token: RefreshToken,
         scopes: list[str],
     ) -> OAuthTokenResponse:
-        # Rotate: revoke the presented refresh token's row, issue a fresh pair.
+        # Rotate atomically: claim the presented refresh token's row with a
+        # conditional UPDATE ... SET revoked_at WHERE token_hash=:h AND
+        # revoked_at IS NULL, and issue a fresh pair only if exactly one row was
+        # claimed. Two concurrent refreshes of the same token then can't both
+        # rotate (the loser updates 0 rows and is rejected).
+        # NOTE: reuse-detection family-revoke (revoking the whole token lineage
+        # if an already-rotated refresh token is replayed) is intentionally not
+        # done here — it needs a lineage/family column on OAuthToken, which is a
+        # schema change out of scope for this pass. PUNTED.
+        token_hash = _hash(refresh_token.token)
         with Session(engine) as db:
             row = db.exec(
-                select(OAuthTokenRow).where(
-                    OAuthTokenRow.refresh_token_hash == _hash(refresh_token.token)
-                )
+                select(OAuthTokenRow).where(OAuthTokenRow.refresh_token_hash == token_hash)
             ).first()
             if row is None or row.revoked_at is not None:
                 raise TokenError("invalid_grant", "refresh token not found")
             user_id = row.user_id
             resource = row.resource
-            row.revoked_at = _utcnow()
-            db.add(row)
+            result = db.exec(
+                update(OAuthTokenRow)
+                .where(
+                    OAuthTokenRow.refresh_token_hash == token_hash,
+                    OAuthTokenRow.revoked_at.is_(None),
+                )
+                .values(revoked_at=_utcnow())
+            )
             db.commit()
+            if result.rowcount != 1:
+                raise TokenError("invalid_grant", "refresh token not found")
         return self._issue(client.client_id, user_id, scopes or refresh_token.scopes, resource)
 
     async def load_access_token(self, token: str) -> Optional[AccessToken]:
@@ -256,21 +322,23 @@ class PortalOAuthProvider:
             )
 
     async def revoke_token(self, token) -> None:
-        # token is an AccessToken or RefreshToken; match either column.
+        # token is an AccessToken or RefreshToken; match either column. Conditional
+        # UPDATE ... WHERE revoked_at IS NULL so a concurrent rotation/revoke can't
+        # clobber an already-set revoked_at timestamp.
         h = _hash(token.token)
         with Session(engine) as db:
-            row = db.exec(
-                select(OAuthTokenRow).where(
+            db.exec(
+                update(OAuthTokenRow)
+                .where(
                     or_(
                         OAuthTokenRow.access_token_hash == h,
                         OAuthTokenRow.refresh_token_hash == h,
-                    )
+                    ),
+                    OAuthTokenRow.revoked_at.is_(None),
                 )
-            ).first()
-            if row is not None and row.revoked_at is None:
-                row.revoked_at = _utcnow()
-                db.add(row)
-                db.commit()
+                .values(revoked_at=_utcnow())
+            )
+            db.commit()
 
     # ----- internal -----
 
@@ -368,6 +436,17 @@ DbDep = Annotated[Session, Depends(get_db)]
 UserDep = Annotated[Optional[User], Depends(current_user)]
 
 
+def _require_portal_origin(request: Request) -> None:
+    """404 the consent routes on a child-app subdomain.
+
+    The OAuth consent flow is a portal-origin, admin-only surface; it must not
+    answer on ``<slug>.apps.<SITE_URL>`` (mirrors the /mcp Host gate in
+    mcp_server._AuthASGIApp). ``app_slug`` is set by HostDispatchMiddleware.
+    """
+    if getattr(request.state, "app_slug", None) is not None:
+        raise HTTPException(status_code=404, detail="Not found")
+
+
 def _login_redirect(txn: str) -> RedirectResponse:
     from urllib.parse import quote
 
@@ -398,6 +477,7 @@ def _client_name(db: Session, client_id: str) -> str:
 
 @oauth_router.get("/oauth/consent")
 def consent_form(txn: str, request: Request, db: DbDep, user: UserDep):
+    _require_portal_origin(request)
     if user is None:
         return _login_redirect(txn)
     pending = db.get(OAuthPendingAuthorization, txn)
@@ -426,9 +506,13 @@ def consent_submit(
     decision: Annotated[str, Form()] = "deny",
     csrf: Annotated[str, Form(alias="_csrf")] = "",
 ):
-    check_csrf(request, csrf)
+    _require_portal_origin(request)
+    # Re-login check BEFORE CSRF: a lapsed session has no CSRF token to match,
+    # so enforcing CSRF first would yield a confusing 403 instead of a clean
+    # bounce to /login (which returns the admin to consent afterwards).
     if user is None:
         return _login_redirect(txn)
+    check_csrf(request, csrf)
     pending = db.get(OAuthPendingAuthorization, txn)
     if pending is None or _as_aware(pending.expires_at) < _utcnow():
         return render(
@@ -539,6 +623,100 @@ class _OAuthAuditASGI:
                 pass
 
 
+class _HostGateASGI:
+    """404 an OAuth AS endpoint when reached on a child-app subdomain.
+
+    The OAuth AS lives on the portal origin only; it must not answer on
+    ``<slug>.apps.<SITE_URL>`` (mirrors the /mcp Host gate). These SDK routes
+    are raw ASGI apps that don't see ``request.state.app_slug``, so we resolve
+    the slug from the Host header directly here.
+    """
+
+    def __init__(self, app):
+        self._app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") == "http":
+            headers = {
+                k.decode("latin-1").lower(): v.decode("latin-1")
+                for k, v in (scope.get("headers") or [])
+            }
+            if resolve_app_slug_from_host(headers.get("host", ""), settings.site_url) is not None:
+                await JSONResponse({"error": "Not found"}, status_code=404)(scope, receive, send)
+                return
+        await self._app(scope, receive, send)
+
+
+# Per-IP throttle on dynamic client registration (RFC 7591 /register). Open
+# registration is convenient for the connector but an unauthenticated write, so
+# bound how fast one IP can mint clients. Same in-process rolling-window shape as
+# the login limiter in main.py; lost on restart (acceptable — this is anti-abuse,
+# not correctness), and prune_oauth still sweeps abandoned client rows.
+_REGISTER_WINDOW_SECONDS = 3600
+_REGISTER_LIMIT = 10
+_register_hits: dict[str, list[float]] = {}
+
+
+def _register_rate_limited(ip: str) -> bool:
+    import time
+
+    now = time.monotonic()
+    cutoff = now - _REGISTER_WINDOW_SECONDS
+    # Prune every IP's window so the dict can't grow without bound.
+    for key in list(_register_hits.keys()):
+        fresh = [t for t in _register_hits[key] if t > cutoff]
+        if fresh:
+            _register_hits[key] = fresh
+        else:
+            _register_hits.pop(key, None)
+    hits = _register_hits.get(ip, [])
+    if len(hits) >= _REGISTER_LIMIT:
+        return True
+    _register_hits.setdefault(ip, []).append(now)
+    return False
+
+
+class _RegisterGuardASGI:
+    """Wrap /register: per-IP rate limit + a security-log line on success (201).
+
+    A 429 is returned before the SDK handler runs once an IP exceeds the window
+    limit. On a successful registration (201) an ``OAUTH_CLIENT_REGISTERED`` line
+    is emitted so operators (and fail2ban dashboards) can see new clients appear.
+    """
+
+    def __init__(self, app):
+        self._app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            await self._app(scope, receive, send)
+            return
+        ip = _ip_from_scope(scope)
+        if _register_rate_limited(ip):
+            try:
+                emit_security_line("OAUTH_REGISTER_RATE_LIMITED", ip, endpoint="/register")
+            except Exception:
+                pass
+            await JSONResponse(
+                {"error": "too_many_requests", "error_description": "registration rate limit exceeded"},
+                status_code=429,
+            )(scope, receive, send)
+            return
+        seen = {"status": None}
+
+        async def _send(message):
+            if message["type"] == "http.response.start":
+                seen["status"] = message["status"]
+            await send(message)
+
+        await self._app(scope, receive, _send)
+        if seen["status"] == 201:
+            try:
+                emit_security_line("OAUTH_CLIENT_REGISTERED", ip, endpoint="/register")
+            except Exception:
+                pass
+
+
 def build_oauth_routes() -> list:
     """Build the SDK's OAuth AS + protected-resource Starlette routes.
 
@@ -563,8 +741,14 @@ def build_oauth_routes() -> list:
     )
     # Wrap the credential-bearing endpoints so their auth failures reach
     # fail2ban (see _OAuthAuditASGI). Route.app is the compiled ASGI app the
-    # route dispatches to; replacing it keeps routing + CORS intact.
+    # route dispatches to; replacing it keeps routing + CORS intact. /register
+    # additionally gets the rate-limit + success-log guard, and every route is
+    # Host-gated so the AS never answers on a child-app subdomain.
     for route in routes:
-        if getattr(route, "path", None) in _AUDITED_PATHS:
-            route.app = _OAuthAuditASGI(route.app, route.path)
+        path = getattr(route, "path", None)
+        if path == "/register":
+            route.app = _RegisterGuardASGI(route.app)
+        if path in _AUDITED_PATHS:
+            route.app = _OAuthAuditASGI(route.app, path)
+        route.app = _HostGateASGI(route.app)
     return routes

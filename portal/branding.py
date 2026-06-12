@@ -50,10 +50,13 @@ _SAFE_LOGO_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+\.[A-Za-z0-9]{2,5}$")
 # logo needs, well below what would bloat each page response.
 MAX_LOGO_BYTES = 512 * 1024
 
+# Raster only. SVG is deliberately excluded: it can carry inline <script>, and
+# branding assets are served from the portal origin (logo on every page, favicon
+# as a top-level icon resource) where a malicious SVG would be stored XSS.
+# Raster formats fully cover logos and favicons.
 ALLOWED_LOGO_TYPES = {
     "image/png": ".png",
     "image/jpeg": ".jpg",
-    "image/svg+xml": ".svg",
     "image/webp": ".webp",
 }
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import logging
 from typing import Optional
 
 from cryptography.fernet import Fernet, InvalidToken
@@ -10,6 +11,12 @@ from sqlmodel import Session
 
 from portal.config import settings
 from portal.models import Setting
+
+logger = logging.getLogger("portal.settings_store")
+
+# Set once we've already warned about a Fernet decrypt failure so a rotated
+# SECRET_KEY doesn't flood the log on every read of an unreadable secret.
+_warned_decrypt_failure = False
 
 # Marker prefix for AEAD-encrypted-at-rest secrets in the Setting table.
 # v2 = Fernet (AES-128-CBC + HMAC-SHA256), key derived from settings.secret_key.
@@ -70,6 +77,17 @@ def get_secret(db: Session, key: str, default: Optional[str] = None) -> Optional
         except InvalidToken:
             # Key was rotated or storage was tampered with. Don't expose
             # garbage; treat as missing so callers fall back to env config.
+            # Warn once so a rotated SECRET_KEY (the common cause) is visible
+            # to the operator without spamming the log on every read.
+            global _warned_decrypt_failure
+            if not _warned_decrypt_failure:
+                _warned_decrypt_failure = True
+                logger.warning(
+                    "Could not decrypt a stored secret (e.g. %r) — SECRET_KEY "
+                    "was likely rotated. Falling back to env config; re-save the "
+                    "value in the admin UI to re-encrypt it under the new key.",
+                    key,
+                )
             return default
 
     if stored.startswith(_LEGACY_V1_PREFIX):
