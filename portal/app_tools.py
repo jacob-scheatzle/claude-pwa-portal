@@ -281,7 +281,6 @@ def run_tool(
 
         try:
             if kind == "share":
-                _check_pdf_rate(user.id)
                 from portal.shares import create_pdf_share, share_url
 
                 ttl_days = deliver.get("ttl_days")
@@ -294,6 +293,10 @@ def run_tool(
                     ttl_seconds=(ttl_days * 86400 if ttl_days else None),
                     max_views=None,
                 )
+                # create_pdf_share renders the PDF internally; consume a slot
+                # only after it succeeds (mirrors the api.py fix) so a failed
+                # render doesn't burn quota.
+                _check_pdf_rate(user.id)
                 return {
                     "delivered": "share",
                     "url": share_url(row.token, host),
@@ -301,12 +304,14 @@ def run_tool(
                 }
 
             if kind == "download":
-                _check_pdf_rate(user.id)
                 pdf = _render_pdf_bytes(html)
                 if len(pdf) > MAX_OBJECT_BYTES:
                     raise AppToolError(
                         f"PDF exceeds {MAX_OBJECT_BYTES // (1024 * 1024)}MB limit"
                     )
+                # Consume a slot only after a successful render — a failed
+                # render shouldn't burn quota (mirrors the api.py fix).
+                _check_pdf_rate(user.id)
                 return {
                     "delivered": "download",
                     "filename": filename,
@@ -315,7 +320,6 @@ def run_tool(
                 }
 
             if kind == "store":
-                _check_pdf_rate(user.id)
                 key = _render_text(deliver.get("key"), ctx)
                 safe_key = _validate_key(key)
                 pdf = _render_pdf_bytes(html)
@@ -338,6 +342,9 @@ def run_tool(
                             f"storage namespace exceeds {MAX_NAMESPACE_BYTES // (1024 * 1024)}MB limit"
                         )
                     storage.write(full_key, pdf, content_type="application/pdf")
+                # Consume a slot only after the render+write succeed (mirrors
+                # the api.py fix) so a failed render/store doesn't burn quota.
+                _check_pdf_rate(user.id)
                 return {"delivered": "store", "key": safe_key, "size": len(pdf)}
 
             if kind == "email":
@@ -357,7 +364,6 @@ def run_tool(
                         f"too many recipients ({len(to_list)} > {MAX_EMAIL_RECIPIENTS})"
                     )
                 _enforce_recipient_allowlist(to_list, _recipient_domain_allowlist(db))
-                _check_email_rate(user.id)
                 subject = _render_text(deliver.get("subject"), ctx)
 
                 msg = EmailMessage()
@@ -370,6 +376,10 @@ def run_tool(
                     send_message(msg, cfg)
                 except Exception:
                     raise AppToolError("Email send failed")
+                # Consume a rate-limit slot only after the send succeeds — a
+                # failed send (SMTP fault) shouldn't burn the caller's quota.
+                # Mirrors the api.py fix for the same surface.
+                _check_email_rate(user.id)
                 record_email_send(
                     db,
                     user_id=user.id,

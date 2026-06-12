@@ -49,7 +49,6 @@ from portal.forms import public_form_url
 from portal.models import (
     ApiToken,
     App,
-    AppLaunchToken,
     AuditEvent,
     FormSubmission,
     OAuthClient,
@@ -60,7 +59,10 @@ from portal.models import (
 )
 from portal.scheduler import FREQUENCIES, compute_next_run, fire_schedule
 from portal.security import check_csrf, hash_password, validate_password
-from portal.sessions import revoke_all_app_sessions_for_user, revoke_all_for_user
+from portal.sessions import (
+    revoke_all_credentials_for_user,
+    revoke_app_sessions_for_user,
+)
 from portal.settings_store import get_setting, set_secret, set_setting, smtp_config
 from portal.smtp import send_message
 from portal.web import flash, render
@@ -296,10 +298,16 @@ async def settings_save(
     business_name = (branding_business_name or "").strip()[:60]
     set_setting(db, "branding_business_name", business_name)
 
+    # Track whether any field was rejected so we don't flash a misleading
+    # "Settings saved." on top of an error flash (the other fields still save —
+    # a rejected upload doesn't roll them back).
+    had_error = False
+
     accent = (branding_accent_color or "").strip()
     if accent and not _ACCENT_HEX_RE.match(accent):
         # Reject without rolling back the other settings — they're already
         # staged. The flash tells the admin the accent didn't take.
+        had_error = True
         flash(
             request,
             "Accent color must be a #rrggbb hex value; previous value kept.",
@@ -315,6 +323,7 @@ async def settings_save(
         try:
             stored = _store_logo(branding_logo)
         except HTTPException as e:
+            had_error = True
             flash(request, str(e.detail), level="error")
         else:
             if stored is not None:
@@ -331,6 +340,7 @@ async def settings_save(
         try:
             stored = _store_favicon(branding_favicon)
         except HTTPException as e:
+            had_error = True
             flash(request, str(e.detail), level="error")
         else:
             if stored is not None:
@@ -356,7 +366,10 @@ async def settings_save(
             "default_user_app_access": default_user_app_access,
         },
     )
-    flash(request, "Settings saved.")
+    # Only claim success when nothing was rejected; the error flash already
+    # explains what didn't take, and a "Settings saved." on top would mislead.
+    if not had_error:
+        flash(request, "Settings saved.")
     return RedirectResponse("/admin/settings", status_code=303)
 
 
@@ -440,13 +453,13 @@ def tokens_create(
         target=f"token:{name}",
         details={"prefix": raw[:8]},
     )
-    # Render directly so the raw token survives only this response — no session round-trip.
-    tokens = db.exec(select(ApiToken).order_by(ApiToken.created_at.desc())).all()
-    return render(
-        request, "admin_tokens.html",
-        user=admin, tokens=tokens,
-        last_token=raw, last_token_name=name,
-    )
+    # Post/Redirect/Get: stash the one-time raw token in the session and 303 to
+    # the list. tokens_list pops it so it survives exactly one render — a browser
+    # refresh re-GETs the list without re-minting (the old direct render would
+    # re-POST and create a duplicate token on refresh).
+    request.session["_last_token"] = raw
+    request.session["_last_token_name"] = name
+    return RedirectResponse("/admin/tokens", status_code=303)
 
 
 @router.post("/admin/tokens/{token_id}/delete")
@@ -515,7 +528,10 @@ def _render_oauth_clients(request, admin, db, new_client=None):
 
 @router.get("/admin/oauth-clients")
 def oauth_clients_list(request: Request, db: DbDep, admin: AdminDep):
-    return _render_oauth_clients(request, admin, db)
+    # Pop the one-time secret stashed by oauth_clients_create's PRG redirect, so
+    # it's shown exactly once and never survives a refresh.
+    new_client = request.session.pop("_new_oauth_client", None)
+    return _render_oauth_clients(request, admin, db, new_client=new_client)
 
 
 @router.post("/admin/oauth-clients")
@@ -571,11 +587,13 @@ def oauth_clients_create(
         db, actor=admin, action="oauth_client.create", request=request,
         target=f"client:{client_id}", details={"name": name},
     )
-    # Show the secret once, rendered directly so it never round-trips the session.
-    return _render_oauth_clients(
-        request, admin, db,
-        new_client={"client_id": client_id, "client_secret": client_secret, "name": name},
-    )
+    # Post/Redirect/Get: stash the one-time secret in the session and 303 to the
+    # list, which pops + shows it exactly once. A direct render here would re-POST
+    # (re-minting a client) on browser refresh.
+    request.session["_new_oauth_client"] = {
+        "client_id": client_id, "client_secret": client_secret, "name": name,
+    }
+    return RedirectResponse("/admin/oauth-clients", status_code=303)
 
 
 @router.post("/admin/oauth-clients/{client_id}/delete")
@@ -735,17 +753,15 @@ def users_delete(
     role = target.role
     # SQLite FKs are advisory here, so drop the access rows explicitly before
     # the User row goes away to keep the table consistent. We also have to
-    # cascade tokens and sessions: SQLite reuses INTEGER PRIMARY KEY rowids
-    # when the highest-id row is deleted, so any lingering ApiToken,
-    # UserSession, AppSession, or AppLaunchToken whose user_id points at the
-    # deleted row would silently re-authenticate as a future new user that
-    # inherits the same id.
+    # cascade every credential / token row that references this user: SQLite
+    # reuses an INTEGER PRIMARY KEY rowid when the highest-id row is deleted, so
+    # any lingering ApiToken, UserSession, AppSession, AppLaunchToken, OAuth
+    # token/code, or ScheduledRun whose user_id points at the deleted row would
+    # silently re-authenticate (or re-fire) as a future new user that inherits
+    # the same id. revoke_all_credentials_for_user does the full cascade.
     if target.id is not None:
         delete_access_for_user(db, target.id)
-        revoke_all_for_user(db, target.id)
-        revoke_all_app_sessions_for_user(db, target.id)
-        db.exec(delete(ApiToken).where(ApiToken.created_by == target.id))
-        db.exec(delete(AppLaunchToken).where(AppLaunchToken.user_id == target.id))
+        revoke_all_credentials_for_user(db, target.id)
     db.delete(target)
     db.commit()
     record_event(
@@ -795,14 +811,34 @@ async def users_apps_save(
         flash(request, "Admins have access to every app by role.", level="error")
         return RedirectResponse(f"/admin/users/{user_id}/apps", status_code=303)
     raw_ids = form.getlist("app_ids")
-    allowed: list[int] = []
+    submitted: list[int] = []
     for v in raw_ids:
         try:
-            allowed.append(int(v))
+            submitted.append(int(v))
         except (TypeError, ValueError):
             continue
+    # Intersect the submitted ids with apps that actually exist, so a stale or
+    # forged checkbox value can't create a UserAppAccess row pointing at a
+    # nonexistent (or future-reused) app id. Map id -> slug while we're here so
+    # we can revoke live sessions for apps the user just lost.
+    id_to_slug = {a.id: a.slug for a in db.exec(select(App)).all() if a.id is not None}
+    allowed = [aid for aid in submitted if aid in id_to_slug]
+    # Apps the user could reach before but not after this save.
+    prior_ids = {
+        aid for aid in db.exec(
+            select(UserAppAccess.app_id).where(UserAppAccess.user_id == user_id)
+        ).all() if aid is not None
+    }
+    revoked_slugs = {
+        id_to_slug[aid] for aid in (prior_ids - set(allowed)) if aid in id_to_slug
+    }
     replace_user_app_access(db, target, allowed)
     db.commit()
+    # Revoked access only gates launch / SDK-auth; an already-open AppSession on
+    # a removed app would keep working until expiry. Close those sessions now so
+    # the access change takes effect immediately.
+    if revoked_slugs:
+        revoke_app_sessions_for_user(db, user_id, revoked_slugs)
     record_event(
         db, actor=admin, action="user.apps.update", request=request,
         target=f"user:{target.email}",
@@ -818,16 +854,17 @@ async def users_apps_save(
 def health_dashboard(request: Request, db: DbDep, admin: AdminDep):
     """Operational snapshot for admins.
 
-    Reads are all cheap (one SELECT per table, two filesystem walks scoped
-    to ``data/``). The page is not cached — admins viewing it expect live
-    numbers, and the SMB-scale data sets stay small enough that re-walking
-    on each load is fine.
+    Reads are all cheap (one SELECT per table, one storage-backend listing).
+    The page is not cached — admins viewing it expect live numbers, and the
+    SMB-scale data sets stay small enough that re-listing on each load is fine.
+    Storage usage and DB size both go through the configured backends, so the
+    numbers are real on the AWS (Postgres + S3) deployment too.
     """
     from sqlalchemy.engine.url import make_url
 
     from portal.config import settings as _settings
     from portal.health import (
-        db_size_bytes,
+        db_size_label,
         fmt_bytes,
         recent_email_sends,
         recent_login_attempts,
@@ -836,19 +873,28 @@ def health_dashboard(request: Request, db: DbDep, admin: AdminDep):
     )
 
     data_dir = Path(_settings.data_dir).resolve()
-    # Best-effort parse of the configured DB URL. We only support sqlite
-    # in this deployment, but keep the code defensive in case someone
-    # points DATABASE_URL elsewhere — the helper returns 0 on missing.
-    url = make_url(_settings.database_url)
-    db_path = Path(url.database) if url.database else (data_dir / "portal.db")
-    if not db_path.is_absolute():
-        # Relative DB paths resolve against the working directory the
-        # portal was started in (which is the repo root in dev, /app in
-        # the container). Anchor to that explicitly.
-        db_path = Path.cwd() / db_path
+    is_sqlite = _settings.database_url.startswith("sqlite")
+    # Resolve a display path + size for the DB. For SQLite this is the on-disk
+    # file; for Postgres there's no local file, so show the (sanitized) URL host
+    # for context and ask the server itself for the size in db_size_label.
+    if is_sqlite:
+        url = make_url(_settings.database_url)
+        db_path = Path(url.database) if url.database else (data_dir / "portal.db")
+        if not db_path.is_absolute():
+            # Relative DB paths resolve against the working directory the
+            # portal was started in (which is the repo root in dev, /app in
+            # the container). Anchor to that explicitly.
+            db_path = Path.cwd() / db_path
+        db_path_display = str(db_path)
+    else:
+        # make_url().render_as_string(hide_password=True) keeps the secret out
+        # of the dashboard while still showing host/db for the operator.
+        db_path = data_dir / "portal.db"  # unused for the label; kept for signature
+        db_path_display = make_url(_settings.database_url).render_as_string(
+            hide_password=True
+        )
 
-    storage_root = data_dir / "storage"
-    usage = storage_usage_by_app(storage_root)
+    usage = storage_usage_by_app()
     # Join app metadata so the dashboard can show name + status alongside
     # raw byte counts.
     all_apps = db.exec(select(App).order_by(App.name)).all()
@@ -880,8 +926,8 @@ def health_dashboard(request: Request, db: DbDep, admin: AdminDep):
     return render(
         request, "admin_health.html",
         user=admin,
-        db_path=str(db_path),
-        db_size_human=fmt_bytes(db_size_bytes(db_path)),
+        db_path=db_path_display,
+        db_size_human=db_size_label(db, db_path),
         storage_rows=storage_rows,
         total_storage_human=fmt_bytes(total_storage),
         smtp_last=smtp_last_test(db),
@@ -934,12 +980,14 @@ def shares_list(request: Request, db: DbDep, admin: AdminDep):
     for r in rows:
         app_row = app_map.get(r.app_id)
         user_row = user_map.get(r.created_by)
+        # ShareLink.expires_at is non-nullable (every link is minted with a
+        # hard cap), so we only normalize tzinfo and compare — no None branch.
         expires_at = r.expires_at
-        if expires_at is not None and expires_at.tzinfo is None:
+        if expires_at.tzinfo is None:
             expires_at = expires_at.replace(tzinfo=timezone.utc)
         if r.revoked_at is not None:
             state = "revoked"
-        elif expires_at is None or expires_at < now:
+        elif expires_at < now:
             state = "expired"
         elif r.max_views and r.view_count >= r.max_views:
             state = "exhausted"
@@ -1247,6 +1295,20 @@ def _form_decl(app_row: Optional[App], form_name: str) -> Optional[dict]:
     return None
 
 
+def _csv_safe(value) -> str:
+    """Neutralize CSV formula injection in an exported cell.
+
+    Submission values are public-form input; a cell that starts with =, +, -, @,
+    or a tab/CR can be interpreted as a formula by Excel / Sheets on open. Prefix
+    those with a single quote so the cell is treated as literal text. (Plain
+    str() of everything else is unchanged.)
+    """
+    s = "" if value is None else str(value)
+    if s and s[0] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + s
+    return s
+
+
 @router.get("/admin/submissions")
 def submissions_list(request: Request, db: DbDep, admin: AdminDep):
     apps = db.exec(select(App).order_by(App.display_order, App.name)).all()
@@ -1311,9 +1373,12 @@ def submissions_csv(
     w.writerow(["submitted_at_utc", "source_ip"] + field_names)
     for s in subs:
         d = s.data or {}
+        # Every cell sourced from submission data is run through _csv_safe to
+        # defang formula-injection payloads. The first two columns are
+        # server-controlled, but pass them through too for uniformity.
         w.writerow(
-            [s.created_at.strftime("%Y-%m-%d %H:%M:%S"), s.source_ip]
-            + [str(d.get(n, "")) for n in field_names]
+            [_csv_safe(s.created_at.strftime("%Y-%m-%d %H:%M:%S")), _csv_safe(s.source_ip)]
+            + [_csv_safe(d.get(n, "")) for n in field_names]
         )
     safe = re.sub(r"[^A-Za-z0-9._-]+", "_", f"{slug}-{form_name}") or "submissions"
     return Response(

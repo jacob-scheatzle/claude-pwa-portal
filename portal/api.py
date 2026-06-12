@@ -14,6 +14,8 @@ from pathlib import Path
 from threading import Lock
 from typing import Annotated, Optional
 
+import anyio
+
 logger = logging.getLogger("portal.api")
 
 from fastapi import (
@@ -24,6 +26,7 @@ from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import update
 from sqlmodel import Session, select
 
+from portal.access import user_can_access_app
 from portal.apps import UploadError, install_bundle
 from portal.config import settings
 from portal.db import get_db
@@ -31,6 +34,7 @@ from portal.deps import APP_SESSION_COOKIE, current_user_or_token
 from portal.models import App, AppLaunchToken, User
 from portal.sessions import create_app_session
 from portal.settings_store import get_setting, smtp_config
+from portal.shares import MAX_VIEW_LIMIT
 from portal.smtp import send_message
 from portal.storage_backend import get_storage
 
@@ -160,6 +164,35 @@ def _require_service(app_row: Optional[App], service: str) -> None:
             403,
             f"App '{app_row.slug}' is not authorized to use the '{service}' "
             f"service. Ask an admin to enable it under /admin/apps.",
+        )
+
+
+def _require_cookie_app_access(
+    request: Request, user: User, app_row: Optional[App], db: Session
+) -> None:
+    """Enforce per-user app access for browser (cookie/app-session) callers.
+
+    Token clients are intentionally exempt: a bearer token is an out-of-band
+    credential whose holder already authenticated as ``user``, and the
+    per-app service gate (``_require_service``) plus the token's own scope are
+    the relevant controls there. But a cookie/app-session request runs in a
+    browser the user may have been navigated into for an app they are NOT
+    granted — so the SDK service endpoints must re-check ``UserAppAccess``
+    just like the launch path does. Without this, a user could drive an app's
+    PDF/email/storage/share services for an app they can't launch.
+
+    ``app_row`` is None only when no app context is resolvable (e.g. a token
+    client without X-Portal-App); in that case there's nothing to check and
+    the service gate already allows it.
+    """
+    if app_row is None:
+        return
+    auth_method = getattr(request.state, "auth_method", None)
+    if auth_method not in ("cookie", "app_session"):
+        return
+    if not user_can_access_app(db, user, app_row):
+        raise HTTPException(
+            403, f"You do not have access to app '{app_row.slug}'."
         )
 
 
@@ -463,7 +496,13 @@ _pdf_rate_lock = Lock()
 
 
 def _check_pdf_rate(user_id: int) -> None:
-    """Raise 429 if ``user_id`` has exceeded the rolling-hour render limit."""
+    """Raise 429 if over the rolling-hour render limit, else reserve a slot.
+
+    The slot is reserved up front (so a concurrent burst is bounded by the
+    limit even mid-render). Callers that may abort before the op completes
+    should ``_refund_pdf_render(user_id)`` on the failure path so a failed
+    render doesn't permanently burn the caller's quota.
+    """
     now = time.monotonic()
     cutoff = now - _PDF_RATE_WINDOW_SECONDS
     with _pdf_rate_lock:
@@ -480,6 +519,14 @@ def _check_pdf_rate(user_id: int) -> None:
                 f"({_PDF_RATE_LIMIT_PER_HOUR}/hour per user, per process).",
             )
         dq.append(now)
+
+
+def _refund_pdf_render(user_id: int) -> None:
+    """Return the most-recently reserved render slot after a failed op."""
+    with _pdf_rate_lock:
+        dq = _pdf_render_log.get(user_id)
+        if dq:
+            dq.pop()
 
 
 def _no_external_fetcher(url, timeout=10, ssl_context=None):
@@ -508,7 +555,9 @@ def pdf_render(
 ):
     me = _require_user(user)
     _require_csrf_for_cookie(request, x_csrf)
-    _require_service(_maybe_resolve_app(request, me, x_portal_app, db), "pdf")
+    app_row = _maybe_resolve_app(request, me, x_portal_app, db)
+    _require_cookie_app_access(request, me, app_row, db)
+    _require_service(app_row, "pdf")
     _check_pdf_rate(me.id)
     try:
         from weasyprint import HTML  # lazy: avoid hard import at startup
@@ -543,6 +592,8 @@ def pdf_render(
     except Exception:
         # WeasyPrint exceptions can carry internal paths and library versions.
         # Log the detail server-side; return a generic message to the caller.
+        # Refund the reserved slot — a failed render shouldn't burn quota.
+        _refund_pdf_render(me.id)
         logger.exception("PDF render failed for user_id=%s", me.id)
         raise HTTPException(500, "PDF render failed")
     buf.seek(0)
@@ -575,7 +626,13 @@ _email_rate_lock = Lock()
 
 
 def _check_email_rate(user_id: int) -> None:
-    """Raise 429 if ``user_id`` has exceeded the rolling-hour send limit."""
+    """Raise 429 if over the rolling-hour send limit, else reserve a slot.
+
+    The slot is reserved up front (so a concurrent burst is bounded by the
+    limit even mid-send). Callers that may abort before delivery completes
+    should ``_refund_email_send(user_id)`` on the failure path so a failed
+    send doesn't permanently burn the caller's quota.
+    """
     now = time.monotonic()
     cutoff = now - _EMAIL_RATE_WINDOW_SECONDS
     with _email_rate_lock:
@@ -592,6 +649,14 @@ def _check_email_rate(user_id: int) -> None:
                 f"({_EMAIL_RATE_LIMIT_PER_HOUR}/hour per user, per process).",
             )
         dq.append(now)
+
+
+def _refund_email_send(user_id: int) -> None:
+    """Return the most-recently reserved send slot after a failed delivery."""
+    with _email_rate_lock:
+        dq = _email_send_log.get(user_id)
+        if dq:
+            dq.pop()
 
 
 def _recipient_domain_allowlist(db: Session) -> Optional[set[str]]:
@@ -629,7 +694,11 @@ def email_send(
 ):
     me = _require_user(user)
     _require_csrf_for_cookie(request, x_csrf)
-    _require_service(_maybe_resolve_app(request, me, x_portal_app, db), "email")
+    # Resolve the source app once so we can gate access, gate the service, and
+    # attribute the send to the right app in the health log below.
+    app_row = _maybe_resolve_app(request, me, x_portal_app, db)
+    _require_cookie_app_access(request, me, app_row, db)
+    _require_service(app_row, "email")
     cfg = smtp_config(db)
     if not cfg["host"]:
         raise HTTPException(503, "Email service unavailable: SMTP not configured")
@@ -659,16 +728,17 @@ def email_send(
         # smtplib exceptions can carry server hostnames, auth-error specifics,
         # and library detail strings. Log the detail; respond with a generic
         # message so child apps can't probe SMTP config from the response body.
+        # Refund the reserved slot — a failed send shouldn't burn quota.
+        _refund_email_send(me.id)
         logger.exception("Email send failed for user_id=%s", me.id)
         raise HTTPException(502, "Email send failed")
 
     # Record to the rolling EmailSendLog so /admin/health can show recent
-    # outbound mail. Resolve the source app from the request context so the
-    # dashboard can attribute the send to the right app. Best-effort: an
-    # observability failure must never reject a successful send.
+    # outbound mail. ``app_row`` was resolved at the top so the dashboard can
+    # attribute the send to the right app. Best-effort: an observability
+    # failure must never reject a successful send.
     from portal.health import record_email_send
 
-    app_row = _maybe_resolve_app(request, me, None, db)
     record_email_send(
         db,
         user_id=me.id,
@@ -735,6 +805,7 @@ def storage_list(
 ):
     me = _require_user(user)
     app_row = _resolve_app_slug(request, me, x_portal_app, db)
+    _require_cookie_app_access(request, me, app_row, db)
     _require_service(app_row, "storage")
     storage = get_storage()
     prefix = storage.namespace_prefix(app_row.slug, me.id)
@@ -756,6 +827,7 @@ def storage_get(
 ):
     me = _require_user(user)
     app_row = _resolve_app_slug(request, me, x_portal_app, db)
+    _require_cookie_app_access(request, me, app_row, db)
     _require_service(app_row, "storage")
     safe = _validate_key(key)
     storage = get_storage()
@@ -790,6 +862,7 @@ async def storage_put(
     me = _require_user(user)
     _require_csrf_for_cookie(request, x_csrf)
     app_row = _resolve_app_slug(request, me, x_portal_app, db)
+    _require_cookie_app_access(request, me, app_row, db)
     _require_service(app_row, "storage")
     safe = _validate_key(key)
     storage = get_storage()
@@ -814,16 +887,24 @@ async def storage_put(
     # truncating it and then failing. Backend writes are atomic (temp+rename
     # locally, a single PutObject on S3), so no partial object can survive a
     # fault — no manual rollback needed.
-    async with namespace_lock_async(app_row.slug, me.id):
+    content_type = request.headers.get("Content-Type")
+    data = bytes(body)
+
+    def _guarded_write() -> None:
+        # size()/usage()/write() are blocking I/O (stat/glob locally, S3 calls
+        # remotely); run them in a worker thread so a large namespace listing
+        # or a slow backend can't stall the event loop. The lock above is
+        # already acquired off-loop.
         existing = storage.size(full_key) or 0
         if storage.usage(prefix) - existing + written > MAX_NAMESPACE_BYTES:
             raise HTTPException(
                 507,
                 f"storage namespace exceeds {MAX_NAMESPACE_BYTES // (1024 * 1024)}MB limit",
             )
-        storage.write(
-            full_key, bytes(body), content_type=request.headers.get("Content-Type")
-        )
+        storage.write(full_key, data, content_type=content_type)
+
+    async with namespace_lock_async(app_row.slug, me.id):
+        await anyio.to_thread.run_sync(_guarded_write)
 
     return {
         "key": key,
@@ -841,6 +922,7 @@ def storage_delete(
     me = _require_user(user)
     _require_csrf_for_cookie(request, x_csrf)
     app_row = _resolve_app_slug(request, me, x_portal_app, db)
+    _require_cookie_app_access(request, me, app_row, db)
     _require_service(app_row, "storage")
     safe = _validate_key(key)
     storage = get_storage()
@@ -861,7 +943,9 @@ class ShareCreateRequest(BaseModel):
     # both:
     filename: Optional[str] = Field(default=None, max_length=80)
     ttl_seconds: Optional[int] = None
-    max_views: Optional[int] = Field(default=None, ge=0, le=10000)
+    # Cap must match the real enforcement ceiling in shares._clamp_views so the
+    # API rejects (rather than silently clamping) over-limit requests.
+    max_views: Optional[int] = Field(default=None, ge=0, le=MAX_VIEW_LIMIT)
 
 
 @router.post("/share/create")
@@ -883,6 +967,7 @@ def share_create(
     me = _require_user(user)
     _require_csrf_for_cookie(request, x_csrf)
     app_row = _resolve_app_slug(request, me, x_portal_app, db)
+    _require_cookie_app_access(request, me, app_row, db)
 
     kind = (body.kind or "storage").strip().lower()
     if kind not in ("storage", "pdf"):

@@ -135,7 +135,14 @@ def recent_email_sends(db: Session, limit: int = 20) -> list[EmailSendLog]:
     ).all())
 
 
-# ----- Filesystem stats -----
+# ----- Storage + DB stats -----
+#
+# These power the admin health dashboard. They go through the configured
+# storage backend (get_storage()) and inspect the DB by its URL, so they
+# report real numbers on BOTH deployments: local SQLite + filesystem (the
+# Docker/Caddy product) and Postgres + S3 (AWS). The previous filesystem-only
+# implementation silently read 0 everywhere on the AWS pairing.
+
 
 def db_size_bytes(db_path: Path) -> int:
     """Total bytes on disk for the SQLite DB (including WAL / SHM siblings).
@@ -144,6 +151,9 @@ def db_size_bytes(db_path: Path) -> int:
     (SQLite recreates them on next open). Callers display this verbatim;
     the WAL can grow large under write load and a single ``.db`` reading
     would understate the operator-visible cost.
+
+    SQLite only — for Postgres use ``db_size_label`` instead, which can't
+    return a byte count from a file stat.
     """
     total = 0
     for suffix in ("", "-wal", "-shm"):
@@ -156,27 +166,51 @@ def db_size_bytes(db_path: Path) -> int:
     return total
 
 
-def storage_usage_by_app(storage_root: Path) -> dict[str, int]:
-    """Walk ``data/storage/<slug>/`` and return total bytes per app slug.
+def db_size_label(db: Session, db_path: Path) -> str:
+    """Human-readable DB size string, correct for both backends.
 
-    Returns an empty dict when the root doesn't exist (no apps have
-    written storage yet). Symlinks aren't followed — storage_put rejects
-    them at write time, so any present would be operator-introduced.
+    SQLite: sum the .db (+ WAL/SHM) file sizes via ``db_size_bytes`` and format.
+    Postgres: ask the server with ``pg_database_size(current_database())`` —
+    there's no file to stat from the app container. Returns "unknown" if the
+    query fails (e.g. permissions) rather than a misleading 0 B.
     """
+    from portal.config import settings as _settings
+
+    if _settings.database_url.startswith("sqlite"):
+        return fmt_bytes(db_size_bytes(db_path))
+    # Postgres (or any non-sqlite backend reachable via the same session).
+    # Use the SQLAlchemy ``execute`` API for raw text (SQLModel's ``exec`` is
+    # typed for select() statements); ``.scalar()`` pulls the single value.
+    try:
+        from sqlalchemy import text
+
+        n = db.execute(text("SELECT pg_database_size(current_database())")).scalar()
+        return fmt_bytes(int(n)) if n is not None else "unknown"
+    except Exception:
+        return "unknown"
+
+
+def storage_usage_by_app(storage_root: Path | None = None) -> dict[str, int]:
+    """Return total bytes of per-user storage per app slug.
+
+    Reads through the configured storage backend (local filesystem or S3) so the
+    numbers are correct on both deployments. Keys returned by the backend look
+    like ``storage/<slug>/<user_id>/<rest>``; we bucket bytes by ``<slug>``.
+
+    Returns an empty dict when nothing has been stored yet. The ``storage_root``
+    argument is accepted for backward-compatibility but ignored — the backend
+    owns the layout now.
+    """
+    from portal.storage_backend import get_storage
+
     out: dict[str, int] = {}
-    if not storage_root.is_dir():
-        return out
-    for app_dir in storage_root.iterdir():
-        if not app_dir.is_dir() or app_dir.is_symlink():
+    for obj in get_storage().list("storage"):
+        # obj.key == "storage/<slug>/<user_id>/<...>"; the slug is segment [1].
+        parts = obj.key.split("/")
+        if len(parts) < 2 or parts[0] != "storage":
             continue
-        total = 0
-        for f in app_dir.rglob("*"):
-            try:
-                if f.is_file() and not f.is_symlink():
-                    total += f.stat().st_size
-            except OSError:
-                continue
-        out[app_dir.name] = total
+        slug = parts[1]
+        out[slug] = out.get(slug, 0) + obj.size
     return out
 
 

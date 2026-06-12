@@ -32,6 +32,7 @@ so a logic slip upstream can't traverse out of the intended prefix.
 """
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import zlib
@@ -46,6 +47,8 @@ import anyio
 from starlette.responses import FileResponse, Response
 
 from portal.config import settings
+
+logger = logging.getLogger("portal.storage_backend")
 
 try:  # POSIX advisory locks; absent on Windows dev machines.
     import fcntl
@@ -238,7 +241,30 @@ class LocalStorageBackend(StorageBackend):
         return True
 
     def delete_prefix(self, prefix: str) -> None:
-        shutil.rmtree(self._absprefix(prefix), ignore_errors=True)
+        target = self._absprefix(prefix)
+        # Nothing to delete is a normal no-op (e.g. an app with no stored
+        # objects); don't route it through the error handler below.
+        if not target.exists():
+            return
+
+        # Don't swallow errors silently: collect any path rmtree couldn't
+        # remove and log them, so leftover residue (e.g. an EACCES file) is
+        # visible in the logs instead of vanishing. (Python 3.12+ uses
+        # ``onexc``; the harness is on 3.14.)
+        errors: list[tuple[str, BaseException]] = []
+
+        def _onexc(func, path, exc):
+            errors.append((path, exc))
+
+        shutil.rmtree(target, onexc=_onexc)
+        if errors:
+            logger.warning(
+                "delete_prefix(%s): %d path(s) could not be removed; first: %s (%s)",
+                prefix,
+                len(errors),
+                errors[0][0],
+                errors[0][1],
+            )
 
     def list(self, prefix: str) -> list[StoredObject]:
         base = self._absprefix(prefix)
@@ -281,12 +307,28 @@ class LocalStorageBackend(StorageBackend):
         backup = dest.with_name(f".{dest.name}.old-{token}")
         shutil.rmtree(staging, ignore_errors=True)
         shutil.copytree(src_dir, staging)
+        # Two-phase swap with rollback. If we move the live tree aside (first
+        # replace) but the swap-in (second replace) fails, we MUST move the
+        # backup back into place before re-raising — otherwise a transient
+        # fault between the two renames would lose the live bundle entirely.
+        # The backup is only deleted once the swap has fully succeeded.
+        moved_aside = False
         try:
             if dest.exists():
                 os.replace(dest, backup)
+                moved_aside = True
             os.replace(staging, dest)
+        except BaseException:
+            if moved_aside and not dest.exists():
+                # Roll back: restore the live tree we moved aside.
+                os.replace(backup, dest)
+                moved_aside = False
+            raise
         finally:
-            shutil.rmtree(backup, ignore_errors=True)
+            # On success, drop the now-stale backup; if a rollback restored it
+            # to ``dest`` (moved_aside reset to False), there's nothing to drop.
+            if moved_aside:
+                shutil.rmtree(backup, ignore_errors=True)
             shutil.rmtree(staging, ignore_errors=True)
 
     # ----- flock-backed namespace locks (cross-process on one host) -----
@@ -385,9 +427,13 @@ class S3StorageBackend(StorageBackend):
             raise
 
     def delete(self, key: str) -> bool:
-        existed = self.exists(key)
+        # delete_object is idempotent and S3 doesn't report whether the key
+        # existed, so we drop the extra head_object round-trip and report True
+        # optimistically. The lone caller (storage_delete) treats False as
+        # "404"; on S3 we accept that a delete of an absent key returns
+        # success rather than spending a request to distinguish the case.
         self._client.delete_object(Bucket=self.bucket, Key=self._obj_key(key))
-        return existed
+        return True
 
     def _iter_keys(self, obj_prefix: str):
         paginator = self._client.get_paginator("list_objects_v2")

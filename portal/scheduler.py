@@ -25,6 +25,7 @@ Design notes:
 from __future__ import annotations
 
 import asyncio
+import calendar
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -49,6 +50,11 @@ def _aware(dt: datetime) -> datetime:
     return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
 
 
+def _days_in_month(year: int, month: int) -> int:
+    """Last calendar day of ``month`` (handles 28/29/30/31 and leap years)."""
+    return calendar.monthrange(year, month)[1]
+
+
 def compute_next_run(
     *,
     frequency: str,
@@ -59,6 +65,12 @@ def compute_next_run(
     after: datetime,
 ) -> datetime:
     """Return the first UTC datetime strictly after ``after`` matching the cadence."""
+    if frequency not in FREQUENCIES:
+        # Reject rather than silently treating an unknown cadence as daily —
+        # a typo'd frequency that fired daily would be a confusing data bug.
+        raise ValueError(
+            f"unknown frequency {frequency!r}; expected one of {FREQUENCIES}"
+        )
     after = _aware(after)
     hour = max(0, min(23, hour))
     minute = max(0, min(59, minute))
@@ -72,15 +84,20 @@ def compute_next_run(
         return candidate
 
     if frequency == "monthly":
-        dom = max(1, min(28, day_of_month))
-        candidate = base.replace(day=dom)
+        # Clamp the requested day to the actual length of each target month so
+        # e.g. day_of_month=31 fires on Feb 28/29, Apr 30, etc. — instead of
+        # the old hard clamp to 28 that silently skipped month-ends.
+        dom = max(1, min(31, day_of_month))
+        candidate = base.replace(day=min(dom, _days_in_month(base.year, base.month)))
         if candidate <= after:
-            month = 1 if candidate.month == 12 else candidate.month + 1
-            year = candidate.year + (1 if candidate.month == 12 else 0)
-            candidate = candidate.replace(year=year, month=month, day=dom)
+            month = 1 if base.month == 12 else base.month + 1
+            year = base.year + (1 if base.month == 12 else 0)
+            candidate = base.replace(
+                year=year, month=month, day=min(dom, _days_in_month(year, month))
+            )
         return candidate
 
-    # daily (default / unknown frequency)
+    # daily
     candidate = base
     if candidate <= after:
         candidate += timedelta(days=1)

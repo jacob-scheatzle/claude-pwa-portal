@@ -17,6 +17,7 @@ import anyio
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
+from sqlalchemy import delete
 from sqlmodel import Session, select
 
 from portal.access import (
@@ -34,7 +35,14 @@ from portal.deps import (
     require_admin,
     require_user,
 )
-from portal.models import App, AppLaunchToken, User
+from portal.models import (
+    App,
+    AppLaunchToken,
+    FormSubmission,
+    ScheduledRun,
+    ShareLink,
+    User,
+)
 from portal.security import check_csrf
 from portal.sessions import revoke_all_app_sessions_for_slug
 from portal.storage_backend import get_storage
@@ -51,6 +59,11 @@ router = APIRouter()
 
 SLUG_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 ALLOWED_SERVICES = {"pdf", "email", "storage"}
+
+# Icon file extensions an app may declare. Raster formats render harmlessly as
+# images; ``.svg`` is permitted but the dashboard-icon endpoint forces it to be
+# served as a non-rendering attachment (stored-XSS guard) — see ``app_icon``.
+ALLOWED_ICON_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".ico", ".gif", ".svg"}
 
 # Validates an HTTPS origin: scheme://hostname[:port], no path / query /
 # fragment. Hostname segments follow standard DNS label rules; uppercase is
@@ -416,6 +429,17 @@ class PortalAppManifest(BaseModel):
             raise ValueError("paths must be relative and may not contain '..'")
         return v
 
+    @field_validator("icon")
+    @classmethod
+    def _icon_ext(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        if Path(v).suffix.lower() not in ALLOWED_ICON_EXTS:
+            raise ValueError(
+                f"icon must be one of {sorted(ALLOWED_ICON_EXTS)}"
+            )
+        return v
+
     @field_validator("tools")
     @classmethod
     def _tools_unique(cls, v: list) -> list:
@@ -515,6 +539,12 @@ def _validate_zip(path: Path) -> None:
         if len(infos) > MAX_FILES:
             raise UploadError(f"Too many files in zip ({len(infos)} > {MAX_FILES})")
         total = 0
+        # Track normalized file paths so two entries that collapse to the same
+        # on-disk target (e.g. ``a/b.txt`` vs ``a/./b.txt``, or a case-only
+        # difference on a case-insensitive filesystem) are rejected rather than
+        # silently overwriting each other at extraction time — which would make
+        # the served bundle differ from what was validated/reviewed.
+        seen: set[str] = set()
         for info in infos:
             if info.is_dir():
                 continue
@@ -532,6 +562,10 @@ def _validate_zip(path: Path) -> None:
             if mode == 0o120000:
                 # POSIX-created symlink entry.
                 raise UploadError(f"Symlink not allowed: {name}")
+            norm = os.path.normpath(name).lower()
+            if norm in seen:
+                raise UploadError(f"Duplicate entry in zip: {name}")
+            seen.add(norm)
             total += info.file_size
             if total > MAX_UNCOMPRESSED_BYTES:
                 raise UploadError(
@@ -1159,6 +1193,27 @@ def admin_apps_delete(
     slug_for_audit = app_row.slug
     if app_row.id is not None:
         delete_access_for_app(db, app_row.id)
+    # Cascade-delete the app's dependent rows so nothing keeps referencing a
+    # deleted app. A surviving ScheduledRun would otherwise keep firing every
+    # scheduler tick against a slug that no longer exists. ShareLink rows also
+    # have rendered PDFs on disk — remove those blobs before dropping the rows.
+    # NOTE: per-user storage under storage/<slug>/ is intentionally retained
+    # (reinstalling the same slug keeps its data), matching the bundle comment.
+    from portal.shares import delete_share_files
+
+    if app_row.id is not None:
+        pdf_files = [
+            (r.payload or {}).get("path")
+            for r in db.exec(
+                select(ShareLink).where(
+                    ShareLink.app_id == app_row.id, ShareLink.kind == "pdf"
+                )
+            ).all()
+        ]
+        delete_share_files([p for p in pdf_files if p])
+        db.exec(delete(ShareLink).where(ShareLink.app_id == app_row.id))
+    db.exec(delete(ScheduledRun).where(ScheduledRun.app_slug == app_row.slug))
+    db.exec(delete(FormSubmission).where(FormSubmission.app_slug == app_row.slug))
     # Close any open AppSessions before the App row goes away so the
     # session table doesn't carry rows that FK at a deleted app slug.
     revoke_all_app_sessions_for_slug(db, app_row.slug)
@@ -1206,10 +1261,20 @@ def app_icon(
     # without re-fetching on every dashboard render. Starlette's FileResponse
     # adds ETag/Last-Modified automatically (local backend), so the browser
     # 304s on the conditional revalidation after max-age expires.
+    headers = {"Cache-Control": "public, max-age=300"}
+    # SVGs can carry inline <script>; an app author's icon would otherwise be
+    # stored XSS on the portal origin if the browser rendered it as a top-level
+    # document. Force ``Content-Disposition: attachment`` so a direct navigation
+    # downloads the file instead of rendering+executing it. The dashboard tile
+    # uses ``<img src>``, which ignores Content-Disposition AND runs SVGs in the
+    # script-disabled image context — so tiles still display the icon safely.
+    # Raster icons need no special handling.
+    if Path(app_row.icon).suffix.lower() == ".svg":
+        headers["Content-Disposition"] = "attachment"
     try:
         return get_storage().file_response(
             f"apps/{slug}/{app_row.icon}",
-            headers={"Cache-Control": "public, max-age=300"},
+            headers=headers,
         )
     except (FileNotFoundError, ValueError):
         raise HTTPException(404)
@@ -1294,6 +1359,7 @@ def serve_app_index(
         user=user,
         app=app_row,
         iframe_src=iframe_src,
+        site_url=settings.site_url,
     )
 
 

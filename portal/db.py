@@ -30,6 +30,11 @@ def _engine_kwargs() -> dict:
 
 engine = create_engine(settings.database_url, echo=False, **_engine_kwargs())
 
+# Server-side session rows (UserSession / AppSession) older than this are swept
+# at startup. Well beyond any reasonable cookie max_age, so an older row is dead
+# regardless of whether it was explicitly revoked.
+_STALE_SESSION_MAX_AGE_DAYS = 30
+
 
 def init_db() -> None:
     """Run Alembic migrations to bring the schema to head.
@@ -68,16 +73,38 @@ def init_db() -> None:
         command.upgrade(cfg, "head")
 
     # Opportunistic maintenance: clear out launch tokens older than a day,
-    # and trim the LoginAttempt/EmailSendLog rolling history to its cap.
-    # Wrapped in a broad try so a transient DB hiccup during this cleanup
-    # can never block app startup.
+    # purge dead share links, sweep stale server-side sessions, and trim the
+    # LoginAttempt/EmailSendLog rolling history to its cap. Wrapped in a broad
+    # try so a transient DB hiccup during this cleanup can never block startup.
     try:
+        import datetime as _dt
+
+        from sqlalchemy import delete as _delete
+
         from portal.audit import prune as prune_audit_log
         from portal.health import prune_logs
+        from portal.models import AppSession, UserSession
         from portal.sessions import purge_expired_launch_tokens
+        from portal.shares import purge_expired_shares
 
         with Session(engine) as db:
             purge_expired_launch_tokens(db)
+            purge_expired_shares(db)
+            # Drop server-side session rows older than the max age. Both tables
+            # accumulate one row per login / app launch and are never deleted in
+            # the hot path (logout/password-change only flip ``revoked_at``), so
+            # they'd grow without bound. ``created_at`` is the right cutoff: a
+            # session that old is well past any reasonable cookie max_age, so the
+            # row is dead whether or not it was explicitly revoked. Mirrors the
+            # launch-token sweep above.
+            _session_cutoff = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(
+                days=_STALE_SESSION_MAX_AGE_DAYS
+            )
+            db.exec(_delete(UserSession).where(
+                UserSession.created_at < _session_cutoff))
+            db.exec(_delete(AppSession).where(
+                AppSession.created_at < _session_cutoff))
+            db.commit()
             prune_logs(db)
             prune_audit_log(db)
             # OAuth cleanup is optional — the module imports the `mcp` auth

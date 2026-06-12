@@ -27,8 +27,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
-from sqlalchemy import update
-from sqlmodel import Session
+from sqlalchemy import delete, or_, update
+from sqlmodel import Session, select
 
 from portal.config import settings
 from portal.models import App, ShareLink, User
@@ -242,9 +242,12 @@ def record_view(db: Session, row: ShareLink) -> bool:
         db.commit()
         applied = True
     if applied:
-        # Keep the passed-in row consistent with the DB for any caller that
-        # reads view_count after this returns.
-        row.view_count += 1
+        # Re-read the authoritative count from the DB so the passed-in row
+        # reflects reality for any caller that inspects view_count afterward.
+        # A naive ``row.view_count += 1`` would drift from the DB whenever a
+        # concurrent hit had already advanced the counter (the UPDATE bumps the
+        # DB's current value, not the possibly-stale one loaded into ``row``).
+        db.refresh(row)
     return applied
 
 
@@ -266,3 +269,36 @@ def delete_share_files(token_filenames: list[str]) -> None:
             storage.delete(f"shares/{name}")
         except Exception:
             pass
+
+
+def purge_expired_shares(db: Session) -> int:
+    """Delete ShareLink rows that can never serve again, plus their PDF blobs.
+
+    A row is dead once it's revoked, past its ``expires_at``, or has reached a
+    nonzero ``max_views`` cap — the public /s/<token> handler refuses all three.
+    Without this sweep the table (and the ``pdf`` rows' on-disk files) would grow
+    without bound. Called opportunistically from ``init_db`` at startup, mirroring
+    the other rolling-history cleanups. Returns the number of rows deleted.
+    """
+    now = datetime.now(timezone.utc)
+    dead = db.exec(
+        select(ShareLink).where(
+            or_(
+                ShareLink.revoked_at.is_not(None),  # type: ignore[union-attr]
+                ShareLink.expires_at < now,
+                (ShareLink.max_views > 0)
+                & (ShareLink.view_count >= ShareLink.max_views),
+            )
+        )
+    ).all()
+    if not dead:
+        return 0
+    # Remove rendered-PDF blobs first so a row deletion never orphans a file.
+    delete_share_files(
+        [(r.payload or {}).get("path") for r in dead if r.kind == "pdf"]
+    )
+    ids = [r.id for r in dead if r.id is not None]
+    if ids:
+        db.exec(delete(ShareLink).where(ShareLink.id.in_(ids)))  # type: ignore[attr-defined]
+        db.commit()
+    return len(ids)
