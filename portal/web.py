@@ -44,6 +44,15 @@ def render(
             "logo_url": None,
         }
 
+    # The one-click backup only works on the local SQLite + filesystem
+    # deployment (matches the guard in admin.backup_download); on S3/Postgres
+    # the nav link is hidden rather than 400-ing on click.
+    from portal.config import settings
+
+    backup_available = settings.storage_backend == "local" and (
+        settings.database_url.startswith("sqlite")
+    )
+
     return templates.TemplateResponse(
         request,
         name,
@@ -53,6 +62,9 @@ def render(
             "flashes": flashes,
             "csrf_token": csrf_token(request),
             "branding": branding,
+            # ``current_path`` drives the active-nav highlight in base.html.
+            "current_path": request.url.path,
+            "backup_available": backup_available,
         },
         status_code=status_code,
     )

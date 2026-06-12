@@ -14,7 +14,8 @@
 {% if form.description %}<p>{{ form.description }}</p>{% endif %}
 
 {% if errors %}
-<div class="error">
+<div class="error" role="alert">
+	<strong><span aria-hidden="true">⚠ </span>Please fix the following:</strong>
 	<ul>{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul>
 </div>
 {% endif %}
@@ -30,12 +31,15 @@
 
 	{% for f in form.fields %}
 	<div>
-		<label for="f_{{ f.name }}">{{ f.label }}{% if f.required %} <span class="muted">*</span>{% endif %}</label>
+		<label for="f_{{ f.name }}">{{ f.label }}{% if f.required %} <span class="req-star" aria-hidden="true">*</span>{% endif %}</label>
 		{% if f.type == "textarea" %}
 		<textarea name="{{ f.name }}" id="f_{{ f.name }}"{% if f.required %} required{% endif %}{% if f.placeholder %} placeholder="{{ f.placeholder }}"{% endif %}>{{ values.get(f.name, "") }}</textarea>
 		{% else %}
+		{# Map the declared field type to the input type *and* an autocomplete
+		   hint so browsers/password managers offer the right autofill. #}
 		<input type="{{ {'email': 'email', 'number': 'number', 'tel': 'tel'}.get(f.type, 'text') }}"
-			name="{{ f.name }}" id="f_{{ f.name }}" value="{{ values.get(f.name, '') }}"{% if f.required %} required{% endif %}{% if f.placeholder %} placeholder="{{ f.placeholder }}"{% endif %}>
+			name="{{ f.name }}" id="f_{{ f.name }}" value="{{ values.get(f.name, '') }}"
+			{% if f.type == 'email' %}autocomplete="email"{% elif f.type == 'tel' %}autocomplete="tel"{% endif %}{% if f.required %} required{% endif %}{% if f.placeholder %} placeholder="{{ f.placeholder }}"{% endif %}>
 		{% endif %}
 	</div>
 	{% endfor %}

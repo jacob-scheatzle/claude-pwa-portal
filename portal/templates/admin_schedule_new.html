@@ -61,7 +61,7 @@ recurring schedule. {% if tool.description %}{{ tool.description }}{% endif %}</
 		<legend>Tool inputs</legend>
 		{% for p in tool.params %}
 		<div>
-			<label for="p_{{ p.name }}">{{ p.name }}{% if p.required %} <span class="muted">*</span>{% endif %}
+			<label for="p_{{ p.name }}">{{ p.name }}{% if p.required %} <span class="req-star" aria-hidden="true">*</span>{% endif %}
 				<span class="muted">({{ p.type }})</span></label>
 			{% if p.type == "boolean" %}
 			<label style="font-weight:400; display:flex; align-items:center; gap:0.4rem;">

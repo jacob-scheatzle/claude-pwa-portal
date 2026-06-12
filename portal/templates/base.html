@@ -323,7 +323,22 @@
 			flex-shrink: 0;
 		}
 
-		/* Theme cycle button. Renders only the icon corresponding to the
+		/* Standalone theme toggle on signed-out pages (no topbar). Pins to
+			   the top-right of the viewport, clear of the centered auth card. */
+			.topbar-actions-floating {
+				position: absolute;
+				top: 0.85rem;
+				right: 1rem;
+				z-index: 10;
+			}
+			@supports (padding: env(safe-area-inset-top)) {
+				.topbar-actions-floating {
+					top: max(0.85rem, env(safe-area-inset-top));
+					right: max(1rem, env(safe-area-inset-right));
+				}
+			}
+
+			/* Theme cycle button. Renders only the icon corresponding to the
 		   currently-stored preference (none, light, or dark); the other two
 		   are hidden via the body[data-theme-state="..."] selectors below.
 		   Clicking advances state in the order system → light → dark → system. */
@@ -440,6 +455,11 @@
 		}
 		p { margin: 0.5rem 0 1.25rem; color: var(--text); }
 		.muted { color: var(--text-muted); }
+			/* Required-field marker. Colored with the danger token so it reads
+			   as "required" at a glance; aria-hidden in the markup so screen
+			   readers rely on the input's own ``required`` attribute instead of
+			   announcing a bare asterisk. */
+			.req-star { color: var(--danger); }
 		.hint { font-size: 0.8rem; color: var(--text-muted); margin-top: 0.3rem; }
 		.nav-link {
 			font-size: 0.875rem;
@@ -449,6 +469,11 @@
 			transition: color 0.12s ease;
 		}
 		.nav-link:hover { color: var(--text); }
+			/* Active nav item (matches the current path) — accent color + a
+			   subtle underline so it's distinguishable without relying on
+			   color alone. */
+			.nav-link.active { color: var(--accent); font-weight: 600; }
+			.nav-menu-items .nav-link.active { background: var(--accent-tint); }
 
 		/* forms */
 		form { display: flex; flex-direction: column; gap: 0.95rem; }
@@ -476,6 +501,24 @@
 			box-shadow: 0 0 0 3px var(--accent-soft);
 		}
 		textarea { resize: vertical; min-height: 5rem; line-height: 1.5; }
+			/* Global keyboard focus ring. Only paints for keyboard / programmatic
+			   focus (:focus-visible), so mouse clicks don't draw a ring on
+			   buttons and links. Text inputs keep their own bespoke focus
+			   styling above. */
+			a:focus-visible,
+			button:focus-visible,
+			.btn:focus-visible,
+			.nav-link:focus-visible,
+			.tile:focus-visible,
+			.action-chip:focus-visible,
+			summary:focus-visible,
+			.theme-toggle:focus-visible,
+			.nav-toggle:focus-visible,
+			[role="button"]:focus-visible,
+			input[type="checkbox"]:focus-visible {
+				outline: 2px solid var(--accent);
+				outline-offset: 2px;
+			}
 
 		/* buttons */
 		button, .btn {
@@ -987,7 +1030,20 @@
 			opacity: 0.6;
 		}
 
-		@supports (padding: env(safe-area-inset-top)) {
+		/* Respect the OS "reduce motion" setting — disable transitions and
+			   transforms (hover lifts, the theme-toggle chevron rotation, button
+			   press translate) for users who get motion sick or are distracted
+			   by animation. */
+			@media (prefers-reduced-motion: reduce) {
+				*, *::before, *::after {
+					transition-duration: 0.01ms !important;
+					animation-duration: 0.01ms !important;
+					animation-iteration-count: 1 !important;
+					transform: none !important;
+				}
+			}
+
+			@supports (padding: env(safe-area-inset-top)) {
 			.topbar { padding-top: max(0.85rem, env(safe-area-inset-top)); }
 		}
 
@@ -1066,28 +1122,35 @@
 			{% endif %}
 			<span class="brand-text">{{ branding.business_name }}</span>
 		</a>
+		{# ``current_path`` is injected by render() in portal/web.py. A link is
+		   "active" when its href is the exact current path (or, for the apps
+		   home, the dashboard root). Marked links get aria-current="page" for
+		   assistive tech plus the existing .active accent style. #}
+		{% set cur = current_path|default('') %}
 		<nav id="primary-nav">
-			<a href="/" class="nav-link">Apps</a>
+			<a href="/" class="nav-link{% if cur == '/' %} active{% endif %}"{% if cur == '/' %} aria-current="page"{% endif %}>Apps</a>
 			{% if user.role == "admin" %}
-			<details class="nav-menu">
+			<details class="nav-menu"{% if cur.startswith('/admin') %} open{% endif %}>
 				<summary class="nav-link">Administrator</summary>
 				<div class="nav-menu-items">
-					<a href="/admin/apps" class="nav-link">Apps</a>
-					<a href="/admin/users" class="nav-link">Users</a>
-					<a href="/admin/settings" class="nav-link">Settings</a>
-					<a href="/admin/tokens" class="nav-link">API tokens</a>
-					<a href="/admin/oauth-clients" class="nav-link">MCP OAuth clients</a>
-					<a href="/admin/schedules" class="nav-link">Schedules</a>
-					<a href="/admin/submissions" class="nav-link">Submissions</a>
-					<a href="/admin/shares" class="nav-link">Share links</a>
-					<a href="/admin/health" class="nav-link">Health</a>
-					<a href="/admin/audit" class="nav-link">Audit log</a>
-					<a href="/admin/backup" class="nav-link">Backup</a>
-					<a href="/admin/export" class="nav-link">Export data</a>
+					<a href="/admin/apps" class="nav-link{% if cur.startswith('/admin/apps') %} active{% endif %}"{% if cur.startswith('/admin/apps') %} aria-current="page"{% endif %}>Manage apps</a>
+					<a href="/admin/users" class="nav-link{% if cur.startswith('/admin/users') %} active{% endif %}"{% if cur.startswith('/admin/users') %} aria-current="page"{% endif %}>Users</a>
+					<a href="/admin/settings" class="nav-link{% if cur.startswith('/admin/settings') %} active{% endif %}"{% if cur.startswith('/admin/settings') %} aria-current="page"{% endif %}>Settings</a>
+					<a href="/admin/tokens" class="nav-link{% if cur.startswith('/admin/tokens') %} active{% endif %}"{% if cur.startswith('/admin/tokens') %} aria-current="page"{% endif %}>API tokens</a>
+					<a href="/admin/oauth-clients" class="nav-link{% if cur.startswith('/admin/oauth-clients') %} active{% endif %}"{% if cur.startswith('/admin/oauth-clients') %} aria-current="page"{% endif %}>MCP OAuth clients</a>
+					<a href="/admin/schedules" class="nav-link{% if cur.startswith('/admin/schedules') %} active{% endif %}"{% if cur.startswith('/admin/schedules') %} aria-current="page"{% endif %}>Schedules</a>
+					<a href="/admin/submissions" class="nav-link{% if cur.startswith('/admin/submissions') %} active{% endif %}"{% if cur.startswith('/admin/submissions') %} aria-current="page"{% endif %}>Submissions</a>
+					<a href="/admin/shares" class="nav-link{% if cur.startswith('/admin/shares') %} active{% endif %}"{% if cur.startswith('/admin/shares') %} aria-current="page"{% endif %}>Share links</a>
+					<a href="/admin/health" class="nav-link{% if cur.startswith('/admin/health') %} active{% endif %}"{% if cur.startswith('/admin/health') %} aria-current="page"{% endif %}>Health</a>
+					<a href="/admin/audit" class="nav-link{% if cur.startswith('/admin/audit') %} active{% endif %}"{% if cur.startswith('/admin/audit') %} aria-current="page"{% endif %}>Audit log</a>
+					{% if backup_available %}
+					<a href="/admin/backup" class="nav-link{% if cur.startswith('/admin/backup') %} active{% endif %}"{% if cur.startswith('/admin/backup') %} aria-current="page"{% endif %}>Backup</a>
+					{% endif %}
+					<a href="/admin/export" class="nav-link{% if cur.startswith('/admin/export') %} active{% endif %}"{% if cur.startswith('/admin/export') %} aria-current="page"{% endif %}>Export data</a>
 				</div>
 			</details>
 			{% endif %}
-			<a href="/profile" class="nav-link">Profile</a>
+			<a href="/profile" class="nav-link{% if cur == '/profile' %} active{% endif %}"{% if cur == '/profile' %} aria-current="page"{% endif %}>Profile</a>
 			<form method="post" action="/logout" style="margin:0;">
 				<input type="hidden" name="_csrf" value="{{ csrf_token }}">
 				<button type="submit" class="linkish">
@@ -1133,13 +1196,48 @@
 			</button>
 		</div>
 	</div>
+	{% else %}
+	{# Signed-out pages (login, setup, public form, OAuth consent) have no
+	   topbar, but the theme toggle should still work so the door page honors
+	   the user's light/dark preference. Minimal floating control, top-right;
+	   shares the #theme-toggle id so the toggle JS below wires it up unchanged. #}
+	<div class="topbar-actions topbar-actions-floating">
+		<button type="button" class="theme-toggle" id="theme-toggle"
+			aria-label="Toggle color theme" title="Toggle color theme">
+			<!-- Sun (light) -->
+			<svg class="theme-icon icon-light" width="18" height="18" viewBox="0 0 24 24"
+				fill="none" stroke="currentColor" stroke-width="2"
+				stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+				<circle cx="12" cy="12" r="4"></circle>
+				<path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"></path>
+			</svg>
+			<!-- Moon (dark) -->
+			<svg class="theme-icon icon-dark" width="18" height="18" viewBox="0 0 24 24"
+				fill="none" stroke="currentColor" stroke-width="2"
+				stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+				<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+			</svg>
+			<!-- Half-fill (system / auto) -->
+			<svg class="theme-icon icon-system" width="18" height="18" viewBox="0 0 24 24"
+				fill="none" stroke="currentColor" stroke-width="2"
+				stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+				<circle cx="12" cy="12" r="9"></circle>
+				<path d="M12 3v18" fill="currentColor"></path>
+				<path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor" stroke="none"></path>
+			</svg>
+		</button>
+	</div>
 	{% endif %}
 	{% endblock %}
 	<main class="container {% block container_class %}{% endblock %}">
 		{% if flashes %}
-		<div class="flashes">
+		{# role/aria-live so screen readers announce flashes as they appear.
+		   Errors are assertive (role="alert"); successes/info are polite. #}
+		<div class="flashes" role="status" aria-live="polite">
 			{% for f in flashes %}
-			<div class="flash flash-{{ f.level }}">{{ f.message }}</div>
+			<div class="flash flash-{{ f.level }}"{% if f.level == "error" %} role="alert"{% endif %}>
+				{% if f.level == "error" %}<span aria-hidden="true">⚠ </span>{% endif %}{{ f.message }}
+			</div>
 			{% endfor %}
 		</div>
 		{% endif %}

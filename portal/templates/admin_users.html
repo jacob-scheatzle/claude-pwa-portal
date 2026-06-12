@@ -21,12 +21,18 @@
 				{% if u.id == user.id %}<span class="pill on">you</span>{% endif %}
 			</td>
 			<td data-label="Role">
-				<form method="post" action="/admin/users/{{ u.id }}/role" style="display:inline;">
+				{# Explicit Save (no onchange auto-submit) so an accidental
+				   keyboard/scroll change on the role dropdown can't silently
+				   promote or demote a user. #}
+				<form method="post" action="/admin/users/{{ u.id }}/role" style="display:flex; gap:0.4rem; align-items:center; flex-wrap:wrap;">
 					<input type="hidden" name="_csrf" value="{{ csrf_token }}">
-					<select name="role" onchange="this.form.submit()" {% if u.id == user.id %}disabled title="Use another admin to change your own role"{% endif %}>
+					<select name="role" {% if u.id == user.id %}disabled title="Use another admin to change your own role"{% endif %}>
 						<option value="admin" {% if u.role == "admin" %}selected{% endif %}>admin</option>
 						<option value="user" {% if u.role == "user" %}selected{% endif %}>user</option>
 					</select>
+					{% if u.id != user.id %}
+					<button type="submit" class="action-chip">Save</button>
+					{% endif %}
 				</form>
 			</td>
 			<td data-label="Created">{{ u.created_at.strftime("%Y-%m-%d") }}</td>

@@ -2,6 +2,6 @@
 {% block title %}Authorization error — {{ branding.business_name }}{% endblock %}
 {% block content %}
 <h1>Authorization error</h1>
-<div class="error">{{ message }}</div>
+<div class="error" role="alert"><span aria-hidden="true">⚠ </span>{{ message }}</div>
 <p style="margin-top:16px;"><a href="/">Back to the portal</a></p>
 {% endblock %}

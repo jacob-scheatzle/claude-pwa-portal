@@ -35,9 +35,9 @@
 				<div class="hint">Defaults to <code>{{ default_accent_color }}</code> when cleared. Drives buttons, links, and the PDF header bar.</div>
 			</div>
 			<div>
-				<label for="branding_logo">Logo (PNG / JPEG / SVG / WebP, ≤ {{ max_logo_kb }} KB)</label>
+				<label for="branding_logo">Logo (PNG / JPEG / WebP, ≤ {{ max_logo_kb }} KB)</label>
 				<input type="file" name="branding_logo" id="branding_logo"
-					accept="image/png,image/jpeg,image/svg+xml,image/webp">
+					accept="image/png,image/jpeg,image/webp">
 				{% if branding_logo_url %}
 				<div class="hint" style="display:flex; align-items:center; gap:0.75rem; margin-top:0.5rem; flex-wrap:wrap;">
 					<img src="{{ branding_logo_url }}" alt="current logo"
@@ -54,10 +54,10 @@
 			</div>
 		</div>
 		<div style="margin-top:1rem;">
-			<label for="branding_favicon">Favicon (PNG / SVG / ICO / JPEG / WebP, ≤ {{ max_logo_kb }} KB)</label>
+			<label for="branding_favicon">Favicon (PNG / ICO / JPEG / WebP, ≤ {{ max_logo_kb }} KB)</label>
 			<input type="file" name="branding_favicon" id="branding_favicon"
-				accept="image/png,image/svg+xml,image/x-icon,image/vnd.microsoft.icon,image/jpeg,image/webp,.ico">
-			<div class="hint">Used for the browser tab, the iOS Add-to-Home-Screen icon, and the PWA install image. Square, ≥ 192×192 PNG (or any SVG) renders cleanest across all three surfaces.</div>
+				accept="image/png,image/x-icon,image/vnd.microsoft.icon,image/jpeg,image/webp,.ico">
+			<div class="hint">Used for the browser tab, the iOS Add-to-Home-Screen icon, and the PWA install image. Square, ≥ 192×192 PNG renders cleanest across all three surfaces.</div>
 			{% if branding_favicon_url %}
 			<div class="hint" style="display:flex; align-items:center; gap:0.75rem; margin-top:0.5rem; flex-wrap:wrap;">
 				<img src="{{ branding_favicon_url }}" alt="current favicon"

@@ -5,8 +5,12 @@
 <style>
 	/* The launcher replaces the centered container's padding so the iframe
 	   can stretch edge-to-edge below the topbar. The container is still
-	   present (base.html owns it) but we override its layout here. */
+	   present (base.html owns it) but we override its layout here.
+	   ``--app-chrome`` is the combined height of the topbar + app-frame-bar
+	   that sits above the iframe. Single source of truth so the magic numbers
+	   no longer drift apart (was a hard-coded 92px in two places). */
 	main.container.app-launcher-container {
+		--app-chrome: 92px;
 		max-width: none;
 		padding: 0;
 		margin: 0;
@@ -22,24 +26,71 @@
 	}
 	.app-frame-bar .muted { color: var(--text-faint); font-size: 0.8rem; }
 	.app-frame-bar strong { color: var(--text); letter-spacing: -0.005em; }
-	.app-frame {
+	/* The iframe and its loading/fallback overlays all share this fixed box
+	   below the chrome. */
+	.app-frame,
+	.app-frame-overlay {
 		position: fixed;
 		left: 0;
 		right: 0;
 		bottom: 0;
-		/* Topbar (~52px) + app-frame-bar (~40px). Both have explicit borders;
-		   the iframe takes the rest. */
-		top: 92px;
-		border: 0;
+		top: var(--app-chrome);
 		width: 100%;
-		height: calc(100vh - 92px);
+		height: calc(100vh - var(--app-chrome));
 		background: var(--surface);
+	}
+	.app-frame { border: 0; }
+	/* Loading skeleton — a centered spinner shown until the iframe fires
+	   ``load``. Sits above the (initially blank) iframe. */
+	.app-frame-overlay {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		gap: 1rem;
+		text-align: center;
+		padding: 1.5rem;
+		color: var(--text-muted);
+		font-size: 0.9rem;
+	}
+	.app-frame-overlay[hidden] { display: none; }
+	.app-spinner {
+		width: 2rem;
+		height: 2rem;
+		border: 3px solid var(--border-strong);
+		border-top-color: var(--accent);
+		border-radius: 50%;
+		animation: app-spin 0.8s linear infinite;
+	}
+	@keyframes app-spin { to { transform: rotate(360deg); } }
+	.app-frame-fallback { max-width: 32rem; }
+	.app-frame-fallback code {
+		background: var(--surface-2);
+		color: var(--text);
+		padding: 0.1rem 0.4rem;
+		border-radius: 0.25rem;
 	}
 </style>
 <div class="app-frame-bar">
 	<a href="/" class="nav-link">← Apps</a>
 	<strong>{{ app.name }}</strong>
 	<span class="muted">{{ app.version }}</span>
+</div>
+<!-- Loading skeleton: hidden once the iframe fires ``load``; swapped for the
+     reachability hint if the app subdomain never loads (see script below). -->
+<div class="app-frame-overlay" id="app-loading">
+	<div class="app-spinner" aria-hidden="true"></div>
+	<div>Loading {{ app.name }}…</div>
+</div>
+<div class="app-frame-overlay app-frame-fallback" id="app-fallback" hidden role="alert">
+	<div>
+		<strong><span aria-hidden="true">⚠ </span>This app isn't loading.</strong>
+		<p class="muted" style="margin-top:0.5rem;">The app subdomain may be
+		unreachable — check that <code>*.apps.{{ site_url|default('your domain') }}</code> DNS resolves,
+		or set <code>CHILD_APPS_SAME_ORIGIN=true</code> if you don't have wildcard
+		DNS.</p>
+		<p style="margin-top:0.75rem;"><a href="/" class="nav-link">← Back to apps</a></p>
+	</div>
 </div>
 {#
   The iframe's `sandbox` attribute below is belt-and-braces, not the security
@@ -53,10 +104,35 @@
   Intentionally NOT included: `allow-top-navigation`, `allow-popups-to-escape-sandbox`.
 #}
 <iframe
+	id="app-frame"
 	class="app-frame"
 	src="{{ iframe_src }}"
 	sandbox="allow-scripts allow-forms allow-popups allow-same-origin allow-modals allow-downloads"
 	allow="clipboard-read; clipboard-write; fullscreen"
 	title="{{ app.name }}"
 ></iframe>
+<script>
+	// Hide the loading skeleton once the iframe loads. If ``load`` never fires
+	// within the timeout (e.g. the per-app subdomain doesn't resolve), surface
+	// the reachability hint instead of leaving the user staring at a spinner.
+	(function () {
+		var frame = document.getElementById("app-frame");
+		var loading = document.getElementById("app-loading");
+		var fallback = document.getElementById("app-fallback");
+		if (!frame || !loading) return;
+		var settled = false;
+		var timer = setTimeout(function () {
+			if (settled) return;
+			settled = true;
+			loading.hidden = true;
+			if (fallback) fallback.hidden = false;
+		}, 12000);
+		frame.addEventListener("load", function () {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			loading.hidden = true;
+		});
+	})();
+</script>
 {% endblock %}

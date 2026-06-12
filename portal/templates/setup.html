@@ -5,7 +5,10 @@
 <p>Create the admin account. You can add staff later from the dashboard.</p>
 
 {% if errors %}
-<div class="error"><ul>{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul></div>
+<div class="error" role="alert">
+	<strong><span aria-hidden="true">⚠ </span>Please fix the following:</strong>
+	<ul>{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul>
+</div>
 {% endif %}
 
 <form method="post" action="/setup" autocomplete="off">

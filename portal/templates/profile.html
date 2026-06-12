@@ -28,7 +28,10 @@
 </style>
 
 {% if errors %}
-<div class="error" style="margin-top:2rem;"><ul>{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul></div>
+<div class="error" style="margin-top:2rem;" role="alert">
+	<strong><span aria-hidden="true">⚠ </span>Please fix the following:</strong>
+	<ul>{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul>
+</div>
 {% endif %}
 
 <h2 style="font-size:1.15rem; margin-top:2rem;">Change password</h2>
