@@ -33,7 +33,8 @@ Other smaller choices, decided in the same conversation:
 
 - **Launch token:** URL fragment (`#token=...`), single-use, 60-second TTL. Stripped via `history.replaceState` immediately after read.
 - **Localhost dev:** use `lvh.me` (resolves any `*.lvh.me` to 127.0.0.1) so `<slug>.apps.lvh.me` works without `/etc/hosts` edits.
-- **`X-Portal-App` header:** drop. Slug comes from `Host` header server-side now.
+- **`X-Portal-App` header:** drop *for browser SDK calls*. Slug comes from `Host` header server-side now.
+  - **What changed during implementation:** the header was **kept for bearer-token clients**. The browser SDK no longer sends it (the subdomain `Host` carries the slug), but a token client (the Claude skill, MCP) has no app subdomain to derive a slug from, so `X-Portal-App` is still the slug source on those calls. `portal/api.py` reads it only when `request.state.auth_method == "token"`; cookie / `app_session` requests use the host-derived slug and ignore the header. So the header is "removed from the SDK, retained for token auth," not removed outright.
 - **SDK API surface:** unchanged (`portal.user.current()`, `portal.pdf.*`, etc.). Internals re-architected; apps don't need code changes.
 - **Existing apps:** keep working without re-upload. Caddy routes both `portal.example.com/apps/<slug>/...` (legacy) and `<slug>.apps.example.com/...` (new) to the same portal container; switching is a config flag.
 
@@ -220,6 +221,13 @@ def session_exchange(
     return {"ok": True}
 ```
 
+> **Implementation note:** the shipped exchange sets the `app_session` cookie
+> **host-only** — it does *not* set a `domain=` attribute. A host-only cookie
+> is scoped to exactly `<slug>.apps.<SITE_URL>` and is never sent to sibling
+> subdomains, which is the isolation we want; a `Domain=`-scoped cookie would
+> widen its scope to subdomains of the named host. Omitting `domain=` is the
+> deliberate, tighter choice.
+
 **Open issue:** how does the exchange call know which UserSession to bind to?
 The exchange happens cross-origin from the iframe; the portal's user cookie
 isn't sent. Two options:
@@ -228,11 +236,25 @@ isn't sent. Two options:
 
 Lean (b) — simpler. Cascade explicit in logout/password-change.
 
+> **Resolved (shipped):** option (b). `AppSession` stores no
+> `parent_user_session_id` — its lifetime is independent of the parent
+> `UserSession` (see `portal/models.py:AppSession`). Logout and
+> password-change call `revoke_all_app_sessions_for_user(...)` in
+> `portal/main.py` to cascade the revocation explicitly.
+
 ### `GET /api/v1/<path>` (on app subdomain) — UPDATED
 
 Existing endpoints check `request.state.app_slug` instead of `X-Portal-App`.
 Storage endpoints use the host-derived slug; no client header trust required.
-Drop the `X-Portal-App` header handling (deprecated; ignored if sent).
+
+> **Implementation note:** "drop the header handling" applies only to
+> **browser** (cookie / `app_session`) requests, which now derive the slug
+> from the host and never trust a client-supplied header. **Bearer-token
+> requests still read `X-Portal-App`** — they have no app subdomain, so the
+> header is their only slug source. `portal/api.py` keys this off
+> `request.state.auth_method`: host-derived slug for cookie/`app_session`,
+> `X-Portal-App` for `token`. The header isn't fully removed; it's narrowed to
+> token auth.
 
 ### `GET /apps/<slug>/<path:path>` (NEW serve path on subdomain)
 
@@ -265,11 +287,11 @@ Pseudocode for Caddyfile:
     }
 
     header {
-        # Strict CSP for child apps (the unsafe-inline/unsafe-eval are deliberate
-        # so apps can ship inline scripts/styles; the *isolation* now comes from
-        # the origin, not from CSP)
-        Content-Security-Policy "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; frame-ancestors https://{$SITE_URL}; base-uri 'self'; form-action 'self'"
-        # frame-ancestors: only the portal's iframe can embed; nobody else.
+        # NOTE (as shipped): Caddy sets NO Content-Security-Policy for child
+        # subdomains. The CSP is per-app — its connect-src enumerates the
+        # external origins from App.allowed_origins, which lives in the DB and
+        # Caddy can't see — so the portal owns it. Caddy only sets the
+        # response-agnostic headers below; the per-app CSP comes from the app.
         Strict-Transport-Security "max-age=31536000; includeSubDomains"
     }
 }
@@ -278,16 +300,28 @@ Pseudocode for Caddyfile:
 # is allowed (matches a real app slug) before requesting a cert.
 {
     on_demand_tls {
-        ask http://portal:8000/internal/cert-ask
+        ask http://portal:8000/api/v1/internal/cert-ask
     }
 }
 ```
 
-**`/internal/cert-ask`** — new endpoint on the portal, restricted to the
+> **Implementation note (CSP):** the static Caddy CSP above was **not** what
+> shipped. Per-app CSP moved into `ChildAppCSPMiddleware`
+> (`portal/middleware.py`): for any request that resolved to a child subdomain
+> it builds the header from that app's `App.allowed_origins`
+> (`connect-src 'self' <approved external origins…>`), with optional strict /
+> nonce mode when the app sets `permissions.csp_strict`. **Caddy sets no CSP
+> for `*.apps.<SITE_URL>`** — only HSTS + the other defense-in-depth headers.
+> `frame-ancestors https://<SITE_URL>` is emitted by the middleware so only the
+> portal's iframe can embed the app.
+
+**`/api/v1/internal/cert-ask`** — new endpoint on the portal, restricted to the
 internal Docker network (no public exposure). Caddy GETs it with the
 requested hostname; portal returns 200 if the hostname matches a real
 enabled app slug, 404 otherwise. Prevents an attacker from probing
-`<random>.apps.example.com` to exhaust Let's Encrypt rate limits.
+`<random>.apps.example.com` to exhaust Let's Encrypt rate limits. (The route
+lives under the `/api/v1` router as `cert_ask`; the Caddyfile points
+`on_demand_tls.ask` at it.)
 
 ## SDK changes
 
@@ -309,8 +343,13 @@ App-author-visible API surface (`portal.user.current()`, `portal.pdf.*`,
 `portal.email.*`, `portal.storage.*`) is unchanged. Existing apps don't
 need code changes.
 
-**`X-Portal-App` header:** removed from outgoing requests. Server stops
-reading it. (Backwards-compatible: server ignores if sent.)
+**`X-Portal-App` header:** removed from the **SDK's** outgoing requests (the
+subdomain `Host` carries the slug). **The server still reads it for
+bearer-token clients** — they have no app subdomain, so the header remains
+their slug source. So "server stops reading it" is true only for browser
+(cookie / `app_session`) auth; under token auth `portal/api.py` keys off
+`request.state.auth_method == "token"` and uses `X-Portal-App`. The header is
+narrowed to token clients, not removed.
 
 ## Iframe wrapper page
 
@@ -501,6 +540,10 @@ Deliverable: production deploy works end-to-end with one wildcard DNS record.
 - **CSRF token endpoint:** today's `/api/v1/csrf-token` works for cookie
   auth. With per-app sessions, each subdomain has its own session and
   thus its own CSRF token. Endpoint needs to look at host + AppSession.
+  - **Resolved (shipped):** `/api/v1/csrf-token` (`portal/api.py`) serves a
+    token for both `cookie` and `app_session` auth — each origin has its own
+    independent session and thus its own per-origin CSRF token. The SDK
+    fetches it same-origin from the subdomain.
 - **Rate limits:** existing per-(IP, email) login rate limit only sees
   the portal-origin login. App-origin sessions are minted via launch
   token, not login. So this is fine, but worth re-confirming during

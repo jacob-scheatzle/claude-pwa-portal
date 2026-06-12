@@ -1,4 +1,7 @@
-# Project state — May 21, 2026
+# Project state
+
+_Last updated: June 5, 2026 (v0.16.2)._ Originally written May 21, 2026; kept
+current as the project evolved (MCP server, schedules, public forms, AWS deploy).
 
 A snapshot of where ProgressiveWebAppPortal stands at the end of a long
 build + two review-fix sweeps. Read this first if you're picking the
@@ -158,6 +161,10 @@ unauthenticated state-changing calls.
 
 ## Commit history
 
+For the current history, run `git log --oneline` — the repo has moved well
+past the initial build (it's at v0.16.2 as of this writing). The **initial
+build commits** were:
+
 ```
 4792f83 docs: design spec for per-app origin isolation (item 4)
 108b7ea Adopt Alembic for schema migrations
@@ -271,8 +278,9 @@ con = sqlite3.connect('data/portal.db')
 print('alembic_version:', con.execute('SELECT version_num FROM alembic_version').fetchall())
 print('tables:', [r[0] for r in con.execute(\"SELECT name FROM sqlite_master WHERE type='table' ORDER BY name\").fetchall()])
 "
-# Expect alembic_version at the latest revision (currently 1ee4231bf6f8) and
-# 15 tables total (14 models + alembic_version).
+# Expect alembic_version at the latest revision (the head printed by
+# `.venv/bin/alembic heads` — 2154c41b0659 at the time of writing) and
+# 19 tables total (18 table=True models + alembic_version).
 ```
 
 ### Build + upload an app from Claude Code

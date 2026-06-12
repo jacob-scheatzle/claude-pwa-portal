@@ -13,6 +13,12 @@ Browser ──HTTPS──▶ CloudFront ──HTTPS──▶ ALB ──HTTP─�
 DNS:  portal.example.com  +  *.apps.example.com  ──▶ CloudFront
 ```
 
+> **WAF scope:** the WebACL is **`CLOUDFRONT`-scoped** and therefore created in
+> **`us-east-1`** (a CloudFront WebACL must live in us-east-1 regardless of
+> where the rest of the stack runs). It's associated with the CloudFront
+> **distribution**, not the ALB — so the rules run at the edge before a request
+> reaches the origin. See `aws/terraform/waf.tf`.
+
 Same application, different backends: the database is **RDS PostgreSQL** instead
 of SQLite, and all blob state (app bundles, per-user storage, branding, rendered
 share PDFs) lives in **S3** instead of local disk. These are selected at runtime
@@ -27,7 +33,7 @@ SQLite/filesystem product is unchanged and still the default.
 | Per-app subdomain certs | Caddy on-demand TLS + `/cert-ask` | one ACM wildcard `*.apps.<domain>` |
 | Database | SQLite on disk | RDS PostgreSQL |
 | Blob storage | `./data` on disk | S3 bucket |
-| Scanner/brute-force defense | fail2ban on the host | AWS WAF at the edge |
+| Scanner/brute-force defense | fail2ban on the host | AWS WAF at the edge (CloudFront-scoped) |
 | Security logs | `data/security.log` | stdout → CloudWatch Logs |
 | Backups | the in-app **Backup** button | RDS snapshots + S3 versioning |
 

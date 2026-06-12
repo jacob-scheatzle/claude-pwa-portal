@@ -169,14 +169,19 @@ W/2), "X", fill="white", font=f, anchor="mm")` instead of shapes.
 square — 192×192 PNG is the sweet spot for both the dashboard tile and
 iOS home-screen icons.
 
-Rules the portal enforces:
+What the portal actually validates:
 
-- Manifest's `icon` must be a relative path inside the bundle (no `..`,
+- Manifest's `icon` must be a **relative path inside the bundle** (no `..`,
   no leading `/`).
-- The file must exist in the zip.
+- The file must **exist in the zip**.
 - `package.py` rejects the unmodified scaffold placeholder.
-- Supported formats: PNG, SVG, JPEG, WebP. PNG at 192×192 renders
-  cleanest across iOS, Android, and desktop browsers.
+
+The portal does **not** enforce the icon's image format — it checks
+path-safety + existence only. (A future build may add an icon-extension
+allowlist; if your release rejects an icon on format grounds, that's why.)
+**Recommended formats:** PNG, SVG, JPEG, or WebP — PNG at 192×192 renders
+cleanest across iOS, Android, and desktop browsers. Ship a real raster/vector
+image even though the server won't catch a bogus one.
 
 **Authoring rule**: never `package.py` an app whose icon is still the
 scaffold default. Draw the pictogram as part of the build workflow
@@ -290,6 +295,63 @@ re-grant network access an admin previously turned off.
 into a child app, add the origin to `permissions.network`. The scaffold
 at `templates/basic/portal.json` ships with an empty list; populate it
 before packaging if the app calls anything external.
+
+#### External API failure UX
+
+External calls fail for boring reasons — the API is down, rate-limited, the
+network drops, or (most common in this portal) you forgot to declare the
+origin in `permissions.network` so the browser blocks the request with a CSP
+violation that surfaces as a generic `TypeError: Failed to fetch`. **Never let
+an app render blank or hang on a failed external call.** Wrap every external
+`fetch` in `try/catch`, and on failure show a short inline message in
+`--text-muted` / `--danger` that tells the user what to do next ("Couldn't
+reach the weather service — try again in a minute"), not a raw stack trace.
+Keep the rest of the app usable: a failed lookup should degrade to manual
+entry, not a dead screen. If the cause might be a missing declaration, the fix
+is in the manifest (`permissions.network`), not the code.
+
+```js
+try {
+  const r = await fetch("https://api.example.com/x");
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  render(await r.json());
+} catch (err) {
+  status.textContent = "Couldn't reach the service — try again shortly.";
+  // (a CSP-blocked request lands here too — check permissions.network)
+}
+```
+
+#### Map tiles: declare the origin, then fetch-to-blob
+
+Map/basemap tiles are external `<img>` requests, and the child-app CSP's
+`img-src` does **not** include arbitrary remote hosts — so a bare
+`<img src="https://tiles…/{z}/{x}/{y}.png">` is **blocked**, even with the
+origin in `permissions.network` (that gates `connect-src` / `fetch`, not
+`img-src`). The workaround: **`fetch()` each tile and swap in a `blob:` URL**,
+which `img-src` does allow.
+
+1. Declare the tile origin in `permissions.network` (it's now a `fetch`, so
+   `connect-src` must allow it).
+2. `fetch(tileUrl)` → `res.blob()` → `URL.createObjectURL(blob)` → set that as
+   the `<img>`'s `src`. Revoke the object URL when the tile scrolls out.
+
+Use a **CORS-enabled, no-key** tile provider (the `fetch` is cross-origin, so
+the response needs `Access-Control-Allow-Origin`):
+
+| Provider | Origin (declare in `permissions.network`) | Tile URL shape |
+|---|---|---|
+| Carto basemaps | `https://basemaps.cartocdn.com` | `…/light_all/{z}/{x}/{y}.png` |
+| Esri (ArcGIS) | `https://server.arcgisonline.com` | `…/tile/{z}/{y}/{x}` (note **`{z}/{y}/{x}`**) |
+| OpenStreetMap | `https://tile.openstreetmap.org` | `…/{z}/{x}/{y}.png` |
+
+```js
+async function loadTile(imgEl, url) {
+  const res = await fetch(url);              // origin declared in permissions.network
+  const blobUrl = URL.createObjectURL(await res.blob());
+  imgEl.onload = () => URL.revokeObjectURL(blobUrl);
+  imgEl.src = blobUrl;                       // blob: is allowed by img-src
+}
+```
 
 ### Strict CSP (opt-in)
 
@@ -426,7 +488,7 @@ field list.
     "title": "Request a quote",
     "description": "Tell us what you need.",
     "fields": [
-      { "name": "full_name", "label": "Your name", "type": "text", "required": true },
+      { "name": "full_name", "label": "Your name", "type": "text", "required": true, "placeholder": "Jane Doe" },
       { "name": "email", "label": "Email", "type": "email", "required": true },
       { "name": "details", "label": "Details", "type": "textarea" }
     ],
@@ -436,8 +498,10 @@ field list.
 ]
 ```
 
-Field `type` is `text` | `email` | `tel` | `number` | `textarea`. Forms need no
-`services`. The public endpoint is rate-limited per IP and has a spam honeypot.
+Field `type` is `text` | `email` | `tel` | `number` | `textarea`. Each field
+also takes an optional **`placeholder`** (≤120 chars) — hint text shown in the
+empty input. Forms need no `services`. The public endpoint is rate-limited per
+IP and has a spam honeypot.
 
 **The form URL is what you share.** `<slug>.apps.<SITE_URL>/forms/<form>` (shown
 under **Admin → Submissions**) is a public link — the owner puts it on a website,

@@ -130,7 +130,7 @@ data export. Forms are declarative — no app code runs server-side.
     "fields": [
       {"name": "full_name", "label": "Your name", "type": "text", "required": true},
       {"name": "email", "label": "Email", "type": "email", "required": true},
-      {"name": "phone", "label": "Phone", "type": "tel"},
+      {"name": "phone", "label": "Phone", "type": "tel", "placeholder": "(555) 123-4567"},
       {"name": "details", "label": "Project details", "type": "textarea"}
     ],
     "notify_email": "owner@example.com",
@@ -140,6 +140,8 @@ data export. Forms are declarative — no app code runs server-side.
 ```
 
 - Field `type` is `text` | `email` | `tel` | `number` | `textarea`.
+- `placeholder` (optional, per field, ≤ 120 chars) sets the input's HTML
+  placeholder/hint text shown until the visitor types.
 - `notify_email` (optional) sends a plain-text alert on each submission (needs
   SMTP configured); the submission is stored regardless.
 - Forms need **no** `services`. The public endpoint is rate-limited per IP, has
@@ -221,12 +223,19 @@ await portal.storage.delete("notes/today.json");
 
 ## Packaging and uploading
 
-The Claude skill bundles the packaging + upload scripts. Install it once
-on your workstation (this writes the scripts to `~/.claude/skills/pwa-portal-app/scripts/`):
+The Claude skill bundles the packaging + upload scripts. Install it once on
+your workstation by cloning the repo and running `install.sh`, which symlinks
+the skill into `~/.claude/skills/pwa-portal-app` (so updates land with a
+`git pull`):
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/jacob-scheatzle/claude-pwa-portal/main/claude-skill/pwa-portal-app/install.sh)
+git clone https://github.com/jacob-scheatzle/claude-pwa-portal.git
+bash claude-pwa-portal/claude-skill/pwa-portal-app/install.sh
 ```
+
+> Don't pipe `install.sh` through `bash <(curl …)`: it symlinks the directory
+> it lives in, and under process substitution that directory is `/dev/fd`, so
+> the link breaks. Run it from a real checkout.
 
 Then package + upload:
 

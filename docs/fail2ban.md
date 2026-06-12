@@ -47,12 +47,11 @@ documented below.
   Docker NATs the source IP away and every fail2ban ban targets the
   bridge gateway `172.18.0.1` — i.e., useless.
 
-The portal stack since **v0.5.1** writes a fail2ban-friendly text log to
+The portal stack writes a fail2ban-friendly text log to
 `./data/security.log` and tags container logs with stable journald
-identifiers (`pwa-portal`, `pwa-portal-caddy`). v0.6.2+ ships the
-corrected contrib filters (the v0.5.1/v0.6.x filters had a date-prefix
-bug that prevented any matches — upgrade to v0.6.2 before deploying
-fail2ban configs).
+identifiers (`pwa-portal`, `pwa-portal-caddy`). The contrib filters here
+require **v0.6.2+** (earlier filters had a date-prefix bug that prevented any
+matches); current releases are well past this, so any recent build is fine.
 
 ---
 

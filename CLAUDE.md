@@ -23,6 +23,14 @@ portal/
   mcp_server.py       Optional /mcp MCP server (low-level Server, dynamic list_tools) — app-mgmt tools + each app's declared tools; ASGI auth accepts admin API token OR OAuth access token; gated by MCP_ENABLED + [mcp] extra
   oauth.py            OAuth 2.1 AS for the /mcp connector (claude.ai can't use static tokens): mcp-SDK provider over OAuth* tables + /oauth/consent (reuses admin login). DCR + PKCE + refresh; admin-only
   app_tools.py        Phase 2 executor — runs an app's declared tools (sandboxed-Jinja template → PDF → share/email/store/download) over trusted primitives
+  scheduler.py        In-process asyncio ticker (started in lifespan) — fires due ScheduledRun rows via app_tools.run_tool; no external cron; per-process so the deployment stays single-uvicorn
+  shares.py           Public tokenized share URLs (/s/<token>) — storage shares (live re-read) + one-shot pdf shares; TTL + max_views clamping (cap 1000); admin revoke
+  forms.py            Public no-sign-in intake forms served on the app's own origin (/forms/<form>); the only public WRITE surface — honeypot + per-IP rate limit + declared-field-only recording; records FormSubmission, optional notify email
+  access.py           Per-user app access (UserAppAccess m2m) — admins have implicit access to all apps; grant rows seeded at user/app creation per default_user_app_access setting
+  audit.py            Append-only AuditEvent log — best-effort record_event() (own session, swallows errors), dot-namespaced action verbs, opportunistic startup pruning
+  branding.py         Portal branding from Setting keys (business name, accent color, logo, favicon) — injected into every render and the PDF header / manifest icons
+  health.py           Admin health dashboard data — rolling LoginAttempt + EmailSendLog history (startup-pruned), SMTP last-test status, filesystem-size helpers
+  middleware.py       HostDispatchMiddleware (sets request.state.app_slug from Host) + ChildAppCSPMiddleware (per-app CSP from App.allowed_origins on subdomain responses)
   models.py           SQLModel tables: User, Setting, App, ApiToken, UserSession
   sessions.py         Helpers for the server-side UserSession (create/revoke/touch)
   security.py         bcrypt, password validation, csrf_token() + check_csrf() + check_csrf_header()
@@ -64,7 +72,7 @@ aws/                  Cloud-native deploy: Terraform (ECS Fargate+ALB+CloudFront
 
 8. **Caddy `localhost` issues an internal-CA cert.** For curl against the Docker stack, use `-k`. Browser will warn once.
 
-9. **Don't break the SDK contract.** `portal/static/portal-sdk.js` exposes `window.portal.{user,pdf,email,storage}`. Child apps depend on this surface. The reference app at `examples/hello-receipt/` exercises every method — if a change there breaks, the SDK changed in a breaking way.
+9. **Don't break the SDK contract.** `portal/static/portal-sdk.js` exposes `window.portal.{user,pdf,email,share,storage}` (`portal.share.create({kind,key?,html?,…})` mints a public `/s/<token>` URL). Child apps depend on this surface. The reference app at `examples/hello-receipt/` exercises every method — if a change there breaks, the SDK changed in a breaking way.
 
 10. **Async carefully.** Many handlers are `def` (FastAPI threadpools them); a few are `async def` (`install_bundle` uses `anyio.to_thread.run_sync` for the blocking zip work). Don't flip one to the other without checking what calls it. `_smtp_send` has a 10s timeout — don't make it longer.
 
@@ -140,7 +148,7 @@ docker compose exec portal python -m portal.cli reset-password admin@example.com
 - **All datetimes are UTC.** `_utcnow()` in `models.py`; never use naive `datetime.now()`.
 - **Settings via the `settings` object in `portal.config`** — never read env vars directly in handlers.
 - **Path-traversal safety:** any code touching user-supplied filenames must do `.resolve()` then `relative_to(base)` check. Patterns in `portal/apps.py:_safe_extract`, `portal/api.py:storage_*`.
-- **Don't add new top-level dependencies casually.** Each one is in `pyproject.toml`; if you add `cryptography` or `alembic`, the Docker image rebuilds. We're at 11 deps; aim to stay under ~15.
+- **Don't add new top-level dependencies casually.** Each one is in `pyproject.toml`; adding a base dep rebuilds the Docker image. We're at 12 base deps (plus the opt-in `[mcp]` and `[aws]` extras); aim to stay under ~15.
 
 ---
 

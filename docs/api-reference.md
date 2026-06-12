@@ -38,25 +38,30 @@ Revoke at any time from the same UI.
 ## App context
 
 Every service endpoint (`pdf`, `email`, `storage`, `share`) is scoped to
-**one app**, so the portal needs to know which app is making the call.
-There are two resolution paths, applied in this order:
+**one app**, so the portal needs to know which app is making the call. How the
+slug is resolved depends on how the request is authenticated
+(`request.state.auth_method`):
 
-1. **Per-app subdomain (default).** Requests from `<slug>.apps.<SITE_URL>`
-   carry the slug in the `Host` header; the portal extracts it via
-   middleware. The SDK uses this transparently when it's loaded inside a
-   child-app iframe.
-2. **`X-Portal-App: <slug>` header.** Required when calling from outside
-   the app's subdomain — e.g. bearer-token automation hitting the portal
-   directly, or same-origin mode (`CHILD_APPS_SAME_ORIGIN=true`).
+- **Cookie auth (a signed-in user in the portal UI / a child app).** The slug
+  is derived from context, **not** from `X-Portal-App`: the `Host` header on a
+  per-app subdomain (`<slug>.apps.<SITE_URL>`, the default), or the
+  `/apps/<slug>/` path of the request's `Referer`/`Origin` in same-origin mode
+  (`CHILD_APPS_SAME_ORIGIN=true`). The bundled SDK relies on this and does
+  **not** send `X-Portal-App`; any `X-Portal-App` a cookie client sends is
+  ignored (this is a deliberate anti-spoofing measure).
+- **Bearer-token auth (automation hitting the portal directly).** Token
+  clients have no app context, so they **must** send `X-Portal-App: <slug>` to
+  name the app. This is the only branch where the header is honored.
 
-The SDK in subdomain mode does NOT send `X-Portal-App` — the Host header
-already carries it. If you're scripting against `/api/v1/*` directly,
-either target the subdomain or send the header.
+So: if you're scripting against `/api/v1/*` with an API token, send
+`X-Portal-App`. If you're calling as a logged-in user, target the app's
+subdomain (or `/apps/<slug>/` page) instead.
 
 Beyond the resolution: the app must declare each service it calls in its
 `portal.json`'s `services` array. Calls to a service the app didn't
-declare (or that an admin has revoked) return `403 service not enabled
-for this app`.
+declare (or that an admin has revoked) return `403` with a message like
+`App '<slug>' is not authorized to use the '<service>' service. Ask an
+admin to enable it under /admin/apps.`
 
 ## Endpoints
 
@@ -147,9 +152,15 @@ Lists keys in the `(app_slug, user_id)` namespace.
 
 ### `GET /api/v1/storage/{key:path}`
 
-Returns the stored object. Content-Type is the type the object was PUT with.
+Returns the stored object with `Content-Disposition: attachment`. The
+**Content-Type is inferred from the key's file extension** (`mimetypes`
+lookup), **not** from the type the object was PUT with. Keys with no
+recognizable extension come back as `application/octet-stream` — through the
+SDK, `portal.storage.get()` then yields a `Blob` rather than a string or
+parsed JSON. If you need a specific type back, give the key a matching suffix
+(e.g. `notes/today.json`).
 
-**Header**: `X-Portal-App: <slug>`
+**Header**: `X-Portal-App: <slug>` (bearer-token auth only — see above)
 
 ### `PUT /api/v1/storage/{key:path}`
 
@@ -199,6 +210,28 @@ Admin-only programmatic app upload. Used by the Claude skill's `upload.py`.
 - `400 <validation error>` — invalid manifest, slug already exists, path traversal in zip, etc.
 - `403 Admin role required`
 
+### `PUT /api/v1/apps/{slug}`
+
+Admin-only in-place **replace** of an existing app. Used by the Claude skill's
+`upload.py --replace`. The uploaded bundle's manifest slug must match `{slug}`
+in the path (a mismatch is rejected before anything is overwritten), and the
+app's **per-user storage is preserved** across the replace.
+
+**Body**: `multipart/form-data` with a `bundle` field containing the `.zip`.
+
+**Response**:
+
+```json
+{ "slug": "hello-receipt", "name": "Hello Receipt", "version": "0.2.0", "replaced": true }
+```
+
+**Failures**:
+
+- `400 <validation error>` — invalid manifest, manifest slug ≠ path slug, path traversal in zip, etc.
+- `401 Sign in required`
+- `403 Admin role required`
+- `404 App '<slug>' not found` — no existing app with that slug to replace.
+
 ### `POST /api/v1/share/create`
 
 Mint a public, capability-style URL that anyone with the link can hit
@@ -230,13 +263,22 @@ storage; `pdf` renders fresh HTML server-side and stores the result.
 ```
 
 - `ttl_seconds` — link expiry. Default 7 days, max 90 days.
-- `max_views` — view cap. `0` (or omitted) means unlimited within TTL.
+- `max_views` — view cap. `0` (or omitted) means unlimited within TTL. Any
+  positive value is **clamped to 1000** (the effective maximum) before it's
+  stored, so the `max_views` echoed back in the response may be lower than
+  what you requested.
 - `filename` — optional, up to 80 chars; shown as the download filename.
 
 **Response**:
 
 ```json
-{ "url": "https://portal.example.com/s/9XqA…", "expires_at": "2026-06-03T12:00:00Z" }
+{
+  "token": "9XqA…",
+  "url": "https://portal.example.com/s/9XqA…",
+  "expires_at": "2026-06-03T12:00:00Z",
+  "kind": "pdf",
+  "max_views": 0
+}
 ```
 
 The `/s/<token>` URL serves with `Content-Disposition: attachment` and
@@ -248,9 +290,13 @@ page (`/admin/shares`) — there is no per-token `/api/v1` revoke endpoint.
 
 **Failures**:
 
+- `400 kind must be 'storage' or 'pdf'` — unknown `kind`.
+- `400 storage shares require a 'key'` — `kind=storage` without `key`.
+- `400 pdf shares require 'html'` — `kind=pdf` without `html`.
 - `403` — the app isn't authorized for the service this share kind needs
   (`storage` for `kind=storage`, `pdf` for `kind=pdf`).
-- `404` — `kind=storage` references an object that isn't in the creator's namespace.
+- `404 key not found` — `kind=storage` references an object that isn't in the creator's namespace.
+- `500` — `kind=pdf` render failed (WeasyPrint error).
 
 ## JS SDK reference
 

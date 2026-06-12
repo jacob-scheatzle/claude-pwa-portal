@@ -41,7 +41,7 @@ The portal is designed so the apps inside it can be authored by someone who isn'
 - **Public intake forms.** An app can declare no-sign-in forms served on the app's own origin (`<slug>.apps.<SITE_URL>/forms/<form>`); customer submissions collect under **Admin → Submissions** (with CSV export). The inbound complement to share links — push a PDF out, take structured data in.
 - **One-click data export.** A portable, *secret-free* `.zip` of your apps, users, form submissions, schedules, audit log, and per-user storage — open it anywhere, no lock-in (distinct from the full backup, which includes the encrypted database).
 - A **Claude skill** ([`claude-skill/pwa-portal-app/`](claude-skill/pwa-portal-app/)) so a non-developer can ask Claude to build an app and have it scaffolded, packaged, and uploaded automatically.
-- A **reference gallery** at [`examples/`](https://github.com/jacob-scheatzle/claude-pwa-portal/tree/main/examples) — eight drop-in PWAs (work order, invoice generator, quote builder, time tracker, expense logger, mileage log, customer directory) plus a minimal [`hello-receipt`](https://github.com/jacob-scheatzle/claude-pwa-portal/tree/main/examples/hello-receipt) that exercises every SDK service in one file. Each app also declares **MCP tools** Claude can run; the invoice, quote, and work-order apps render itemized line-item PDFs.
+- A **reference gallery** at [`examples/`](https://github.com/jacob-scheatzle/claude-pwa-portal/tree/main/examples) — seven drop-in PWAs (work order, invoice generator, quote builder, time tracker, expense logger, mileage log, customer directory) plus a minimal [`hello-receipt`](https://github.com/jacob-scheatzle/claude-pwa-portal/tree/main/examples/hello-receipt) that exercises every SDK service in one file. Each app also declares **MCP tools** Claude can run; the invoice, quote, and work-order apps render itemized line-item PDFs.
 - **Pre-built container images on GHCR** + a GitHub Actions workflow that builds and publishes on every push to `main`. Deployers don't need to clone the repo.
 - **Drop in configs for Fail2Ban** It is HIGHLY suggested to use Fail2Ban or something similar to block unwanted connections if using on a VPS or standalone machine. If deploying in a cloud environment it is suggested to use the appropriate security groups, network firewalls, etc. 
 ## Quick start
@@ -74,6 +74,10 @@ To upgrade later, run `docker compose pull && docker compose up -d` from the sam
 If you want to build from source (for development or local patches), `git clone` this repo and run `docker compose up --build -d` — the included `docker-compose.override.yml` auto-merges to build locally instead of pulling.
 
 See [docs/deploying.md](docs/deploying.md) for the full guide: wildcard DNS setup for per-app origin isolation, Caddy auto-HTTPS, domains vs sslip.io, SMTP, backups, hardening checklist, and troubleshooting.
+
+### Deploying to AWS
+
+For a cloud-native deployment, [`aws/`](aws/) ships Terraform that runs the **same image** on **ECS Fargate** behind an **ALB + CloudFront**, with **RDS PostgreSQL**, **S3** object storage, and **WAF**. The DB and blob store are swapped in at runtime via `DATABASE_URL` and `STORAGE_BACKEND=s3` (the `[aws]` extra adds `psycopg` + `boto3`); Caddy runs as an HTTP-only sidecar. See [aws/README.md](aws/README.md) and the AWS notes in [docs/deploying.md](docs/deploying.md).
 
 ## Building apps for it
 
@@ -123,6 +127,10 @@ See [docs/app-authoring.md](docs/app-authoring.md) for the full `portal.json` sc
 
 ## Project layout
 
+Selected files (not exhaustive — see [CLAUDE.md](CLAUDE.md) for the full
+module map, including `access.py`, `audit.py`, `branding.py`, `forms.py`,
+`health.py`, `scheduler.py`, `shares.py`):
+
 ```
 portal/                  FastAPI portal app
   main.py                  App factory, lifespan, auth routes, /profile, login rate limit
@@ -132,6 +140,7 @@ portal/                  FastAPI portal app
                              subdomain paths)
   admin.py                 /admin/{settings,tokens,users}
   mcp_server.py            /mcp MCP server — app management + each app's declared tools (optional)
+  oauth.py                 OAuth 2.1 AS for the /mcp connector (claude.ai can't use static tokens)
   app_tools.py             Executor for app-declared tools (template → PDF → share/email/store)
   middleware.py            HostDispatchMiddleware — sets request.state.app_slug from Host
   models.py                SQLModel tables: User, Setting, App, ApiToken, UserSession,
@@ -139,6 +148,7 @@ portal/                  FastAPI portal app
   sessions.py              Server-side session helpers + AppSession lifecycle
   smtp.py                  SMTP send helper (used by /email/send + admin test)
   settings_store.py        Setting key/value helpers + Fernet-encrypted secrets
+  storage_backend.py       Pluggable blob store: LocalStorageBackend (data_dir) | S3StorageBackend
   security.py              bcrypt, password validation, csrf_token + check_csrf
   deps.py                  FastAPI deps: current_user, current_user_or_token, require_admin
   config.py                Pydantic Settings (env)

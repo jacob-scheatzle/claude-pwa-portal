@@ -137,13 +137,15 @@ Caddy will fetch a Let's Encrypt cert for each subdomain on first access using H
 
 > ### ⚠️ sslip.io's Let's Encrypt rate limit
 >
-> Let's Encrypt enforces a **250,000 certificates per registered domain
-> per 168 hours** rate limit. For `sslip.io`, the "registered domain" is
-> `sslip.io` itself — **shared across every user of the service**. When
-> the global pool is exhausted, Caddy can't get new certs for any
-> `*.sslip.io` subdomain, and child-app subdomains fail to load with a
-> browser "the content is blocked" / "your connection is not secure"
-> error. You'll see this in the `caddy-1` logs as:
+> Let's Encrypt enforces a **"certificates per registered domain"** rate
+> limit (a fixed number of certs per registered domain per rolling window;
+> see [Let's Encrypt's current rate-limit docs](https://letsencrypt.org/docs/rate-limits/)
+> for the exact figures, which change over time). For `sslip.io`, the
+> "registered domain" is `sslip.io` itself — **shared across every user of
+> the service**. When the global pool is exhausted, Caddy can't get new
+> certs for any `*.sslip.io` subdomain, and child-app subdomains fail to
+> load with a browser "the content is blocked" / "your connection is not
+> secure" error. You'll see this in the `caddy-1` logs as something like:
 >
 > ```
 > HTTP 429 urn:ietf:params:acme:error:rateLimited — too many certificates
@@ -539,4 +541,4 @@ Run through these before you point real users at the portal:
 - [ ] Set Docker `userland-proxy: false` (see the [fail2ban section](#optional-fail2ban)) so Caddy — and therefore the login throttle and fail2ban log — see real client IPs. Client-supplied `X-Forwarded-For` is already ignored by default (the image trusts only private-range proxy hops), but without `userland-proxy: false` every request still logs the bridge gateway.
 - [ ] Don't share the host with untrusted users — the SQLite DB on disk contains SMTP credentials (encrypted, but the decryption key lives next to it in `.env`).
 - [ ] The Dockerfile now runs as UID 1001. The `data/` directory on the host must be writable by that uid; if you see permission errors after first boot, run `chown -R 1001:1001 data/` on the host and `docker compose restart portal`.
-- [ ] *(Optional, further hardening)* Try `read_only: true` on the portal service in `docker-compose.yml`. The container already gets `tmpfs: [/tmp]` for scratch space; `/data` stays writable via the bind mount. Test thoroughly before relying on it — some libraries write outside the expected paths.
+- [ ] `read_only: true` is **already the default** for both the `portal` and `caddy` services in `docker-compose.yml` — the root filesystem is locked, with `tmpfs: [/tmp]` for scratch and the `./data` bind mount (plus Caddy's volumes) writable. Leave it on; relax it only if you've added code that writes outside `/tmp` or the mounted volumes, and test thoroughly before doing so.
