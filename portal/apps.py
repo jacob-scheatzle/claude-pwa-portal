@@ -19,6 +19,7 @@ from fastapi.responses import FileResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 from sqlalchemy import delete
 from sqlmodel import Session, select
+from starlette.background import BackgroundTask
 
 from portal.access import (
     delete_access_for_app,
@@ -638,6 +639,47 @@ def _extract_into(tmp_path: Path, dest: Path) -> None:
     _safe_extract(tmp_path, dest)
 
 
+def _build_bundle_zip(slug: str, version: str) -> tuple[Optional[Path], Optional[Path]]:
+    """Re-zip an installed app's files into a downloadable bundle.
+
+    Blocking (run via ``to_thread``). The original uploaded ``.zip`` is never
+    retained — only the extracted tree under ``apps/<slug>/`` survives — so the
+    download is rebuilt from storage on demand. This is backend-agnostic (works
+    for both the local and S3 stores) and always reflects what is actually
+    installed. Returns ``(zip_path, tmp_dir)``; the caller schedules
+    ``shutil.rmtree(tmp_dir)`` once the response has streamed. Returns
+    ``(None, None)`` when no bundle files exist for the slug.
+
+    Each blob is read individually, so peak memory is one file — the validated
+    bundle is capped at ``MAX_UNCOMPRESSED_BYTES`` / ``MAX_FILES`` at upload.
+    """
+    storage = get_storage()
+    prefix = f"apps/{slug}"
+    objects = storage.list(prefix)
+    if not objects:
+        return None, None
+    base = prefix + "/"
+    tmp_dir = Path(tempfile.mkdtemp(prefix="portal-bundle-"))
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", f"{slug}-{version}").strip("-") or slug
+    zip_path = tmp_dir / f"{safe}.zip"
+    try:
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for obj in objects:
+                arcname = obj.key[len(base):] if obj.key.startswith(base) else obj.key
+                if not arcname:
+                    continue
+                data = storage.read_or_none(obj.key)
+                if data is None:
+                    # A blob vanished between list and read (concurrent
+                    # replace/delete) — skip it rather than abort the archive.
+                    continue
+                zf.writestr(arcname, data)
+        return zip_path, tmp_dir
+    except BaseException:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise
+
+
 # ----- Deps -----
 
 DbDep = Annotated[Session, Depends(get_db)]
@@ -645,6 +687,18 @@ UserDep = Annotated[Optional[User], Depends(current_user)]
 TokenUserDep = Annotated[Optional[User], Depends(current_user_or_token)]
 AdminDep = Annotated[User, Depends(require_admin)]
 RequireUserDep = Annotated[User, Depends(require_user)]
+
+
+def _apps_redirect(slug: Optional[str] = None) -> RedirectResponse:
+    """303 back to the apps admin list.
+
+    When ``slug`` is given, the redirect carries an ``#app-<slug>`` fragment so
+    the browser lands back on that row instead of snapping to the top of the
+    page after a per-row action (replace, toggle, reorder, services, network).
+    Slugs match ``SLUG_RE`` so they're safe to drop into a URL fragment / id.
+    """
+    target = f"/admin/apps#app-{slug}" if slug else "/admin/apps"
+    return RedirectResponse(target, status_code=303)
 
 
 # ----- Admin routes -----
@@ -863,6 +917,62 @@ async def install_bundle_from_path(
             shutil.rmtree(extract_dir, ignore_errors=True)
 
 
+# ----- Pending-upload stash (upload-area "is this an update?" flow) -----
+#
+# When an admin uploads a bundle through the apps page whose slug already
+# exists, we don't hard-error any more — we stash the already-streamed,
+# already-validated zip and show a confirmation page ("update the existing
+# app?"). Confirming installs it as a replace. Stashing avoids forcing the
+# admin to re-pick the file on the second step (a file input can't be
+# pre-filled). The portal runs single-process (single uvicorn / single ECS
+# task — the scheduler and rate limiters already rely on this), so an
+# in-memory map keyed by an unguessable token is safe; pending uploads are
+# ephemeral and simply lost on restart (the admin re-uploads). The temp file
+# lives on local scratch disk, same as a normal in-flight upload.
+
+@dataclass
+class _PendingUpload:
+    tmp_path: Path
+    slug: str
+    name: str
+    new_version: str
+    existing_name: str
+    existing_version: str
+    created_at: datetime
+
+
+_PENDING_UPLOADS: dict[str, _PendingUpload] = {}
+_PENDING_UPLOAD_TTL = timedelta(minutes=30)
+
+
+def _prune_pending_uploads() -> None:
+    """Drop expired stashed uploads and remove their temp files.
+
+    Called opportunistically on the upload routes so an abandoned confirm
+    (admin navigates away without choosing) can't leak temp files forever.
+    """
+    now = datetime.now(timezone.utc)
+    for token, pending in list(_PENDING_UPLOADS.items()):
+        if now - pending.created_at > _PENDING_UPLOAD_TTL:
+            _PENDING_UPLOADS.pop(token, None)
+            try:
+                os.unlink(pending.tmp_path)
+            except OSError:
+                pass
+
+
+def _discard_pending(token: Optional[str]) -> None:
+    """Drop one stashed upload by token and remove its temp file (no-op if absent)."""
+    if not token:
+        return
+    pending = _PENDING_UPLOADS.pop(token, None)
+    if pending is not None:
+        try:
+            os.unlink(pending.tmp_path)
+        except OSError:
+            pass
+
+
 @router.post("/admin/apps/upload")
 async def admin_apps_upload(
     request: Request,
@@ -872,8 +982,62 @@ async def admin_apps_upload(
     csrf: str = Form(default="", alias="_csrf"),
 ):
     check_csrf(request, csrf)
+    _prune_pending_uploads()
+
+    if not bundle.filename or not bundle.filename.lower().endswith(".zip"):
+        return render(
+            request, "admin_apps_upload.html",
+            user=admin, error="Please upload a .zip file.", status_code=400,
+        )
+
+    # Stream + validate up front so we can read the manifest's slug and decide
+    # between a fresh install and an "is this an update?" prompt before touching
+    # the filesystem or DB. ``tmp_path`` stays None if streaming itself failed
+    # (``_stream_to_temp`` cleans up its own partial in that case).
+    tmp_path: Optional[Path] = None
     try:
-        result = await install_bundle(db, admin, bundle)
+        tmp_path = await _stream_to_temp(bundle, MAX_ZIP_BYTES)
+        manifest = await anyio.to_thread.run_sync(_prepare_bundle, tmp_path)
+    except UploadError as e:
+        if tmp_path is not None:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+        return render(
+            request, "admin_apps_upload.html",
+            user=admin, error=str(e), status_code=400,
+        )
+
+    existing = db.exec(select(App).where(App.slug == manifest.slug)).first()
+    if existing is not None:
+        # Slug collision → offer an update instead of erroring. Stash the
+        # validated zip; the confirm route reuses it so the file isn't re-picked.
+        # Drop any earlier stash from this admin's session first, so repeated or
+        # abandoned collision uploads can't pile up temp files (bounded to one
+        # per session).
+        _discard_pending(request.session.get("pending_upload"))
+        token = secrets.token_urlsafe(24)
+        _PENDING_UPLOADS[token] = _PendingUpload(
+            tmp_path=tmp_path,
+            slug=manifest.slug,
+            name=manifest.name,
+            new_version=manifest.version,
+            existing_name=existing.name,
+            existing_version=existing.version,
+            created_at=datetime.now(timezone.utc),
+        )
+        # Post/Redirect/Get: stash the token in the (signed) session and redirect
+        # to a GET confirm page so a browser Reload re-fetches that page instead
+        # of re-POSTing — and re-streaming — the whole upload. Keeping the token
+        # in the session rather than the URL keeps it out of logs / history.
+        request.session["pending_upload"] = token
+        return RedirectResponse("/admin/apps/upload/confirm", status_code=303)
+
+    # Fresh install: hand the validated temp file to the core, which extracts,
+    # registers, and unlinks ``tmp_path`` (success or failure).
+    try:
+        result = await install_bundle_from_path(db, admin, tmp_path)
     except UploadError as e:
         return render(
             request, "admin_apps_upload.html",
@@ -885,7 +1049,94 @@ async def admin_apps_upload(
         details={"name": result.name, "version": result.version},
     )
     flash(request, f"Uploaded ‘{result.name}’ (slug: {result.slug})")
-    return RedirectResponse("/admin/apps", status_code=303)
+    return _apps_redirect(result.slug)
+
+
+@router.get("/admin/apps/upload/confirm")
+def admin_apps_upload_confirm_form(request: Request, admin: AdminDep):
+    """Render the 'is this an update?' page for the session's stashed upload.
+
+    Reached via the PRG redirect from a colliding upload; safe to reload.
+    """
+    _prune_pending_uploads()
+    token = request.session.get("pending_upload")
+    pending = _PENDING_UPLOADS.get(token) if token else None
+    if pending is None:
+        request.session.pop("pending_upload", None)
+        flash(
+            request,
+            "That upload is no longer available — please choose the file again.",
+            "error",
+        )
+        return RedirectResponse("/admin/apps/upload", status_code=303)
+    return render(
+        request, "admin_apps_update_confirm.html",
+        user=admin,
+        token=token,
+        slug=pending.slug,
+        new_name=pending.name,
+        new_version=pending.new_version,
+        existing_name=pending.existing_name,
+        existing_version=pending.existing_version,
+    )
+
+
+@router.post("/admin/apps/upload/confirm")
+async def admin_apps_upload_confirm(
+    request: Request,
+    db: DbDep,
+    admin: AdminDep,
+    token: str = Form(default=""),
+    csrf: str = Form(default="", alias="_csrf"),
+):
+    """Apply a stashed colliding upload as an in-place update."""
+    check_csrf(request, csrf)
+    _prune_pending_uploads()
+    # The confirm form carries the token; fall back to the session copy.
+    token = token or request.session.get("pending_upload", "")
+    request.session.pop("pending_upload", None)
+    pending = _PENDING_UPLOADS.pop(token, None)
+    if pending is None:
+        flash(
+            request,
+            "That upload is no longer available — please choose the file again.",
+            "error",
+        )
+        return RedirectResponse("/admin/apps/upload", status_code=303)
+    try:
+        # install_bundle_from_path unlinks pending.tmp_path in its finally.
+        result = await install_bundle_from_path(
+            db, admin, pending.tmp_path,
+            allow_replace=True, expected_slug=pending.slug,
+        )
+    except UploadError as e:
+        return render(
+            request, "admin_apps_upload.html",
+            user=admin, error=str(e), status_code=400,
+        )
+    record_event(
+        db, actor=admin, action="app.replace", request=request,
+        target=f"app:{result.slug}",
+        details={"name": result.name, "version": result.version, "via": "upload_update"},
+    )
+    flash(request, f"Updated ‘{result.name}’ to v{result.version} (slug: {result.slug})")
+    return _apps_redirect(result.slug)
+
+
+@router.post("/admin/apps/upload/cancel")
+def admin_apps_upload_cancel(
+    request: Request,
+    db: DbDep,
+    admin: AdminDep,
+    token: str = Form(default=""),
+    csrf: str = Form(default="", alias="_csrf"),
+):
+    """Discard a stashed colliding upload and its temp file."""
+    check_csrf(request, csrf)
+    token = token or request.session.get("pending_upload", "")
+    request.session.pop("pending_upload", None)
+    _discard_pending(token)
+    return RedirectResponse("/admin/apps/upload", status_code=303)
 
 
 @router.post("/admin/apps/{slug}/replace")
@@ -906,9 +1157,15 @@ async def admin_apps_replace(
             db, admin, bundle, allow_replace=True, expected_slug=slug,
         )
     except UploadError as e:
+        # Re-render the list with the error inline in this row's replace panel
+        # (and the panel reopened) instead of bouncing to the standalone upload
+        # page — the admin stays in context next to the app they were updating.
+        apps = db.exec(select(App).order_by(App.display_order, App.name)).all()
         return render(
-            request, "admin_apps_upload.html",
-            user=admin, error=str(e), status_code=400,
+            request, "admin_apps.html",
+            user=admin, apps=apps,
+            replace_error_slug=slug, replace_error=str(e),
+            status_code=400,
         )
     record_event(
         db, actor=admin, action="app.replace", request=request,
@@ -916,7 +1173,50 @@ async def admin_apps_replace(
         details={"name": result.name, "version": result.version, "via": "admin_ui"},
     )
     flash(request, f"Replaced ‘{result.name}’ (slug: {result.slug})")
-    return RedirectResponse("/admin/apps", status_code=303)
+    return _apps_redirect(result.slug)
+
+
+@router.post("/admin/apps/{slug}/download")
+async def admin_apps_download(
+    slug: str,
+    request: Request,
+    db: DbDep,
+    admin: AdminDep,
+    csrf: str = Form(default="", alias="_csrf"),
+):
+    """Download an installed app's bundle as a ``.zip``.
+
+    Rebuilt on demand from the extracted tree in storage (the original upload
+    isn't retained), so the archive always matches what's currently installed
+    and re-installs cleanly via the upload/replace flow.
+
+    A POST (not GET) so it's CSRF-gated like every other per-row action — the
+    handler does real work (deflates the whole bundle) and writes an audit row,
+    which a cross-site prefetch of a GET could otherwise trigger.
+    """
+    check_csrf(request, csrf)
+    app_row = db.exec(select(App).where(App.slug == slug)).first()
+    if app_row is None:
+        raise HTTPException(404)
+    # Build off the event loop — reads every blob and deflates into a temp zip.
+    zip_path, tmp_dir = await anyio.to_thread.run_sync(
+        _build_bundle_zip, app_row.slug, app_row.version
+    )
+    if zip_path is None:
+        raise HTTPException(404, "No bundle files on disk for this app.")
+    record_event(
+        db, actor=admin, action="app.download", request=request,
+        target=f"app:{app_row.slug}",
+        details={"version": app_row.version},
+    )
+    # The cleanup runs after the file finishes streaming to the client.
+    cleanup = BackgroundTask(shutil.rmtree, str(tmp_dir), ignore_errors=True)
+    return FileResponse(
+        zip_path,
+        media_type="application/zip",
+        filename=zip_path.name,
+        background=cleanup,
+    )
 
 
 @router.put("/api/v1/apps/{slug}")
@@ -1033,7 +1333,7 @@ def admin_apps_network_update(
         details={"allowed": new_allowed},
     )
     flash(request, f"Network access updated for {app_row.name}.")
-    return RedirectResponse("/admin/apps", status_code=303)
+    return _apps_redirect(app_row.slug)
 
 
 @router.post("/admin/apps/{slug}/services")
@@ -1077,7 +1377,7 @@ def admin_apps_services_update(
         details={"allowed_services": final},
     )
     flash(request, f"Service access updated for {app_row.name}.")
-    return RedirectResponse("/admin/apps", status_code=303)
+    return _apps_redirect(app_row.slug)
 
 
 @router.post("/admin/apps/{slug}/move")
@@ -1113,7 +1413,7 @@ def admin_apps_move(
 
     target_idx = idx - 1 if direction == "up" else idx + 1
     if target_idx < 0 or target_idx >= len(apps):
-        return RedirectResponse("/admin/apps", status_code=303)
+        return _apps_redirect(slug)
 
     apps[idx], apps[target_idx] = apps[target_idx], apps[idx]
     for i, app in enumerate(apps):
@@ -1125,7 +1425,7 @@ def admin_apps_move(
         target=f"app:{slug}",
         details={"direction": direction},
     )
-    return RedirectResponse("/admin/apps", status_code=303)
+    return _apps_redirect(slug)
 
 
 @router.post("/admin/apps/{slug}/toggle")
@@ -1156,7 +1456,7 @@ def admin_apps_toggle(
         details={"enabled": bool(app_row.enabled)},
     )
     flash(request, f"{app_row.name} {state}")
-    return RedirectResponse("/admin/apps", status_code=303)
+    return _apps_redirect(app_row.slug)
 
 
 @router.post("/admin/apps/{slug}/delete")

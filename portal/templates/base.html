@@ -727,6 +727,11 @@
 			vertical-align: top;
 		}
 		table.apps tr:last-child td { border-bottom: 0; }
+		/* A row whose inline Replace panel is showing a validation error — a
+		   subtle danger tint so the reopened panel is easy to spot after the
+		   page reloads with the error. */
+		table.apps tbody tr.row-error td { background: var(--danger-tint); }
+		.action-chip-panel .replace-error { margin-bottom: 0.6rem; }
 		table.apps th {
 			font-size: 0.7rem;
 			text-transform: uppercase;
@@ -1404,6 +1409,45 @@
 					nav.classList.remove("open");
 					toggle.setAttribute("aria-expanded", "false");
 				}
+			});
+		})();
+
+		// Close disclosure menus on an outside click or Escape. A native
+		// <details> only closes when you re-click its own summary, which feels
+		// broken for menu-like popouts — the admin nav dropdown and the per-row
+		// action chips (Services / Network / Replace) otherwise stay open until
+		// their summary is clicked again. Any click outside an open menu (or
+		// pressing Escape) now closes it.
+		(function () {
+			function openMenus() {
+				return Array.prototype.filter.call(
+					document.querySelectorAll("details[open]"),
+					function (d) {
+						if (d.classList.contains("nav-menu")) return true;
+						var s = d.querySelector("summary");
+						return !!(s && s.classList.contains("action-chip"));
+					}
+				);
+			}
+			document.addEventListener("click", function (e) {
+				openMenus().forEach(function (d) {
+					// Leave the menu the click landed inside alone — including
+					// the summary mid-toggle, so opening still works.
+					if (!d.contains(e.target)) d.open = false;
+				});
+			});
+			document.addEventListener("keydown", function (e) {
+				if (e.key !== "Escape") return;
+				openMenus().forEach(function (d) {
+					var focusInside = d.contains(document.activeElement);
+					d.open = false;
+					// Return focus to the trigger so keyboard users aren't
+					// stranded on a now-hidden control.
+					if (focusInside) {
+						var s = d.querySelector("summary");
+						if (s) s.focus();
+					}
+				});
 			});
 		})();
 	</script>

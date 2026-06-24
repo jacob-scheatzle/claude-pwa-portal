@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Update app? — Portal admin{% endblock %}
+{% block content %}
+<h1>Update “{{ existing_name }}”?</h1>
+
+<p>An app with the slug <code>{{ slug }}</code> is already installed
+	(currently <strong>v{{ existing_version }}</strong>). The bundle you just
+	uploaded is <strong>v{{ new_version }}</strong>{% if new_name != existing_name %},
+	named “{{ new_name }}”{% endif %}.</p>
+
+<p class="hint">Updating replaces the app's files in place. Its slug and all
+	per-user data are kept, and any services or network origins you previously
+	revoked stay revoked. This is the same as using the row's
+	<em>Replace / update</em> action.</p>
+
+<div style="display:flex; gap:0.6rem; flex-wrap:wrap; align-items:center; margin-top:1.5rem;">
+	<form method="post" action="/admin/apps/upload/confirm" style="margin:0;">
+		<input type="hidden" name="_csrf" value="{{ csrf_token }}">
+		<input type="hidden" name="token" value="{{ token }}">
+		<button type="submit">Yes, update to v{{ new_version }}</button>
+	</form>
+	<form method="post" action="/admin/apps/upload/cancel" style="margin:0;">
+		<input type="hidden" name="_csrf" value="{{ csrf_token }}">
+		<input type="hidden" name="token" value="{{ token }}">
+		<button type="submit" class="secondary">Cancel</button>
+	</form>
+</div>
+
+<p style="margin-top:2rem;"><a href="/admin/apps" class="nav-link">&larr; Back to apps</a></p>
+{% endblock %}

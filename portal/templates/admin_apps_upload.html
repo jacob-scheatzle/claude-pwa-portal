@@ -3,6 +3,7 @@
 {% block content %}
 <h1>Upload an app</h1>
 <p>Drop in a <code>.zip</code> with a <code>portal.json</code> at the root. Max 50&nbsp;MB.</p>
+<p class="hint">If an app with the same <code>slug</code> already exists, you'll be asked whether to update it in place — no need to delete the old one first.</p>
 
 {% if error %}
 <div class="error">{{ error }}</div>

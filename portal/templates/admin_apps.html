@@ -21,8 +21,9 @@
 		</tr>
 	</thead>
 	<tbody>
+		{% set err_slug = replace_error_slug|default('') %}
 		{% for app in apps %}
-		<tr>
+		<tr id="app-{{ app.slug }}"{% if err_slug == app.slug %} class="row-error"{% endif %}>
 			<td data-label="Order" class="reorder-cell">
 				<form method="post" action="/admin/apps/{{ app.slug }}/move" style="display:inline;">
 					<input type="hidden" name="_csrf" value="{{ csrf_token }}">
@@ -49,6 +50,11 @@
 			</td>
 			<td class="actions">
 				<a class="action-chip" href="/apps/{{ app.slug }}/" target="_blank">Open</a>
+				<form method="post" action="/admin/apps/{{ app.slug }}/download" style="display:inline;">
+					<input type="hidden" name="_csrf" value="{{ csrf_token }}">
+					<button class="action-chip" type="submit"
+						title="Download this app's bundle as a .zip">Download</button>
+				</form>
 				<form method="post" action="/admin/apps/{{ app.slug }}/toggle" style="display:inline;">
 					<input type="hidden" name="_csrf" value="{{ csrf_token }}">
 					<button class="action-chip" type="submit">{{ 'Disable' if app.enabled else 'Enable' }}</button>
@@ -112,14 +118,18 @@
 						</form>
 					</div>
 				</details>
-				<details style="display:inline-block;">
+				<details class="replace-details" style="display:inline-block;"{% if err_slug == app.slug %} open{% endif %}>
 					<summary class="action-chip">Replace / update</summary>
 					<div class="action-chip-panel">
+						{% if err_slug == app.slug %}
+						<div class="error replace-error">{{ replace_error }}</div>
+						{% endif %}
 						<form method="post" action="/admin/apps/{{ app.slug }}/replace"
 							enctype="multipart/form-data">
 							<input type="hidden" name="_csrf" value="{{ csrf_token }}">
+							<p class="hint" style="margin:0 0 0.15rem;">Currently <strong>v{{ app.version }}</strong>. Pick a new <code>.zip</code> to install in its place.</p>
 							<input type="file" name="bundle" accept=".zip" required>
-							<div class="hint">Uploads a new <code>.zip</code> in-place. Per-user storage under <code>data/storage/{{ app.slug }}/</code> and the app's slug are preserved; manifest <code>slug</code> must match <code>{{ app.slug }}</code>.</div>
+							<div class="hint">Per-user data and the <code>{{ app.slug }}</code> slug are kept; the new bundle's manifest <code>slug</code> must be <code>{{ app.slug }}</code>.</div>
 							<button type="submit" style="align-self:flex-start;">Upload new bundle</button>
 						</form>
 					</div>
@@ -140,4 +150,22 @@
 	<p><a href="/admin/apps/upload">Upload your first app</a>.</p>
 </div>
 {% endif %}
+
+<script>
+	// After a per-row action redirects back with an #app-<slug> fragment, the
+	// browser already jumps to the row; re-center it so it isn't tucked under
+	// the sticky topbar. A failed Replace re-renders this page (no fragment)
+	// with the panel reopened and an inline error — scroll that into view too.
+	(function () {
+		function center(el) {
+			if (el && el.scrollIntoView) el.scrollIntoView({ block: "center" });
+		}
+		var err = document.querySelector(".row-error");
+		if (err) { center(err); return; }
+		var hash = window.location.hash;
+		if (hash && hash.indexOf("#app-") === 0) {
+			try { center(document.querySelector(hash)); } catch (_) { /* bad selector */ }
+		}
+	})();
+</script>
 {% endblock %}
