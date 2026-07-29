@@ -59,6 +59,25 @@ ENV HOME=/tmp
 ENV ALEMBIC_DIR=/build/alembic
 ENV ALEMBIC_INI=/build/alembic.ini
 EXPOSE 8000
+# Container healthcheck. ``/health`` is a plain 200 that touches no database,
+# but it only starts answering AFTER the lifespan startup hook has finished —
+# and that hook runs ``alembic upgrade head`` (portal/db.py init_db). So
+# "healthy" means precisely "migrations are done and uvicorn is serving",
+# which is exactly what a front proxy wants to gate on.
+#
+# urllib rather than curl/wget: the python:3.12-slim base ships neither, and
+# installing one just for this would grow the image and its CVE surface for no
+# gain. The check runs as the unprivileged ``portal`` user against the
+# container's own port, so it needs no writable path and works under
+# ``read_only: true``.
+#
+# --start-period gives a slow first-boot migration room without counting
+# failures against --retries; --start-interval polls every 2s inside that
+# window so a proxy gated on ``condition: service_healthy`` starts promptly
+# instead of waiting out a full 30s interval. --start-interval needs Docker
+# Engine 25.0+ (Jan 2024) both to build and to honor at runtime.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --start-interval=2s --retries=3 \
+	CMD ["python", "-c", "import urllib.request, sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).status == 200 else 1)"]
 # --proxy-headers makes uvicorn honor X-Forwarded-For/Proto from Caddy, which
 # sits on the Docker bridge in front of us. --forwarded-allow-ips lists the proxy
 # hops uvicorn trusts: the default is the RFC1918 private ranges, so it trusts
