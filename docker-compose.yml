@@ -99,19 +99,21 @@ services:
       driver: journald
       options:
         tag: pwa-portal-caddy
-    # Wait for the portal to pass its healthcheck (see the HEALTHCHECK in
-    # Dockerfile) before starting, so Caddy never comes up in front of a
-    # backend that's still running migrations. Paired with the Caddyfile's
-    # `lb_try_duration`, which covers the *later* case of the portal being
-    # restarted underneath a running Caddy.
+    # Ordering only — deliberately NOT `condition: service_healthy`, even
+    # though the portal now has a HEALTHCHECK (see Dockerfile). Gating Caddy
+    # on the backend's health means a portal that never goes healthy keeps
+    # the proxy down entirely, and a Caddy that isn't running also isn't
+    # answering ACME challenges — so a bad deploy could quietly cost you the
+    # certificate on top of the outage.
     #
-    # Trade-off worth knowing: if the portal never becomes healthy, Caddy
-    # never starts, so this turns a partial outage into a total one. The
-    # escape hatch is `docker compose up -d --no-deps caddy`, which skips the
-    # gate — useful when you need the proxy up to debug the backend.
+    # The startup race that gate would have closed is already covered from
+    # the other side: the Caddyfile's `lb_try_duration` retries a failed dial
+    # for 15s, which spans the window where the portal container is up but
+    # uvicorn hasn't bound yet because migrations are still running. The
+    # healthcheck is for visibility — `docker compose ps` and `docker events`
+    # tell you the real state without being load-bearing.
     depends_on:
-      portal:
-        condition: service_healthy
+      - portal
     restart: unless-stopped
 
 volumes:
