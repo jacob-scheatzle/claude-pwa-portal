@@ -28,7 +28,19 @@ dependencies = [
 # image stay lean; install with `pip install 'pwa-portal[mcp]'` or build the
 # image with --build-arg INSTALL_MCP=true. Also requires MCP_ENABLED=true at
 # runtime.
-mcp = ["mcp>=1.27"]
+# The <2 ceiling is load-bearing, not tidiness. mcp 2.0.0 removed the
+# low-level decorator API this portal is built on: `Server.list_tools` and
+# `Server.call_tool` are simply gone (mcp_server.py:1115 and the handlers
+# below it). Because `build_mcp_app()` is called at import time from
+# main.py, that's not a degraded /mcp endpoint — uvicorn raises
+# AttributeError before it can bind, and the container crash-loops.
+#
+# This bit us for real: the image is built from unpinned ranges, so a
+# rebuild five weeks after the previous one silently resolved 1.x -> 2.0.0
+# and took the portal down on the next `docker compose pull`. Nothing in the
+# application had changed. Raise the ceiling only alongside a port of
+# mcp_server.py to whatever 2.x replaced the decorators with.
+mcp = ["mcp>=1.27,<2"]
 
 # Opt-in: the AWS deployment backends — PostgreSQL (RDS) via psycopg and S3
 # object storage via boto3. Kept out of the base deps so the default install
