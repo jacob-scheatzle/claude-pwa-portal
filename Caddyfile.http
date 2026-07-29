@@ -24,8 +24,42 @@
 #     the browser sees the portal at HTTP (local-testing) or HTTPS
 #     (behind-LB) — only one matches the real document URL at runtime.
 
+# ─── Shared edge hardening ───
+#
+# Identical to the ``(scanner_404)`` snippet in the default Caddyfile; see
+# there for the full rationale. Kept in sync by hand — the two files are
+# never loaded together, so this can't be a shared include.
+#
+# One difference worth naming: there's no ACME here (automatic HTTPS is off
+# under HTTP_ONLY), so ``/.well-known/acme-challenge/*`` isn't in play. The
+# exclusion stays anyway, because the portal's own OAuth metadata routes
+# (``/.well-known/oauth-authorization-server``,
+# ``/.well-known/oauth-protected-resource/*``, from portal/oauth.py) live
+# under the same prefix and the MCP connector needs them — and because a
+# deployment behind a TLS-terminating LB may still forward challenges here.
+(scanner_404) {
+	@scanner_ext path_regexp (?i)\.(php|phtml|asp|aspx|jsp|cgi)$
+	respond @scanner_ext 404
+
+	@scanner_prefix path /wp-* /cgi-bin/* /phpinfo* /phpmyadmin* /_profiler*
+	respond @scanner_prefix 404
+
+	@dotpaths {
+		path_regexp dotseg /\.
+		not path_regexp wellknown /\.well-known/
+	}
+	respond @dotpaths 404
+}
+
 http://{$SITE_URL:localhost} {
-	reverse_proxy {$PORTAL_UPSTREAM:portal:8000}
+	import scanner_404
+
+	# Retry a failed dial for 15s instead of 502ing while the portal runs
+	# its startup migrations. See the default Caddyfile for the full note.
+	reverse_proxy {$PORTAL_UPSTREAM:portal:8000} {
+		lb_try_duration 15s
+		lb_try_interval 500ms
+	}
 
 	encode zstd gzip
 
@@ -71,7 +105,12 @@ http://{$SITE_URL:localhost} {
 # ``<slug>.apps.<SITE_URL>`` to a per-app origin, and AppSession cookies
 # stay scoped to the subdomain.
 http://*.apps.{$SITE_URL} {
-	reverse_proxy {$PORTAL_UPSTREAM:portal:8000}
+	import scanner_404
+
+	reverse_proxy {$PORTAL_UPSTREAM:portal:8000} {
+		lb_try_duration 15s
+		lb_try_interval 500ms
+	}
 
 	encode zstd gzip
 

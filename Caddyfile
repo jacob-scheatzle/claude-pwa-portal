@@ -10,8 +10,80 @@
 	}
 }
 
+# ─── Shared edge hardening, imported into every site block below ───
+#
+# Two named matchers plus ``respond 404``. Probes for paths this stack can
+# never legitimately serve die here instead of costing a uvicorn worker —
+# and, more to the point, an unauthenticated prober learns nothing from the
+# response about which app slugs exist.
+#
+# Where the ``import`` sits inside a site block doesn't matter: ``respond``
+# sorts ahead of ``reverse_proxy`` in Caddy's directive order, so these
+# always run first. ``header`` sorts ahead of both, so the 404s still carry
+# the security headers set further down.
+#
+# @scanner_ext / @scanner_prefix — PHP, WordPress and CGI probes. The split
+# is not cosmetic. Caddy's ``path`` matcher only treats a TRAILING ``*`` as
+# a cross-segment prefix match; anything else falls through to Go's
+# ``path.Match``, where ``*`` stops at ``/``. So ``path /wp-*`` does catch
+# ``/wp-admin/setup-config.php``, but ``path /*.php`` does NOT catch
+# ``/vendor/phpunit/…/eval-stdin.php`` — the single most-probed URL on the
+# internet. Extension matching therefore has to be ``path_regexp``. Verified
+# against a live Caddy; please don't "simplify" it back to a path matcher.
+#
+# Deliberately NO bare ``/vendor/*``: an uploaded child-app bundle can
+# legitimately ship a ``vendor/`` directory of third-party JS, and every
+# Composer probe worth blocking ends in ``.php`` anyway.
+#
+# @dotpaths — any URI with a dot-prefixed segment at any depth: /.git/,
+# /.env, /.aws/credentials, /.ssh/id_rsa, /apps/<slug>/.git/config. Same
+# reason for the regexp: a path matcher can't express "at any depth".
+# Matching runs on the decoded path, so ``/%2egit/config`` is caught too.
+#
+# The .well-known exclusion is LOAD-BEARING — do not simplify it away:
+#   - ``/.well-known/acme-challenge/*`` is the HTTP-01 renewal path. Caddy
+#     answers it above the site routes today, but the exclusion keeps
+#     renewals working regardless of that internal ordering; lose it and
+#     the certificate silently stops renewing and expires ~60 days later.
+#   - ``/.well-known/oauth-authorization-server`` and
+#     ``/.well-known/oauth-protected-resource/*`` are served by the portal
+#     itself (portal/oauth.py ``build_oauth_routes``). 404 them and
+#     Claude.ai's remote MCP connector can't discover the endpoints.
+#
+# fail2ban is unaffected. Each site block's ``log`` directive still records
+# every request answered here, and
+# contrib/fail2ban/filter.d/pwa-portal-caddy.conf matches on ``client_ip`` +
+# ``uri`` without looking at the status, so a bait-path sweep still earns a
+# host-firewall ban after three hits — it just no longer touches Python.
+(scanner_404) {
+	@scanner_ext path_regexp (?i)\.(php|phtml|asp|aspx|jsp|cgi)$
+	respond @scanner_ext 404
+
+	@scanner_prefix path /wp-* /cgi-bin/* /phpinfo* /phpmyadmin* /_profiler*
+	respond @scanner_prefix 404
+
+	@dotpaths {
+		path_regexp dotseg /\.
+		not path_regexp wellknown /\.well-known/
+	}
+	respond @dotpaths 404
+}
+
 {$SITE_URL:localhost} {
-	reverse_proxy {$PORTAL_UPSTREAM:portal:8000}
+	import scanner_404
+
+	# lb_try_duration keeps a container restart from becoming a wall of
+	# 502s. The portal runs ``alembic upgrade head`` inside its lifespan
+	# startup (portal/db.py ``init_db``), so after ``docker compose up -d``
+	# the container is up for a beat before uvicorn accepts connections.
+	# Caddy retries the dial for up to 15s rather than giving up after the
+	# default handful of attempts. Only GETs are retried by default — a
+	# replayed POST could double-submit — which covers the case that
+	# matters during a restart: page loads.
+	reverse_proxy {$PORTAL_UPSTREAM:portal:8000} {
+		lb_try_duration 15s
+		lb_try_interval 500ms
+	}
 
 	encode zstd gzip
 
@@ -77,7 +149,20 @@
 # ``on_demand_tls.ask`` hook above ensures we only request certs for hostnames
 # the portal recognizes as real apps.
 *.apps.{$SITE_URL} {
-	reverse_proxy {$PORTAL_UPSTREAM:portal:8000}
+	# Same hardening as the portal shell, and it matters MORE here: every
+	# on-demand certificate this block issues lands in the public
+	# Certificate Transparency logs, so ``<slug>.apps.<SITE_URL>`` is
+	# enumerable by anyone scraping CT — which is how a scanner ends up
+	# probing a real app subdomain in the first place. Without this, a
+	# cookie-less GET for /.git/ reaches the portal catch-all and comes back
+	# as a 303 to the portal-origin launcher, confirming the slug is live.
+	# Now it's a flat 404 before Python ever sees it.
+	import scanner_404
+
+	reverse_proxy {$PORTAL_UPSTREAM:portal:8000} {
+		lb_try_duration 15s
+		lb_try_interval 500ms
+	}
 
 	encode zstd gzip
 
