@@ -1813,6 +1813,30 @@ def _launcher_url(request: Request, slug: str) -> str:
     return f"{scheme}://{settings.site_url}{port}/apps/{slug}/"
 
 
+def _is_document_navigation(request: Request) -> bool:
+    """True when this looks like a browser navigating to a page.
+
+    Used to decide whether a cookie-less deep path on an app subdomain is
+    worth bouncing to the launcher (a real navigation) or should just 404 (a
+    subresource fetch, or a scanner).
+
+    ``Sec-Fetch-Dest`` is the reliable signal: every current browser sends it
+    on every request, and it's a forbidden header name, so page JavaScript
+    can't forge it. When it's present we trust it exactly — ``document`` is a
+    top-level navigation, ``script``/``style``/``image``/``empty`` are not.
+
+    Only when the header is absent entirely (older browsers, curl, a
+    non-browser client) do we fall back to sniffing ``Accept`` for
+    ``text/html``. That fallback is guessable by anything that sets its own
+    headers, which is fine — the branch it picks decides UX, not access. Both
+    outcomes are unauthenticated and neither reveals whether the app exists.
+    """
+    dest = request.headers.get("sec-fetch-dest")
+    if dest:
+        return dest == "document"
+    return "text/html" in request.headers.get("accept", "")
+
+
 def _launch_redirect_response(request: Request, slug: str) -> RedirectResponse:
     """303 to the portal-origin launcher.
 
@@ -1953,14 +1977,26 @@ def serve_subdomain_request(
             # HTTP requests, so the server can't see it. Serve a small
             # HTML page that reads the fragment client-side, calls
             # /api/v1/session/exchange, and reloads — which fetches the
-            # real app HTML with the now-set cookie. Deep paths
-            # (asset GETs without a cookie) fall back to a 303 to the
-            # launcher; this normally only happens on cookie expiry
-            # mid-session, and the user will re-launch from the
-            # dashboard. See _launch_bootstrap_html for the full flow.
+            # real app HTML with the now-set cookie. See
+            # _launch_bootstrap_html for the full flow.
+            #
+            # Deep paths without a cookie split by request kind. A top-level
+            # navigation (a bookmarked or typed deep link) still gets the 303
+            # to the launcher, which re-mints a token and lands the user in
+            # the app. Everything else — script/style/image/fetch
+            # subresources — gets a flat 404 instead, for two reasons:
+            #
+            #   1. The 303 was never useful to them. The browser follows it,
+            #      receives the launcher's HTML, and hands HTML to a caller
+            #      expecting JS/CSS/JSON — a MIME or parse error that reads
+            #      as an app bug rather than "your session expired".
+            #   2. It stops handing an unauthenticated client a redirect into
+            #      the portal origin to follow.
             if path in ("", "/"):
                 return _launch_bootstrap_html(request, slug)
-            return _launch_redirect_response(request, slug)
+            if _is_document_navigation(request):
+                return _launch_redirect_response(request, slug)
+            raise HTTPException(404)
         # Re-check per-user access on every static-file hit so a revocation
         # propagates immediately to live tabs without waiting for the
         # AppSession to expire. The session-row lookup above already gave us

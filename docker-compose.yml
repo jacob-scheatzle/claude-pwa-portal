@@ -99,10 +99,52 @@ services:
       driver: journald
       options:
         tag: pwa-portal-caddy
+    # Wait for the portal to pass its healthcheck (see the HEALTHCHECK in
+    # Dockerfile) before starting, so Caddy never comes up in front of a
+    # backend that's still running migrations. Paired with the Caddyfile's
+    # `lb_try_duration`, which covers the *later* case of the portal being
+    # restarted underneath a running Caddy.
+    #
+    # Trade-off worth knowing: if the portal never becomes healthy, Caddy
+    # never starts, so this turns a partial outage into a total one. The
+    # escape hatch is `docker compose up -d --no-deps caddy`, which skips the
+    # gate — useful when you need the proxy up to debug the backend.
     depends_on:
-      - portal
+      portal:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:
   caddy_data:
   caddy_config:
+
+# Pinned network identity. Docker's default is a generated name and a subnet
+# leased from its address pool, both of which change whenever the network is
+# recreated (`docker compose down`, a host reboot with a different creation
+# order, adding another stack). Anything that references them by value — a
+# fail2ban / iptables rule, a `-i br-xxxx` match, an allowlisted CIDR — silently
+# stops matching, or worse, starts matching whatever inherited the old range.
+#
+# Pinning all three makes those references stable, and makes a stale rule
+# naming an old subnet match nothing at all rather than something unintended.
+#
+# DOCKER_SUBNET is overridable because 172.20.0.0/16 can collide with an
+# existing network on some hosts; `docker compose up` then fails with "Pool
+# overlaps with other one on this address space". Set DOCKER_SUBNET in .env to
+# any free /16 if that happens. Check what's in use with:
+#   docker network inspect $(docker network ls -q) \
+#     --format '{{.Name}} {{range .IPAM.Config}}{{.Subnet}}{{end}}'
+#
+# Changing any of this on a running stack needs `docker compose down` first —
+# Docker cannot re-address a network in place.
+networks:
+  default:
+    name: pwa-portal
+    driver: bridge
+    driver_opts:
+      # The Linux bridge interface name, as it appears in `ip a` and in
+      # iptables rules. Capped at 15 characters by the kernel.
+      com.docker.network.bridge.name: br-pwa-portal
+    ipam:
+      config:
+        - subnet: ${DOCKER_SUBNET:-172.20.0.0/16}
