@@ -32,6 +32,7 @@ from jinja2 import StrictUndefined
 from jinja2.sandbox import SandboxedEnvironment
 from sqlmodel import Session, select
 
+from portal.access import user_can_access_app
 from portal.db import engine
 from portal.models import App, User
 
@@ -260,6 +261,8 @@ def run_tool(
         user = db.get(User, user_id)
         if user is None:
             raise AppToolError("Acting user no longer exists")
+        if not user_can_access_app(db, user, app_row):
+            raise AppToolError(f"Acting user no longer has access to app '{slug}'")
 
         # Per-app service gate: a tool may only use services the admin has left
         # enabled for this app (the manifest already cross-checked that every

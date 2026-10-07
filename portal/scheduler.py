@@ -36,7 +36,7 @@ from sqlmodel import Session, select
 from portal.app_tools import AppToolError, run_tool
 from portal.config import settings
 from portal.db import engine
-from portal.models import App, ScheduledRun
+from portal.models import App, ScheduledRun, User
 
 logger = logging.getLogger("portal.scheduler")
 
@@ -125,6 +125,11 @@ def _run_one(
         app_row = db.exec(select(App).where(App.slug == sched.app_slug)).first()
         if app_row is None or not app_row.enabled:
             raise AppToolError(f"app '{sched.app_slug}' not found or disabled")
+        # Schedules are an admin feature and run as the admin who created them;
+        # one whose owner has since been demoted (or deleted) stops firing.
+        owner = db.get(User, sched.user_id)
+        if owner is None or owner.role != "admin":
+            raise AppToolError("the schedule's owner is no longer an admin")
         decl = _find_tool(app_row, sched.tool_name)
         if decl is None:
             raise AppToolError(

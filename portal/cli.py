@@ -13,6 +13,7 @@ from sqlmodel import Session, select
 from portal.db import engine, init_db
 from portal.models import User
 from portal.security import hash_password, validate_password
+from portal.sessions import sign_out_everywhere
 
 
 def reset_password(email: str) -> int:
@@ -35,7 +36,8 @@ def reset_password(email: str) -> int:
         user.password_hash = hash_password(password)
         db.add(user)
         db.commit()
-        print(f"Password updated for {user.email}")
+        sign_out_everywhere(db, user.id)
+        print(f"Password updated for {user.email}; existing sessions signed out")
         return 0
 
 

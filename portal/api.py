@@ -180,28 +180,24 @@ def _require_service(app_row: Optional[App], service: str) -> None:
         )
 
 
-def _require_cookie_app_access(
+def _require_app_access(
     request: Request, user: User, app_row: Optional[App], db: Session
 ) -> None:
-    """Enforce per-user app access for browser (cookie/app-session) callers.
+    """Enforce per-user app access on the SDK service endpoints.
 
-    Token clients are intentionally exempt: a bearer token is an out-of-band
-    credential whose holder already authenticated as ``user``, and the
-    per-app service gate (``_require_service``) plus the token's own scope are
-    the relevant controls there. But a cookie/app-session request runs in a
-    browser the user may have been navigated into for an app they are NOT
-    granted — so the SDK service endpoints must re-check ``UserAppAccess``
-    just like the launch path does. Without this, a user could drive an app's
-    PDF/email/storage/share services for an app they can't launch.
+    The service endpoints must re-check ``UserAppAccess`` just like the launch
+    path does — otherwise a user could drive an app's PDF / email / storage /
+    share services for an app they can't launch. That holds for every auth
+    method: a browser session can be navigated into an app the user isn't
+    granted, and a bearer token's holder names any app via X-Portal-App.
+    Admins pass (they have every app), so this only bites a token whose owner
+    isn't an admin — e.g. one that survived a demotion.
 
     ``app_row`` is None only when no app context is resolvable (e.g. a token
     client without X-Portal-App); in that case there's nothing to check and
     the service gate already allows it.
     """
     if app_row is None:
-        return
-    auth_method = getattr(request.state, "auth_method", None)
-    if auth_method not in ("cookie", "app_session"):
         return
     if not user_can_access_app(db, user, app_row):
         raise HTTPException(
@@ -569,7 +565,7 @@ def pdf_render(
     me = _require_user(user)
     _require_csrf_for_cookie(request, x_csrf)
     app_row = _maybe_resolve_app(request, me, x_portal_app, db)
-    _require_cookie_app_access(request, me, app_row, db)
+    _require_app_access(request, me, app_row, db)
     _require_service(app_row, "pdf")
     _check_pdf_rate(me.id)
     try:
@@ -750,7 +746,7 @@ def email_send(
     # Resolve the source app once so we can gate access, gate the service, and
     # attribute the send to the right app in the health log below.
     app_row = _maybe_resolve_app(request, me, x_portal_app, db)
-    _require_cookie_app_access(request, me, app_row, db)
+    _require_app_access(request, me, app_row, db)
     _require_service(app_row, "email")
     cfg = smtp_config(db)
     if not cfg["host"]:
@@ -858,7 +854,7 @@ def storage_list(
 ):
     me = _require_user(user)
     app_row = _resolve_app_slug(request, me, x_portal_app, db)
-    _require_cookie_app_access(request, me, app_row, db)
+    _require_app_access(request, me, app_row, db)
     _require_service(app_row, "storage")
     storage = get_storage()
     prefix = storage.namespace_prefix(app_row.slug, me.id)
@@ -880,7 +876,7 @@ def storage_get(
 ):
     me = _require_user(user)
     app_row = _resolve_app_slug(request, me, x_portal_app, db)
-    _require_cookie_app_access(request, me, app_row, db)
+    _require_app_access(request, me, app_row, db)
     _require_service(app_row, "storage")
     safe = _validate_key(key)
     storage = get_storage()
@@ -915,7 +911,7 @@ async def storage_put(
     me = _require_user(user)
     _require_csrf_for_cookie(request, x_csrf)
     app_row = _resolve_app_slug(request, me, x_portal_app, db)
-    _require_cookie_app_access(request, me, app_row, db)
+    _require_app_access(request, me, app_row, db)
     _require_service(app_row, "storage")
     safe = _validate_key(key)
     storage = get_storage()
@@ -975,7 +971,7 @@ def storage_delete(
     me = _require_user(user)
     _require_csrf_for_cookie(request, x_csrf)
     app_row = _resolve_app_slug(request, me, x_portal_app, db)
-    _require_cookie_app_access(request, me, app_row, db)
+    _require_app_access(request, me, app_row, db)
     _require_service(app_row, "storage")
     safe = _validate_key(key)
     storage = get_storage()
@@ -1020,7 +1016,7 @@ def share_create(
     me = _require_user(user)
     _require_csrf_for_cookie(request, x_csrf)
     app_row = _resolve_app_slug(request, me, x_portal_app, db)
-    _require_cookie_app_access(request, me, app_row, db)
+    _require_app_access(request, me, app_row, db)
 
     kind = (body.kind or "storage").strip().lower()
     if kind not in ("storage", "pdf"):

@@ -349,7 +349,7 @@ All methods are async (return Promises). On HTTP failure they throw an `Error` w
 | Email subject | 200 chars, single line |
 | Email recipients | 20 per message; 100 per user per rolling hour |
 | Request body | 1 MB by default; 5 MB for PDF / email / share; 11 MB for storage PUT; 80 MB for app uploads |
-| Session cookie lifetime | 14 days (`SESSION_MAX_AGE`) |
+| Session lifetime | ends after 14 idle days (`SESSION_MAX_AGE`) or 30 days total, enforced server-side |
 
 ## CORS
 

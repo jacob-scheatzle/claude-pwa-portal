@@ -13,6 +13,7 @@ from typing import Iterable, Optional
 from sqlalchemy import delete
 from sqlmodel import Session, select
 
+from portal.config import settings
 from portal.models import (
     ApiToken,
     AppLaunchToken,
@@ -28,9 +29,34 @@ from portal.models import (
 # a DB commit per request, which is wasteful for an audit-style timestamp.
 _LAST_SEEN_REFRESH = timedelta(seconds=60)
 
+# Server-side lifetime of a UserSession / AppSession. The signed portal cookie
+# slides forward on every response and the app_session cookie is a bare id, so
+# neither cookie bounds a session by itself: a session idle longer than
+# SESSION_MAX_AGE (14 days by default), or older than SESSION_ABSOLUTE_MAX_AGE
+# regardless of activity, is refused here. (init_db also deletes rows past the
+# absolute age at startup.)
+SESSION_ABSOLUTE_MAX_AGE = timedelta(days=30)
+
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _aware(dt: Optional[datetime]) -> Optional[datetime]:
+    # SQLite drops tzinfo on round-trip; stored values are UTC.
+    if dt is not None and dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _expired(row: UserSession | AppSession) -> bool:
+    now = _utcnow()
+    created = _aware(row.created_at)
+    last_seen = _aware(row.last_seen_at) or created
+    return (
+        (created is not None and now - created > SESSION_ABSOLUTE_MAX_AGE)
+        or (last_seen is not None and now - last_seen > timedelta(seconds=settings.session_max_age))
+    )
 
 
 def create_session(db: Session, user: User) -> str:
@@ -80,11 +106,11 @@ def revoke_all_for_user(db: Session, user_id: int) -> int:
 
 
 def get_active_session(db: Session, session_id: Optional[str]) -> Optional[UserSession]:
-    """Return the row iff it exists and is not revoked."""
+    """Return the row iff it exists, is not revoked, and hasn't expired."""
     if not session_id:
         return None
     row = db.get(UserSession, session_id)
-    if row is None or row.revoked_at is not None:
+    if row is None or row.revoked_at is not None or _expired(row):
         return None
     return row
 
@@ -125,11 +151,11 @@ def create_app_session(db: Session, user_id: int, slug: str) -> str:
 def get_active_app_session(
     db: Session, session_id: Optional[str]
 ) -> Optional[AppSession]:
-    """Return the row iff it exists, is not revoked, and is for some user."""
+    """Return the row iff it exists, is not revoked, and hasn't expired."""
     if not session_id:
         return None
     row = db.get(AppSession, session_id)
-    if row is None or row.revoked_at is not None:
+    if row is None or row.revoked_at is not None or _expired(row):
         return None
     return row
 
@@ -240,6 +266,38 @@ def touch_app_session(db: Session, session: AppSession) -> None:
         session.last_seen_at = now
         db.add(session)
         db.commit()
+
+
+# ----- Revocation on admin action -----
+
+
+def sign_out_everywhere(db: Session, user_id: int) -> None:
+    """End every session and OAuth grant ``user_id`` holds.
+
+    Called when an admin (or the CLI) resets someone's password — the usual
+    reason is a compromised account, so an attacker's live portal session, open
+    child-app sessions, and connected MCP clients all have to go, not just the
+    password. API tokens are kept: they're deliberate admin-issued credentials,
+    listed and revocable at Admin → API tokens.
+    """
+    revoke_all_for_user(db, user_id)
+    revoke_all_app_sessions_for_user(db, user_id)
+    db.exec(delete(OAuthToken).where(OAuthToken.user_id == user_id))
+    db.exec(delete(OAuthCode).where(OAuthCode.user_id == user_id))
+    db.commit()
+
+
+def revoke_admin_credentials(db: Session, user_id: int) -> None:
+    """Delete the credentials only an admin could have obtained.
+
+    Called when an admin is demoted. API tokens and MCP OAuth grants can only
+    be minted by an admin, and a token's holder could otherwise keep using the
+    SDK services of every app; sessions stay (the role is re-read per request).
+    """
+    db.exec(delete(ApiToken).where(ApiToken.created_by == user_id))
+    db.exec(delete(OAuthToken).where(OAuthToken.user_id == user_id))
+    db.exec(delete(OAuthCode).where(OAuthCode.user_id == user_id))
+    db.commit()
 
 
 # ----- Full credential cascade on user delete -----

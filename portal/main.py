@@ -32,6 +32,7 @@ from portal.db import engine, get_db, init_db
 from portal.deps import current_user, require_user
 from portal.middleware import (
     APP_BUNDLE_ROUTE_PREFIX,
+    APINoStoreMiddleware,
     AppHostGateMiddleware,
     BodySizeLimitMiddleware,
     ChildAppCSPMiddleware,
@@ -124,9 +125,13 @@ app = FastAPI(
     redoc_url=None,
     openapi_url=None,
 )
+# ``__Host-`` (Secure cookies only) stops a child app on <slug>.apps.<SITE_URL>
+# from planting a ``session`` cookie with ``Domain=<SITE_URL>`` onto the portal
+# origin — which would log the admin out or sign them into another account.
 app.add_middleware(
     SessionMiddleware,
     secret_key=settings.secret_key,
+    session_cookie="__Host-session" if settings.cookies_secure else "session",
     same_site="lax",
     https_only=settings.cookies_secure,
     max_age=settings.session_max_age,
@@ -149,6 +154,7 @@ app.add_middleware(
 app.add_middleware(AppHostGateMiddleware)
 app.add_middleware(ChildAppCSPMiddleware, engine=engine)
 app.add_middleware(HostDispatchMiddleware)
+app.add_middleware(APINoStoreMiddleware)
 # Outermost of all: refuse an oversized body before anything reads it.
 app.add_middleware(BodySizeLimitMiddleware)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

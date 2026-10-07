@@ -5,6 +5,7 @@ from typing import Annotated, Optional
 from fastapi import Depends, Header, HTTPException, Request, status
 from sqlmodel import Session, select
 
+from portal.config import settings
 from portal.db import get_db
 from portal.models import ApiToken, User
 from portal.sessions import (
@@ -16,7 +17,11 @@ from portal.sessions import (
 
 # Cookie name for the per-app-subdomain session. Lives on
 # ``<slug>.apps.<SITE_URL>`` and is distinct from the portal's session cookie.
-APP_SESSION_COOKIE = "app_session"
+# The ``__Host-`` prefix (usable only on Secure cookies) makes the browser
+# reject any cookie of this name that carries a Domain attribute, so a sibling
+# app can't plant one here via ``Domain=apps.<SITE_URL>`` to swap the visitor
+# into another account's session.
+APP_SESSION_COOKIE = "__Host-app_session" if settings.cookies_secure else "app_session"
 
 # Only persist a token's last_used_at when this much time has elapsed since the
 # previous write, to avoid a commit on every authenticated API request.

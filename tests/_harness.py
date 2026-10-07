@@ -30,7 +30,7 @@ os.environ["DATABASE_URL"] = f"sqlite:///{TMP}/test.db"
 os.environ["DATA_DIR"] = TMP
 os.environ["SECRET_KEY"] = "x" * 40
 os.environ.setdefault("SITE_URL", "portal.test")
-os.environ["COOKIES_SECURE"] = "false"
+os.environ.setdefault("COOKIES_SECURE", "false")
 os.environ["CHILD_APPS_SAME_ORIGIN"] = "false"
 os.environ["STORAGE_BACKEND"] = "local"
 os.environ["HTTP_ONLY"] = "false"

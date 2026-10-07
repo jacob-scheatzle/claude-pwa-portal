@@ -267,6 +267,34 @@ class BodySizeLimitMiddleware:
         return await self.app(scope, limited_receive, limited_send)
 
 
+class APINoStoreMiddleware:
+    """Mark every ``/api/v1/*`` response ``Cache-Control: no-store``.
+
+    Storage GETs carry ETag / Last-Modified but no caching directive, so a
+    browser may reuse them heuristically — and on a shared device the next
+    person in the same app could be served the previous user's copy of the
+    same key. Nothing under /api/v1 is safe to cache.
+    """
+
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or not scope["path"].startswith("/api/v1/"):
+            return await self.app(scope, receive, send)
+
+        async def send_no_store(message):
+            if message["type"] == "http.response.start":
+                headers = [
+                    (k, v) for k, v in message.get("headers", []) if k.lower() != b"cache-control"
+                ]
+                headers.append((b"cache-control", b"no-store"))
+                message = {**message, "headers": headers}
+            await send(message)
+
+        return await self.app(scope, receive, send_no_store)
+
+
 # CSP for child-app subdomains. Matches the structure of the legacy Caddy
 # header line that used to live in the ``*.apps.{$SITE_URL}`` block:
 #

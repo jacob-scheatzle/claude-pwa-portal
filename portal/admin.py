@@ -67,8 +67,10 @@ from portal.security import (
     validate_password,
 )
 from portal.sessions import (
+    revoke_admin_credentials,
     revoke_all_credentials_for_user,
     revoke_app_sessions_for_user,
+    sign_out_everywhere,
 )
 from portal.settings_store import get_setting, set_secret, set_setting, smtp_config
 from portal.shares import delete_shares_for_user
@@ -710,6 +712,8 @@ def users_set_role(
     target.role = role
     db.add(target)
     db.commit()
+    if old_role == "admin" and role != "admin" and target.id is not None:
+        revoke_admin_credentials(db, target.id)
     record_event(
         db, actor=admin, action="user.role.change", request=request,
         target=f"user:{target.email}",
@@ -737,6 +741,8 @@ def users_reset_password(
     target.password_hash = hash_password(password)
     db.add(target)
     db.commit()
+    if target.id is not None:
+        sign_out_everywhere(db, target.id)
     record_event(
         db, actor=admin, action="user.reset_password", request=request,
         target=f"user:{target.email}",

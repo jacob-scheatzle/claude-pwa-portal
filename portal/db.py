@@ -33,7 +33,6 @@ engine = create_engine(settings.database_url, echo=False, **_engine_kwargs())
 # Server-side session rows (UserSession / AppSession) older than this are swept
 # at startup. Well beyond any reasonable cookie max_age, so an older row is dead
 # regardless of whether it was explicitly revoked.
-_STALE_SESSION_MAX_AGE_DAYS = 30
 
 
 def init_db() -> None:
@@ -84,7 +83,7 @@ def init_db() -> None:
         from portal.audit import prune as prune_audit_log
         from portal.health import prune_logs
         from portal.models import AppSession, UserSession
-        from portal.sessions import purge_expired_launch_tokens
+        from portal.sessions import SESSION_ABSOLUTE_MAX_AGE, purge_expired_launch_tokens
         from portal.shares import purge_expired_shares
 
         with Session(engine) as db:
@@ -97,9 +96,7 @@ def init_db() -> None:
             # session that old is well past any reasonable cookie max_age, so the
             # row is dead whether or not it was explicitly revoked. Mirrors the
             # launch-token sweep above.
-            _session_cutoff = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(
-                days=_STALE_SESSION_MAX_AGE_DAYS
-            )
+            _session_cutoff = _dt.datetime.now(_dt.timezone.utc) - SESSION_ABSOLUTE_MAX_AGE
             db.exec(_delete(UserSession).where(
                 UserSession.created_at < _session_cutoff))
             db.exec(_delete(AppSession).where(
