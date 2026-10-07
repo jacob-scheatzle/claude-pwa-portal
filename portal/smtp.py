@@ -9,6 +9,7 @@ host, port, username, password, from_addr, use_tls.
 from __future__ import annotations
 
 import smtplib
+import ssl
 from email.message import EmailMessage
 
 # Cap connect/IO at 10s so an unreachable SMTP server can't hold a request open.
@@ -24,12 +25,16 @@ def send_message(msg: EmailMessage, cfg: dict) -> None:
     """
     host = cfg["host"]
     port = cfg["port"]
+    # Verify the server's certificate and hostname. Without an explicit
+    # context smtplib falls back to one that checks neither, so anyone on the
+    # network path could pose as the mail server and collect the SMTP login.
+    context = ssl.create_default_context()
     if port == 465:
-        server = smtplib.SMTP_SSL(host, port, timeout=_SMTP_TIMEOUT_SECONDS)
+        server = smtplib.SMTP_SSL(host, port, timeout=_SMTP_TIMEOUT_SECONDS, context=context)
     else:
         server = smtplib.SMTP(host, port, timeout=_SMTP_TIMEOUT_SECONDS)
         if cfg["use_tls"]:
-            server.starttls()
+            server.starttls(context=context)
     try:
         if cfg["username"]:
             server.login(cfg["username"], cfg["password"] or "")

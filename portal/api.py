@@ -22,7 +22,7 @@ from fastapi import (
     APIRouter, Depends, File, Header, HTTPException, Request, Response, UploadFile,
 )
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from sqlalchemy import update
 from sqlmodel import Session, select
 
@@ -620,6 +620,26 @@ def pdf_render(
 
 # ----- /email -----
 
+# Most recipients one message may name (SDK and app tools alike). Every
+# recipient sees the others in To:, and each one costs a rate-limit slot below.
+MAX_EMAIL_RECIPIENTS = 20
+
+
+def normalize_recipient(addr: str) -> str:
+    """Return ``addr`` as a bare normalized address, or raise ValueError.
+
+    Display names, comments, and groups are refused: SMTP and the recipient
+    allowlist would read them differently — ``x@evil.example (a@ok.example``
+    passes a last-@ domain check but is delivered to x@evil.example.
+    """
+    from email_validator import EmailNotValidError, validate_email
+
+    try:
+        return validate_email(str(addr).strip(), check_deliverability=False).normalized
+    except EmailNotValidError as e:
+        raise ValueError(f"not a valid email address: {addr!r} ({e})")
+
+
 class EmailRequest(BaseModel):
     to: list[EmailStr] | EmailStr
     subject: str = Field(default="", max_length=200)
@@ -628,23 +648,41 @@ class EmailRequest(BaseModel):
     text: Optional[str] = Field(default=None, max_length=_MAX_EMAIL_BODY_BYTES)
     html: Optional[str] = Field(default=None, max_length=_MAX_EMAIL_BODY_BYTES)
 
+    @field_validator("to")
+    @classmethod
+    def _cap_recipients(cls, v):
+        if isinstance(v, list) and len(v) > MAX_EMAIL_RECIPIENTS:
+            raise ValueError(f"at most {MAX_EMAIL_RECIPIENTS} recipients per message")
+        return v
 
-# Per-user, in-memory, rolling-hour send counter. NOTE: this is per-process,
-# so it only protects a single-instance deployment. Multi-worker setups would
-# need a shared store (Redis/DB) to enforce the same cap globally.
+    @field_validator("subject")
+    @classmethod
+    def _single_line_subject(cls, v):
+        # A CR/LF would make EmailMessage raise mid-send (header injection is
+        # refused there); reject it here as a 422 instead.
+        if "\r" in v or "\n" in v:
+            raise ValueError("subject must be a single line")
+        return v
+
+
+# Per-user, in-memory, rolling-hour counter of email RECIPIENTS (a message to
+# five people costs five). NOTE: this is per-process, so it only protects a
+# single-instance deployment. Multi-worker setups would need a shared store
+# (Redis/DB) to enforce the same cap globally.
 _EMAIL_RATE_WINDOW_SECONDS = 3600
-_EMAIL_RATE_LIMIT_PER_HOUR = 30
+_EMAIL_RECIPIENTS_PER_HOUR = 100
 _email_send_log: dict[int, deque] = {}
 _email_rate_lock = Lock()
 
 
-def _check_email_rate(user_id: int) -> None:
-    """Raise 429 if over the rolling-hour send limit, else reserve a slot.
+def _check_email_rate(user_id: int, recipients: int = 1) -> None:
+    """Raise 429 if ``recipients`` more would pass the rolling-hour limit, else
+    reserve them.
 
-    The slot is reserved up front (so a concurrent burst is bounded by the
+    Slots are reserved up front (so a concurrent burst is bounded by the
     limit even mid-send). Callers that may abort before delivery completes
-    should ``_refund_email_send(user_id)`` on the failure path so a failed
-    send doesn't permanently burn the caller's quota.
+    should ``_refund_email_send(user_id, recipients)`` on the failure path so a
+    failed send doesn't permanently burn the caller's quota.
     """
     now = time.monotonic()
     cutoff = now - _EMAIL_RATE_WINDOW_SECONDS
@@ -655,20 +693,22 @@ def _check_email_rate(user_id: int) -> None:
             _email_send_log[user_id] = dq
         while dq and dq[0] < cutoff:
             dq.popleft()
-        if len(dq) >= _EMAIL_RATE_LIMIT_PER_HOUR:
+        if len(dq) + recipients > _EMAIL_RECIPIENTS_PER_HOUR:
             raise HTTPException(
                 429,
-                f"Email send rate limit exceeded "
-                f"({_EMAIL_RATE_LIMIT_PER_HOUR}/hour per user, per process).",
+                f"Email rate limit exceeded "
+                f"({_EMAIL_RECIPIENTS_PER_HOUR} recipients/hour per user, per process).",
             )
-        dq.append(now)
+        dq.extend([now] * recipients)
 
 
-def _refund_email_send(user_id: int) -> None:
-    """Return the most-recently reserved send slot after a failed delivery."""
+def _refund_email_send(user_id: int, recipients: int = 1) -> None:
+    """Return the most recently reserved slots after a failed delivery."""
     with _email_rate_lock:
         dq = _email_send_log.get(user_id)
-        if dq:
+        for _ in range(recipients):
+            if not dq:
+                break
             dq.pop()
 
 
@@ -720,7 +760,7 @@ def email_send(
 
     to_list = req.to if isinstance(req.to, list) else [req.to]
     _enforce_recipient_allowlist(to_list, _recipient_domain_allowlist(db))
-    _check_email_rate(me.id)
+    _check_email_rate(me.id, len(to_list))
 
     msg = EmailMessage()
     msg["From"] = cfg["from_addr"] or cfg["username"] or me.email
@@ -742,7 +782,7 @@ def email_send(
         # and library detail strings. Log the detail; respond with a generic
         # message so child apps can't probe SMTP config from the response body.
         # Refund the reserved slot — a failed send shouldn't burn quota.
-        _refund_email_send(me.id)
+        _refund_email_send(me.id, len(to_list))
         logger.exception("Email send failed for user_id=%s", me.id)
         raise HTTPException(502, "Email send failed")
 

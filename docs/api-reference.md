@@ -120,7 +120,7 @@ Sends email through the portal's configured SMTP.
 }
 ```
 
-`to` can be a single email or a list. Include at least one of `html` or `text`. `subject` max 200 chars.
+`to` can be a single email or a list of up to 20 bare addresses (no display names). Include at least one of `html` or `text`. `subject` is a single line, max 200 chars.
 
 **Response**:
 
@@ -133,6 +133,8 @@ Sends email through the portal's configured SMTP.
 - `503 Email service unavailable: SMTP not configured`
 - `400 Provide at least one of \`text\` or \`html\``
 - `502 Email send failed: <smtp exception>`
+- `429 Email rate limit exceeded` — each user may email 100 recipients per rolling hour (a message to three people counts three)
+- `422` — more than 20 recipients, or a subject containing a line break
 
 ### `GET /api/v1/storage`
 
@@ -344,7 +346,9 @@ All methods are async (return Promises). On HTTP failure they throw an `Error` w
 | Files per app bundle | 1,000 |
 | Storage object | 10 MB |
 | Storage namespace | 100 MB per `(app, user)` |
-| Email subject | 200 chars |
+| Email subject | 200 chars, single line |
+| Email recipients | 20 per message; 100 per user per rolling hour |
+| Request body | 1 MB by default; 5 MB for PDF / email / share; 11 MB for storage PUT; 80 MB for app uploads |
 | Session cookie lifetime | 14 days (`SESSION_MAX_AGE`) |
 
 ## CORS

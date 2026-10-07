@@ -252,6 +252,23 @@ def _notify(db: Session, app_row: App, decl: dict, values: dict, to_addr: str) -
         cfg = smtp_config(db)
         if not cfg.get("host"):
             return  # SMTP not configured — the submission is already stored
+        # The address comes from the (untrusted) app manifest, so it gets the
+        # same bare-address + recipient-domain check as every other send.
+        from portal.api import (
+            _enforce_recipient_allowlist,
+            _recipient_domain_allowlist,
+            normalize_recipient,
+        )
+
+        try:
+            to_addr = normalize_recipient(to_addr)
+            _enforce_recipient_allowlist([to_addr], _recipient_domain_allowlist(db))
+        except (ValueError, HTTPException) as e:
+            logger.warning(
+                "form notify for %s/%s skipped: %s",
+                app_row.slug, decl.get("name"), getattr(e, "detail", e),
+            )
+            return
         title = decl.get("title") or decl.get("name")
         lines = [f"{f['label']}: {values.get(f['name'], '')}" for f in decl.get("fields", [])]
         msg = EmailMessage()

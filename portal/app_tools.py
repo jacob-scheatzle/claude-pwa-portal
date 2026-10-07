@@ -55,7 +55,6 @@ _TEXT_ENV = SandboxedEnvironment(autoescape=False, undefined=StrictUndefined)
 # can't fan out past this many recipients — caps render cost and mail volume for
 # an admin-driven (but possibly prompt-influenced) MCP call.
 MAX_TOOL_ARRAY_ITEMS = 500
-MAX_EMAIL_RECIPIENTS = 50
 
 
 def _param_json_schema(p: dict) -> dict:
@@ -235,14 +234,18 @@ def run_tool(
     import base64
 
     from portal.api import (
+        MAX_EMAIL_RECIPIENTS,
         MAX_NAMESPACE_BYTES,
         MAX_OBJECT_BYTES,
         _check_email_rate,
         _check_pdf_rate,
         _enforce_recipient_allowlist,
         _recipient_domain_allowlist,
+        _refund_email_send,
+        _refund_pdf_render,
         _validate_key,
         namespace_lock,
+        normalize_recipient,
     )
     from portal.storage_backend import get_storage
 
@@ -279,7 +282,16 @@ def run_tool(
         html = _maybe_brand(db, _render_html(render.get("html", ""), ctx), bool(render.get("branded")))
         filename = _render_text(render.get("filename"), ctx) or "document.pdf"
 
+        # Rate-limit slots are reserved BEFORE the work and refunded if it fails —
+        # checking afterwards would only report the limit once the PDF was
+        # rendered or the email already sent.
+        pdf_slot = False
+        email_slots = 0
         try:
+            if kind in ("share", "download", "store"):
+                _check_pdf_rate(user.id)
+                pdf_slot = True
+
             if kind == "share":
                 from portal.shares import create_pdf_share, share_url
 
@@ -293,10 +305,6 @@ def run_tool(
                     ttl_seconds=(ttl_days * 86400 if ttl_days else None),
                     max_views=None,
                 )
-                # create_pdf_share renders the PDF internally; consume a slot
-                # only after it succeeds (mirrors the api.py fix) so a failed
-                # render doesn't burn quota.
-                _check_pdf_rate(user.id)
                 return {
                     "delivered": "share",
                     "url": share_url(row.token, host),
@@ -309,9 +317,6 @@ def run_tool(
                     raise AppToolError(
                         f"PDF exceeds {MAX_OBJECT_BYTES // (1024 * 1024)}MB limit"
                     )
-                # Consume a slot only after a successful render — a failed
-                # render shouldn't burn quota (mirrors the api.py fix).
-                _check_pdf_rate(user.id)
                 return {
                     "delivered": "download",
                     "filename": filename,
@@ -342,9 +347,6 @@ def run_tool(
                             f"storage namespace exceeds {MAX_NAMESPACE_BYTES // (1024 * 1024)}MB limit"
                         )
                     storage.write(full_key, pdf, content_type="application/pdf")
-                # Consume a slot only after the render+write succeed (mirrors
-                # the api.py fix) so a failed render/store doesn't burn quota.
-                _check_pdf_rate(user.id)
                 return {"delivered": "store", "key": safe_key, "size": len(pdf)}
 
             if kind == "email":
@@ -363,8 +365,17 @@ def run_tool(
                     raise AppToolError(
                         f"too many recipients ({len(to_list)} > {MAX_EMAIL_RECIPIENTS})"
                     )
+                # Bare addresses only, so the allowlist checks the domain SMTP
+                # will actually deliver to (see normalize_recipient).
+                try:
+                    to_list = [normalize_recipient(a) for a in to_list]
+                except ValueError as e:
+                    raise AppToolError(str(e))
                 _enforce_recipient_allowlist(to_list, _recipient_domain_allowlist(db))
-                subject = _render_text(deliver.get("subject"), ctx)
+                # Template output may span lines; a header can't.
+                subject = " ".join(_render_text(deliver.get("subject"), ctx).split())
+                _check_email_rate(user.id, len(to_list))
+                email_slots = len(to_list)
 
                 msg = EmailMessage()
                 msg["From"] = cfg["from_addr"] or cfg["username"] or user.email
@@ -376,10 +387,6 @@ def run_tool(
                     send_message(msg, cfg)
                 except Exception:
                     raise AppToolError("Email send failed")
-                # Consume a rate-limit slot only after the send succeeds — a
-                # failed send (SMTP fault) shouldn't burn the caller's quota.
-                # Mirrors the api.py fix for the same surface.
-                _check_email_rate(user.id)
                 record_email_send(
                     db,
                     user_id=user.id,
@@ -392,7 +399,13 @@ def run_tool(
                 return {"delivered": "email", "count": len(to_list)}
 
             raise AppToolError(f"unknown deliver kind '{kind}'")
-        except HTTPException as e:
-            # Reused SDK helpers (rate limits, recipient allowlist, key
-            # validation) signal via HTTPException; surface their message.
-            raise AppToolError(str(getattr(e, "detail", e)))
+        except Exception as e:
+            if pdf_slot:
+                _refund_pdf_render(user.id)
+            if email_slots:
+                _refund_email_send(user.id, email_slots)
+            if isinstance(e, HTTPException):
+                # Reused SDK helpers (rate limits, recipient allowlist, key
+                # validation) signal via HTTPException; surface their message.
+                raise AppToolError(str(getattr(e, "detail", e)))
+            raise
