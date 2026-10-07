@@ -22,6 +22,7 @@ import os
 import secrets
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -102,6 +103,14 @@ def main() -> int:
         return 2
 
     portal_url = portal_url.rstrip("/")
+    parts = urllib.parse.urlsplit(portal_url)
+    if parts.scheme != "https" and parts.hostname not in ("localhost", "127.0.0.1", "::1"):
+        print(
+            f"Refusing to send the API token to {portal_url}: use https:// "
+            "(http:// is only allowed for localhost).",
+            file=sys.stderr,
+        )
+        return 2
     zip_path = Path(args.zip_path).resolve()
     if not zip_path.is_file():
         print(f"Not a file: {zip_path}", file=sys.stderr)

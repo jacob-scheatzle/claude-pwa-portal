@@ -6,11 +6,12 @@ Interactive; run once per workstation. Token is shown once when you create it at
 """
 from __future__ import annotations
 
+import getpass
 import json
 import os
-import stat
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 
 CONFIG_DIR = Path.home() / ".config" / "pwa-portal"
 CONFIG_PATH = CONFIG_DIR / "config.json"
@@ -36,7 +37,9 @@ def main() -> int:
         if token_keep
         else "API token (from <portal_url>/admin/tokens): "
     )
-    token = input(token_prompt).strip()
+    # getpass: an admin API token shouldn't be echoed to the screen (or into
+    # a terminal recording / scrollback).
+    token = getpass.getpass(token_prompt).strip()
     if not token and token_keep:
         token = current["token"]
 
@@ -48,13 +51,22 @@ def main() -> int:
         return 1
 
     url = url.rstrip("/")
+    parts = urlsplit(url)
+    if parts.scheme != "https" and parts.hostname not in ("localhost", "127.0.0.1", "::1"):
+        print(
+            "Portal URL must be https:// (http:// only for localhost) — the API "
+            "token is sent with every upload.",
+            file=sys.stderr,
+        )
+        return 1
 
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    CONFIG_PATH.write_text(json.dumps({"portal_url": url, "token": token}, indent=2) + "\n")
-    try:
-        os.chmod(CONFIG_PATH, stat.S_IRUSR | stat.S_IWUSR)  # 0o600
-    except OSError:
-        pass
+    # Create the file owner-only from the start (no window where it's
+    # world-readable), and tighten an existing file's mode too.
+    fd = os.open(CONFIG_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(json.dumps({"portal_url": url, "token": token}, indent=2) + "\n")
+    os.chmod(CONFIG_PATH, 0o600)
 
     print(f"\nSaved → {CONFIG_PATH}")
     print("You can now use the skill to package and upload apps.")

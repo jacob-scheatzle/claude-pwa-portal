@@ -176,12 +176,13 @@ What the portal actually validates:
 - The file must **exist in the zip**.
 - `package.py` rejects the unmodified scaffold placeholder.
 
-The portal does **not** enforce the icon's image format — it checks
-path-safety + existence only. (A future build may add an icon-extension
-allowlist; if your release rejects an icon on format grounds, that's why.)
-**Recommended formats:** PNG, SVG, JPEG, or WebP — PNG at 192×192 renders
-cleanest across iOS, Android, and desktop browsers. Ship a real raster/vector
-image even though the server won't catch a bogus one.
+- The file's **extension** must be one of `.png`, `.jpg`, `.jpeg`, `.webp`,
+  `.ico`, `.gif`, `.svg` — anything else is rejected at upload. (Only the
+  extension is checked, not the bytes.)
+
+**Recommended:** PNG at 192×192 renders cleanest across iOS, Android, and
+desktop browsers. Ship a real image even though the server won't catch a
+mislabeled one.
 
 **Authoring rule**: never `package.py` an app whose icon is still the
 scaffold default. Draw the pictogram as part of the build workflow

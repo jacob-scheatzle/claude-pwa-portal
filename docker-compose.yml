@@ -33,6 +33,15 @@ services:
       # client-spoofed header). Set to your LB's IP/CIDR only if it terminates
       # TLS on a public address with no Caddy in front. See docs/deploying.md.
       FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-}
+      # Optional SMTP pre-config from .env (the admin Settings page overrides
+      # it). Compose only reads .env for substitution, so each value has to be
+      # passed through explicitly or the portal never sees it.
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      SMTP_USE_TLS: ${SMTP_USE_TLS:-true}
     volumes:
       - ./data:/data
     expose:

@@ -27,6 +27,36 @@ def _should_skip(rel: Path) -> bool:
     return False
 
 
+_SDK_SERVICE_CALL = re.compile(r"\bportal\.(pdf|email|storage)\.")
+
+
+def _warn_undeclared_services(src: Path, manifest: dict) -> None:
+    """Warn when the code calls an SDK service the manifest doesn't declare.
+
+    The portal refuses (403) any service an app hasn't declared — including
+    every service, for an app that declares none.
+    """
+    declared = set(manifest.get("services") or [])
+    used: set[str] = set()
+    for path in src.rglob("*"):
+        if path.is_symlink() or path.suffix.lower() not in (".html", ".htm", ".js", ".mjs"):
+            continue
+        if _should_skip(path.relative_to(src)):
+            continue
+        try:
+            used.update(_SDK_SERVICE_CALL.findall(path.read_text(errors="ignore")))
+        except OSError:
+            continue
+    missing = sorted(used - declared)
+    if missing:
+        print(
+            f"warning: the app calls portal.{{{','.join(missing)}}} but portal.json "
+            f"doesn't list {missing} in \"services\" — those calls will get a 403. "
+            "Add them to \"services\".",
+            file=sys.stderr,
+        )
+
+
 def main() -> int:
     if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
         print(__doc__, file=sys.stderr)
@@ -54,6 +84,9 @@ def main() -> int:
             return 1
 
     slug = manifest["slug"]
+    if not 2 <= len(slug) <= 40:
+        print(f"portal.json: slug must be 2-40 characters; got {len(slug)}", file=sys.stderr)
+        return 1
     if not SLUG_RE.match(slug):
         print(
             f"portal.json: slug must be lowercase kebab-case (a-z, 0-9, hyphens); got {slug!r}",
@@ -120,9 +153,16 @@ def main() -> int:
         output = src.parent / f"{slug}-{manifest['version']}.zip"
     output.parent.mkdir(parents=True, exist_ok=True)
 
+    _warn_undeclared_services(src, manifest)
+
     written = 0
     with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as z:
         for path in sorted(src.rglob("*")):
+            if path.is_symlink():
+                # Following it would package whatever it points at — possibly
+                # a file outside the app (an SSH key, a .env). Skip, loudly.
+                print(f"skipping symlink: {path.relative_to(src)}", file=sys.stderr)
+                continue
             if path.is_dir():
                 continue
             rel = path.relative_to(src)
