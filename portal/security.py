@@ -108,3 +108,25 @@ def redirect_uri_host(uri: str) -> str:
         return urlsplit(str(uri).strip()).hostname or ""
     except ValueError:
         return ""
+
+
+def client_network(ip: str) -> str:
+    """The key per-client rate limits should use for ``ip``.
+
+    An IPv4 address as-is; an IPv6 address as its /64 — the allocation one
+    subscriber typically gets, so a client can't mint a fresh limit for every
+    request by rotating addresses inside it. IPv4-mapped IPv6 folds back to
+    the IPv4 address; anything unparseable is returned unchanged.
+    """
+    import ipaddress
+
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return ip
+    if addr.version == 6:
+        if addr.ipv4_mapped:
+            return str(addr.ipv4_mapped)
+        return str(ipaddress.ip_network(f"{addr}/64", strict=False))
+    return str(addr)
+

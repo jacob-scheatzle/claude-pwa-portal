@@ -1,6 +1,5 @@
 import asyncio
 import contextlib
-import ipaddress
 import logging
 import re
 import threading
@@ -42,6 +41,7 @@ from portal.models import App, Setting, User
 from portal.scheduler import scheduler_loop
 from portal.security import (
     check_csrf,
+    client_network,
     hash_password,
     validate_password,
     verify_password,
@@ -269,21 +269,9 @@ _login_last_full_prune = 0.0
 _login_failures_lock = threading.Lock()
 
 
-def _client_net(ip: str) -> str:
-    try:
-        addr = ipaddress.ip_address(ip)
-    except ValueError:
-        return ip
-    if addr.version == 6:
-        if addr.ipv4_mapped:
-            return str(addr.ipv4_mapped)
-        return str(ipaddress.ip_network(f"{addr}/64", strict=False))
-    return str(addr)
-
-
 def _login_key(request: Request, email: str) -> tuple[str, str]:
     ip = request.client.host if request.client else "unknown"
-    return (_client_net(ip), email.strip().lower()[:_MAX_EMAIL_INPUT])
+    return (client_network(ip), email.strip().lower()[:_MAX_EMAIL_INPUT])
 
 
 def _fresh_hits(table: dict, key, cutoff: float) -> list[float]:

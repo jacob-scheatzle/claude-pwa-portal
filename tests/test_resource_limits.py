@@ -168,8 +168,26 @@ h.check("live pending requests are capped", live, 2)
 h.check("  ...by dropping the oldest, not refusing the newest",
         all("/oauth/consent" in loc for loc in results), True)
 oauth._MAX_LIVE_PENDING = saved_pending
+# A flood through one client only displaces that client's own requests.
+other = client.post("/register", json={
+    "client_name": "real connector", "redirect_uris": ["https://claude.ai/api/mcp/auth_callback"],
+    "token_endpoint_auth_method": "none"}).json()["client_id"]
+real = authorize(client_id=other).headers["location"].split("txn=", 1)[1]
+for _ in range(oauth._MAX_PENDING_PER_CLIENT + 5):
+    authorize()
+with Session(engine) as db:
+    flood_rows = db.exec(select(OAuthPendingAuthorization)
+                         .where(OAuthPendingAuthorization.client_id == cid)).all()
+    survivor = db.get(OAuthPendingAuthorization, real)
+h.check("one client holds at most _MAX_PENDING_PER_CLIENT requests",
+        len(flood_rows), oauth._MAX_PENDING_PER_CLIENT)
+h.check("  ...and its flood doesn't evict another client's request", survivor is not None, True)
 codes = [authorize().status_code for _ in range(30)]
 h.check("more than 30 calls in 10 min from one IP -> 429", codes[-1], 429)
+limiter = oauth._IPRateLimiter(window_seconds=600, limit=3)
+rotating = [limiter.limited(f"2001:db8:1:2::{i:x}") for i in range(1, 6)]
+h.check("rotating IPv6 addresses inside one /64 share a limit",
+        rotating, [False, False, False, True, True])
 
 print("--- backups are complete ---")
 storage = get_storage()

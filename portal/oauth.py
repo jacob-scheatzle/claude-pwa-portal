@@ -29,7 +29,7 @@ from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from pydantic import AnyHttpUrl, AnyUrl
-from sqlalchemy import delete, func, or_, update
+from sqlalchemy import delete, func, or_, true, update
 from sqlmodel import Session, select
 from starlette.responses import JSONResponse, RedirectResponse
 
@@ -60,7 +60,12 @@ from portal.models import (
     OAuthToken as OAuthTokenRow,
     User,
 )
-from portal.security import check_csrf, is_allowed_redirect_uri, redirect_uri_host
+from portal.security import (
+    check_csrf,
+    client_network,
+    is_allowed_redirect_uri,
+    redirect_uri_host,
+)
 from portal.web import render
 
 logger = logging.getLogger("uvicorn.error")
@@ -78,10 +83,14 @@ PENDING_TTL = timedelta(minutes=15)
 # /authorize is anonymous and parks a row per call, so bound both the row and
 # the table: RFC 7636 code challenges are 43-128 chars, real clients send short
 # state/resource values, and no deployment has hundreds of connections pending.
-# At the cap the OLDEST pending request is dropped — refusing new ones instead
-# would let anyone who fills the table lock the real admin out of connecting.
+# Each client may hold _MAX_PENDING_PER_CLIENT live requests: at that cap its
+# own oldest is dropped, so a flood through one client only ever displaces that
+# client's requests — not the real connector's, which registers its own. The
+# table-wide cap is a backstop that also drops the oldest; refusing new requests
+# instead would let anyone who fills it lock the admin out of connecting.
 _MAX_STATE_LEN = 512
 _MAX_RESOURCE_LEN = 512
+_MAX_PENDING_PER_CLIENT = 10
 _MAX_LIVE_PENDING = 500
 # Issued token lifetimes. Access is short; the connector refreshes silently.
 ACCESS_TTL = timedelta(hours=1)
@@ -227,15 +236,22 @@ class PortalOAuthProvider:
             # the cap below counts live requests only.
             db.exec(delete(OAuthPendingAuthorization).where(
                 OAuthPendingAuthorization.expires_at < _utcnow().replace(tzinfo=None)))
-            live = db.exec(select(func.count()).select_from(OAuthPendingAuthorization)).one()
-            if live >= _MAX_LIVE_PENDING:
-                oldest = (
-                    select(OAuthPendingAuthorization.txn)
-                    .order_by(OAuthPendingAuthorization.expires_at)
-                    .limit(live - _MAX_LIVE_PENDING + 1)
-                )
-                db.exec(delete(OAuthPendingAuthorization).where(
-                    OAuthPendingAuthorization.txn.in_(oldest)))
+            for scope_filter, cap in (
+                (OAuthPendingAuthorization.client_id == client.client_id, _MAX_PENDING_PER_CLIENT),
+                (true(), _MAX_LIVE_PENDING),
+            ):
+                live = db.exec(
+                    select(func.count()).select_from(OAuthPendingAuthorization).where(scope_filter)
+                ).one()
+                if live >= cap:
+                    oldest = (
+                        select(OAuthPendingAuthorization.txn)
+                        .where(scope_filter)
+                        .order_by(OAuthPendingAuthorization.expires_at)
+                        .limit(live - cap + 1)
+                    )
+                    db.exec(delete(OAuthPendingAuthorization).where(
+                        OAuthPendingAuthorization.txn.in_(oldest)))
             db.add(
                 OAuthPendingAuthorization(
                     txn=txn,
@@ -713,12 +729,14 @@ class _HostGateASGI:
 
 
 class _IPRateLimiter:
-    """In-process rolling-window limit per client IP.
+    """In-process rolling-window limit per client network.
 
+    Keyed by ``client_network`` (the IPv4 address, or the IPv6 /64), so a
+    client can't reset its limit by rotating addresses within its allocation.
     Same shape as the login limiter in main.py; lost on restart (acceptable —
     this is anti-abuse, not correctness). Runs on the event loop (the wrapped
-    routes are ASGI), so no lock is needed. Capped at ``_MAX_KEYS`` IPs, oldest
-    evicted, so a spray from many addresses can't grow it without bound.
+    routes are ASGI), so no lock is needed. Capped at ``_MAX_KEYS`` networks,
+    oldest evicted, as a memory valve.
     """
 
     _MAX_KEYS = 10_000
@@ -729,9 +747,10 @@ class _IPRateLimiter:
         self._hits: dict[str, list[float]] = {}
 
     def limited(self, ip: str) -> bool:
-        """Count a hit for ``ip``; True if it was already over the limit."""
+        """Count a hit for ``ip``'s network; True if it was already over the limit."""
         import time
 
+        ip = client_network(ip)
         now = time.monotonic()
         cutoff = now - self._window
         for key in list(self._hits.keys()):
