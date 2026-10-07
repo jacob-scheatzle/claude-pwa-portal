@@ -152,6 +152,23 @@ class StorageBackend:
         """Total bytes stored under ``prefix`` (for quota accounting)."""
         return sum(o.size for o in self.list(prefix))
 
+    def delete_user_namespaces(self, user_id: int) -> None:
+        """Delete ``user_id``'s storage namespace in every app.
+
+        Walks the whole ``storage/`` tree rather than the App table so data the
+        user left under an uninstalled app's slug goes too. Each namespace is
+        deleted under its lock so a write that's mid-flight can't land after.
+        """
+        uid = str(user_id)
+        slugs = set()
+        for obj in self.list("storage"):
+            parts = obj.key.split("/")
+            if len(parts) > 3 and parts[2] == uid:
+                slugs.add(parts[1])
+        for slug in sorted(slugs):
+            with self.namespace_lock(slug, user_id):
+                self.delete_prefix(self.namespace_prefix(slug, user_id))
+
     @contextmanager
     def namespace_lock(self, app_slug: str, user_id: int):
         """Exclusive lock over one storage namespace, for sync callers

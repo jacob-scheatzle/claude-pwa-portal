@@ -30,7 +30,7 @@ portal/
   audit.py            Append-only AuditEvent log — best-effort record_event() (own session, swallows errors), dot-namespaced action verbs, opportunistic startup pruning
   branding.py         Portal branding from Setting keys (business name, accent color, logo, favicon) — injected into every render and the PDF header / manifest icons
   health.py           Admin health dashboard data — rolling LoginAttempt + EmailSendLog history (startup-pruned), SMTP last-test status, filesystem-size helpers
-  middleware.py       HostDispatchMiddleware (sets request.state.app_slug from Host) + ChildAppCSPMiddleware (per-app CSP from App.allowed_origins on subdomain responses)
+  middleware.py       HostDispatchMiddleware (sets request.state.app_slug from Host) + AppHostGateMiddleware (app subdomains expose only the SDK, its /api/v1 endpoints, /forms/<name>, and the bundle) + ChildAppCSPMiddleware (per-app CSP from App.allowed_origins on subdomain responses)
   models.py           SQLModel tables: User, Setting, App, ApiToken, UserSession
   sessions.py         Helpers for the server-side UserSession (create/revoke/touch)
   security.py         bcrypt, password validation, csrf_token() + check_csrf() + check_csrf_header()
@@ -64,7 +64,7 @@ aws/                  Cloud-native deploy: Terraform (ECS Fargate+ALB+CloudFront
 
 4. **`request.state.auth_method`** is set to `"cookie"` or `"token"` (or unset for unauthenticated) by `current_user_or_token`. Any code that needs to differentiate (CSRF rules, slug resolution, etc.) reads this — **never inspect the `Authorization` header directly.** Doing so caused a critical bearer-spoof bypass we already fixed; don't reintroduce.
 
-5. **Child apps run on per-app subdomains by default.** `<slug>.apps.<SITE_URL>` — different browser origin per app, isolated cookies, no shared access to the portal's session. The `/apps/<slug>/` portal-origin URL renders an iframe wrapper that loads the subdomain. Legacy same-origin mode is available via `CHILD_APPS_SAME_ORIGIN=true` for self-hosters without wildcard DNS — admins see a warning banner. Full design + rollout history in [docs/per-app-origin-design.md](docs/per-app-origin-design.md).
+5. **Child apps run on per-app subdomains by default.** `<slug>.apps.<SITE_URL>` — different browser origin per app, isolated cookies, no shared access to the portal's session. The `/apps/<slug>/` portal-origin URL renders an iframe wrapper that loads the subdomain. Legacy same-origin mode is available via `CHILD_APPS_SAME_ORIGIN=true` for self-hosters without wildcard DNS — admins see a warning banner. Full design + rollout history in [docs/per-app-origin-design.md](docs/per-app-origin-design.md). **On an app subdomain only an allowlist of portal routes answers** (`middleware._APP_HOST_PORTAL_PATHS`: the SDK, its JSON endpoints, `/forms/<name>`); every other GET serves the app's bundle and every other method 404s. A new SDK endpoint must be added there or it 404s on app hosts — and never add login/admin/management routes to it: the app's own JavaScript runs on that origin.
 
 6. **SMTP password is Fernet-encrypted in DB.** Use `settings_store.set_secret(db, key, value)` to save it, `get_secret` to read. Plain `set_setting` for SMTP password writes plaintext — a footgun we already hit once.
 
@@ -103,6 +103,13 @@ images + stopped containers + build cache only. **Never** prune with
 `--volumes` (Caddy's TLS certs live in `caddy_data`/`caddy_config`) or with
 `-a`/`--all` on a shared host. Deployers schedule the same script on a weekly
 cron; see `contrib/scripts/README.md`.
+
+### Run the regression tests
+```bash
+for t in tests/test_*.py; do .venv/bin/python "$t" || echo "FAILED: $t"; done
+```
+Each is a standalone script (no pytest) that boots the app against a throwaway
+SQLite DB via `tests/_harness.py`; needs `httpx` (`.venv/bin/pip install httpx`).
 
 ### Smoke-test the running stack
 ```bash
@@ -196,7 +203,7 @@ architectural context if you're touching the launch / exchange / Host
 dispatch code paths.
 
 An **MCP app-management server** lives at `portal/mcp_server.py`, served at
-`/mcp` via exact routes (not `app.mount` — the catch-all GET would shadow it).
+`/mcp` via exact routes (not `app.mount`, which only matches `/mcp/`).
 The Docker image bundles the `mcp` dep and `mcp_enabled` defaults to **auto**
 (`Optional[bool]=None` → on when importable), so the container comes up with
 `/mcp` live; `MCP_ENABLED=false` disables it, `true` forces it. It exposes
@@ -241,5 +248,7 @@ as SHA-256 hashes. The `_AuthASGIApp` wrapper now accepts an admin API token
 **or** an OAuth access token, and its 401 carries
 `WWW-Authenticate: …resource_metadata=…` for discovery. OAuth is wired only when
 MCP is on and the issuer is a valid OAuth issuer (HTTPS, or localhost for dev) —
-otherwise static tokens still work. Routes are appended in `main.py`'s MCP block
-before the catch-all GET. See [docs/mcp.md](docs/mcp.md).
+otherwise static tokens still work. Routes are appended in `main.py`'s MCP block.
+Client redirect URIs must be `https://` or loopback `http://` (`security.is_allowed_redirect_uri`,
+enforced at `/register`, admin-created clients, and again before the consent redirect),
+and the consent page names the host access goes to. See [docs/mcp.md](docs/mcp.md).

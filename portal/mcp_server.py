@@ -24,9 +24,9 @@ Design notes (validated against mcp 1.27):
   * Auth is an ASGI wrapper in FRONT of the handler: it 404s app subdomains,
     validates the bearer (reusing ``deps.authenticate_bearer``), requires an
     admin, and stashes ``{id,email,role}`` on the ASGI ``scope`` for the tools.
-  * ``main.py`` registers exact ``/mcp`` + ``/mcp/`` routes (not ``app.mount`` —
-    the catch-all GET would shadow a bare ``POST /mcp``) and enters the session
-    manager's ``run()`` in the app lifespan.
+  * ``main.py`` registers exact ``/mcp`` + ``/mcp/`` routes (not ``app.mount``,
+    which only matches ``/mcp/``) and enters the session manager's ``run()`` in
+    the app lifespan.
 """
 from __future__ import annotations
 
@@ -697,10 +697,9 @@ class _AuthASGIApp:
     """MCP ASGI app enforcing portal-origin + admin-bearer before the handler.
 
     Registered as an exact Starlette ``Route`` (not a ``Mount``): a Mount only
-    matches the ``/mcp/`` form, and the portal's catch-all ``GET
-    /{full_path:path}`` would otherwise shadow a bare ``POST /mcp`` with a 405
-    before Starlette's slash-redirect runs. A bare ASGI *function* would be
-    misread by ``Route`` as a request/response endpoint, so this is a class.
+    matches the ``/mcp/`` form, and clients are given the bare ``/mcp``. A bare
+    ASGI *function* would be misread by ``Route`` as a request/response
+    endpoint, so this is a class.
 
     On success, stashes ``{id, email, role}`` on ``scope[_SCOPE_USER]`` for the
     tools and delegates to the MCP handler. Rejections are plain JSON HTTP

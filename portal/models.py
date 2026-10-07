@@ -11,6 +11,13 @@ def _utcnow() -> datetime:
 
 
 class User(SQLModel, table=True):
+    # AUTOINCREMENT so SQLite never hands a deleted user's id to a new account.
+    # Plain INTEGER PRIMARY KEY reuses the highest id once that row is deleted,
+    # and anything still keyed by the old id (storage namespaces, share links,
+    # audit history) would then attach to the newcomer. Postgres sequences never
+    # reuse ids, so the option only affects SQLite.
+    __table_args__ = {"sqlite_autoincrement": True}
+
     id: Optional[int] = Field(default=None, primary_key=True)
     email: str = Field(unique=True, index=True)
     password_hash: str

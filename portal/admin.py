@@ -5,6 +5,7 @@ import csv
 import hashlib
 import io
 import json
+import logging
 import mimetypes
 import re
 import secrets
@@ -58,14 +59,22 @@ from portal.models import (
     UserAppAccess,
 )
 from portal.scheduler import FREQUENCIES, compute_next_run, fire_schedule
-from portal.security import check_csrf, hash_password, validate_password
+from portal.security import (
+    check_csrf,
+    hash_password,
+    is_allowed_redirect_uri,
+    validate_password,
+)
 from portal.sessions import (
     revoke_all_credentials_for_user,
     revoke_app_sessions_for_user,
 )
 from portal.settings_store import get_setting, set_secret, set_setting, smtp_config
+from portal.shares import delete_shares_for_user
 from portal.smtp import send_message
 from portal.web import flash, render
+
+logger = logging.getLogger("uvicorn.error")
 
 router = APIRouter()
 
@@ -555,15 +564,17 @@ def oauth_clients_create(
         return _back("At least one redirect URI is required.")
     # Only https or loopback http — never an open http:// redirector.
     for u in uris:
-        if not (u.startswith("https://") or u.startswith("http://localhost") or u.startswith("http://127.0.0.1")):
+        if not is_allowed_redirect_uri(u):
             return _back(f"Redirect URI must be https:// (or http://localhost): {u}")
 
     try:
         from mcp.shared.auth import OAuthClientInformationFull
+
+        from portal.oauth import PREREGISTERED_CLIENT_PREFIX
     except ImportError:
         return _back("OAuth is unavailable: the 'mcp' package isn't installed.")
 
-    client_id = "portal-" + secrets.token_urlsafe(12)
+    client_id = PREREGISTERED_CLIENT_PREFIX + secrets.token_urlsafe(12)
     client_secret = secrets.token_urlsafe(32)
     try:
         info = OAuthClientInformationFull(
@@ -751,19 +762,26 @@ def users_delete(
         return RedirectResponse("/admin/users", status_code=303)
     email = target.email
     role = target.role
+    target_id = target.id
     # SQLite FKs are advisory here, so drop the access rows explicitly before
-    # the User row goes away to keep the table consistent. We also have to
-    # cascade every credential / token row that references this user: SQLite
-    # reuses an INTEGER PRIMARY KEY rowid when the highest-id row is deleted, so
-    # any lingering ApiToken, UserSession, AppSession, AppLaunchToken, OAuth
-    # token/code, or ScheduledRun whose user_id points at the deleted row would
-    # silently re-authenticate (or re-fire) as a future new user that inherits
-    # the same id. revoke_all_credentials_for_user does the full cascade.
-    if target.id is not None:
-        delete_access_for_user(db, target.id)
-        revoke_all_credentials_for_user(db, target.id)
+    # the User row goes away to keep the table consistent. We also cascade every
+    # credential / token row and share link that references this user, and
+    # their per-app storage, so nothing the user owned outlives them: a
+    # lingering ApiToken, session, OAuth grant, or ScheduledRun would keep
+    # acting as them, and a storage share would keep publishing their files.
+    # (User ids are AUTOINCREMENT, so a new account never inherits this id.)
+    if target_id is not None:
+        delete_access_for_user(db, target_id)
+        revoke_all_credentials_for_user(db, target_id)
+        delete_shares_for_user(db, target_id)
     db.delete(target)
     db.commit()
+    if target_id is not None:
+        # After the commit, so a failed delete never destroys data first.
+        try:
+            get_storage().delete_user_namespaces(target_id)
+        except Exception:
+            logger.exception("Could not remove storage for deleted user %s", target_id)
     record_event(
         db, actor=admin, action="user.delete", request=request,
         target=f"user:{email}",

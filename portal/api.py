@@ -61,6 +61,19 @@ def _require_admin(user: Optional[User]) -> User:
     return me
 
 
+def _require_app_manager(request: Request, user: Optional[User]) -> User:
+    """Admin acting through the portal (cookie or bearer), never a child app.
+
+    An admin who opens a child app holds an ``app_session`` for it, so the
+    untrusted app's JavaScript runs as that admin. Installing or replacing apps
+    from there would let one app rewrite another; refuse it outright.
+    """
+    me = _require_admin(user)
+    if getattr(request.state, "auth_method", None) == "app_session":
+        raise HTTPException(403, "App management isn't available to child apps")
+    return me
+
+
 def _require_csrf_for_cookie(request: Request, x_csrf: Optional[str]) -> None:
     """Skip for bearer tokens; require X-CSRF-Token for any cookie session.
 
@@ -1034,7 +1047,7 @@ async def apps_upload(
     bundle: UploadFile = File(...),
     x_csrf: Annotated[Optional[str], Header(alias="X-CSRF-Token")] = None,
 ):
-    admin = _require_admin(user)
+    admin = _require_app_manager(request, user)
     _require_csrf_for_cookie(request, x_csrf)
     try:
         result = await install_bundle(db, admin, bundle)

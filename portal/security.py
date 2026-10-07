@@ -71,3 +71,40 @@ def check_csrf_header(request: Request, x_csrf: Optional[str]) -> None:
     expected = request.session.get("_csrf")
     if not expected or not x_csrf or not secrets.compare_digest(expected, x_csrf):
         raise HTTPException(403, "CSRF check failed")
+
+
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def is_allowed_redirect_uri(uri: str) -> bool:
+    """True if ``uri`` is an acceptable OAuth client redirect URI.
+
+    Only ``https://`` or loopback ``http://`` with a real host, no userinfo, and
+    no fragment. Anything else — notably ``javascript:`` / ``data:`` URIs, which
+    the consent flow would otherwise hand the admin's browser as a link on the
+    portal origin — is refused. Hosts are compared exactly, so
+    ``http://localhost.evil.example`` is not loopback.
+    """
+    from urllib.parse import urlsplit
+
+    try:
+        parts = urlsplit(str(uri).strip())
+        host = parts.hostname
+    except ValueError:
+        return False
+    if not host or parts.fragment or parts.username is not None or parts.password is not None:
+        return False
+    scheme = parts.scheme.lower()
+    if scheme == "https":
+        return True
+    return scheme == "http" and host.lower() in _LOOPBACK_HOSTS
+
+
+def redirect_uri_host(uri: str) -> str:
+    """The host a redirect URI sends the browser to, for display."""
+    from urllib.parse import urlsplit
+
+    try:
+        return urlsplit(str(uri).strip()).hostname or ""
+    except ValueError:
+        return ""

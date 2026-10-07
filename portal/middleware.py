@@ -5,6 +5,11 @@ the host matches ``*.apps.<SITE_URL>``, records the resolved app slug on
 ``request.state.app_slug``. Downstream route handlers branch on this state to
 serve child-app content (subdomain origin) versus portal content (root origin).
 
+``AppHostGateMiddleware`` confines an app subdomain to the child-app surface
+(the SDK, its JSON endpoints, public forms, and the app's own bundle) so the
+portal's login / admin / management routes never answer on an origin the
+untrusted app controls.
+
 ``ChildAppCSPMiddleware`` runs on the response path. For requests that
 resolved to a child-app subdomain, it builds a per-app Content-Security-Policy
 from the matching ``App.allowed_origins`` row and sets the header on the
@@ -28,6 +33,7 @@ from typing import Iterable, Optional
 from sqlmodel import Session, select
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
+from starlette.responses import JSONResponse
 from starlette.types import ASGIApp
 
 from portal.config import settings
@@ -104,6 +110,77 @@ class HostDispatchMiddleware(BaseHTTPMiddleware):
         slug = resolve_app_slug_from_host(host, settings.site_url)
         request.state.app_slug = slug
         return await call_next(request)
+
+
+# Route prefix that serves a child app's own bundle on its subdomain. Never
+# requested directly: ``AppHostGateMiddleware`` rewrites app-host GETs onto it.
+APP_BUNDLE_ROUTE_PREFIX = "/__app_bundle__"
+
+# The ONLY portal routes that answer on an app subdomain: the SDK, the JSON
+# endpoints the SDK calls, and the public intake forms. Everything else is the
+# app's own bundle.
+_APP_HOST_PORTAL_PATHS = frozenset({
+    "/portal-sdk.js",
+    "/api/v1/user/me",
+    "/api/v1/csrf-token",
+    "/api/v1/session/exchange",
+    "/api/v1/pdf/render",
+    "/api/v1/email/send",
+    "/api/v1/storage",
+    "/api/v1/share/create",
+})
+_APP_HOST_PORTAL_PREFIXES = ("/api/v1/storage/",)
+_APP_HOST_FORM_RE = re.compile(r"^/forms/[^/]+/?$")
+
+
+def is_portal_path_on_app_host(path: str) -> bool:
+    """True if ``path`` is a portal route that child-app subdomains may reach."""
+    return (
+        path in _APP_HOST_PORTAL_PATHS
+        or path.startswith(_APP_HOST_PORTAL_PREFIXES)
+        or bool(_APP_HOST_FORM_RE.match(path))
+    )
+
+
+class AppHostGateMiddleware:
+    """Confine a child-app subdomain to the child-app surface.
+
+    Every portal route is registered once and answers on any Host, so without
+    this gate ``<slug>.apps.<SITE_URL>`` would also serve the portal's login,
+    setup, admin, and app-management routes — on an origin the untrusted app's
+    own JavaScript controls. An admin who opened the app (or signed in on its
+    ``/login``) would hand that JavaScript a same-origin admin session.
+
+    On an app host, a path in the allowlist above passes through unchanged. Any
+    other GET/HEAD is rewritten onto ``APP_BUNDLE_ROUTE_PREFIX`` so it serves
+    the app's bundle — which also stops portal routes like ``/sw.js`` and
+    ``/manifest.webmanifest`` from shadowing the app's own files. Any other
+    method gets a 404. Portal-origin requests pass through untouched.
+
+    Pure ASGI rather than ``BaseHTTPMiddleware`` because it has to rewrite the
+    path before routing. Must sit inside ``HostDispatchMiddleware``, which sets
+    the slug it reads.
+    """
+
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        slug = (scope.get("state") or {}).get("app_slug")
+        path = scope["path"]
+        if not slug or is_portal_path_on_app_host(path):
+            return await self.app(scope, receive, send)
+        if scope["method"] not in ("GET", "HEAD"):
+            response = JSONResponse({"detail": "Not Found"}, status_code=404)
+            return await response(scope, receive, send)
+        scope = dict(scope)
+        scope["path"] = APP_BUNDLE_ROUTE_PREFIX + path
+        raw_path = scope.get("raw_path")
+        if raw_path is not None:
+            scope["raw_path"] = APP_BUNDLE_ROUTE_PREFIX.encode() + raw_path
+        return await self.app(scope, receive, send)
 
 
 # CSP for child-app subdomains. Matches the structure of the legacy Caddy

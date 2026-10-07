@@ -1,6 +1,6 @@
 # Project state
 
-_Last updated: June 5, 2026 (v0.16.2)._ Originally written May 21, 2026; kept
+_Last updated: October 7, 2026 (v0.16.2 + security review batch 1)._ Originally written May 21, 2026; kept
 current as the project evolved (MCP server, schedules, public forms, AWS deploy).
 
 A snapshot of where ProgressiveWebAppPortal stands at the end of a long
@@ -125,6 +125,32 @@ project up on a different machine or after a break.
     conclude it's impossible, don't confuse it with read-only `/s/` share links,
     and don't reach for an outside service (Google Forms, Apps Script, etc.).
     Guidance-only; no code-path change.
+
+- **Update (October 7, 2026):** a fresh six-reviewer security/correctness
+  review (auth, app isolation, child-app API, MCP/scheduler, admin, deploy).
+  **Batch 1** fixed the highest-severity findings, each with a standalone
+  regression test under `tests/` (shared setup in `tests/_harness.py`):
+  1. **App subdomains served the whole portal.** An admin's AppSession let a
+     child app's JS call `PUT /api/v1/apps/<other>` / `POST /api/v1/apps/upload`
+     (rewrite another app, widen its permissions), and `/login`, `/setup`,
+     `/admin/*` rendered on the app's origin. `AppHostGateMiddleware` now allows
+     only the SDK surface + `/forms/<name>` on app hosts; other GETs serve the
+     bundle (fixing portal routes shadowing an app's `sw.js` / `static/*`), and
+     the management endpoints refuse `app_session` auth outright.
+  2. **OAuth redirect URIs** — `/register` accepted `javascript:` URIs that the
+     consent interstitial rendered as a link on the portal origin, and the
+     consent page showed only the client-chosen name. Now https / loopback-http
+     only (also closing `http://localhost.evil` in the admin form), re-checked
+     before any redirect, and the consent page names the destination host.
+  3. **Deleted users' data leaked to the next account** — storage namespaces and
+     share links survived delete and SQLite reused the id. Delete now purges
+     both; `user` is AUTOINCREMENT (migration `9c41e7d2a8b3`, which also seeds
+     the sequence past ids still referenced by leftover data).
+  Batches 2 (hardening: body-size limits, SMTP cert verification, email caps,
+  revocation on reset/demote, template DoS, cache headers, `__Host-` cookies,
+  fail2ban DOCKER-USER chain) and 3 (correctness/docs drift, lockfile + pinned
+  images + CI smoke test) are still open. The AWS path is unused and was not
+  fixed (it can't pull its Caddy image from private subnets as written).
 
 ---
 

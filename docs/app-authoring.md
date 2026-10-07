@@ -25,6 +25,12 @@ HttpOnly `app_session` cookie) automatically on page load. Just include
 `<script src="/portal-sdk.js"></script>` like before — every SDK method
 keeps working.
 
+On the app's subdomain a few paths belong to the portal: `/portal-sdk.js`,
+the SDK's `/api/v1/{user,csrf-token,session,pdf,email,storage,share}` endpoints,
+and `/forms/<name>` (your public intake forms). Every other path is served from
+your bundle — including `/sw.js`, `/manifest.webmanifest`, `/favicon.ico`, and a
+`static/` folder — so don't put your own files at those portal paths.
+
 A legacy same-origin mode is available via `CHILD_APPS_SAME_ORIGIN=true`
 for self-hosters who can't configure wildcard DNS, in which case the app
 runs at `<SITE_URL>/apps/<slug>/`. The SDK and your app's code don't

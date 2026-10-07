@@ -75,6 +75,12 @@ Two ways to authenticate, depending on the client:
    completes and refreshes silently afterward. (Non-admins are refused — MCP is
    admin-only.)
 
+The consent screen names the host the access is handed to (`claude.ai` for the
+claude.ai connector). Registration is open to anyone, so a client's *name* is
+whatever it chose — check the host, and only approve a connection you just
+started yourself. Clients may only register `https://` redirect URIs (or
+`http://` on localhost / 127.0.0.1 for local tools).
+
 Under the hood the portal runs the OAuth endpoints the connector needs —
 authorization-server + protected-resource metadata, dynamic client registration
 (RFC 7591), the PKCE authorization-code grant, and refresh — built on the MCP

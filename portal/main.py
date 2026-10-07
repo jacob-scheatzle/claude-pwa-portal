@@ -30,7 +30,12 @@ from portal.audit import emit_security_line, record_anonymous, record_event
 from portal.config import settings
 from portal.db import engine, get_db, init_db
 from portal.deps import current_user, require_user
-from portal.middleware import ChildAppCSPMiddleware, HostDispatchMiddleware
+from portal.middleware import (
+    APP_BUNDLE_ROUTE_PREFIX,
+    AppHostGateMiddleware,
+    ChildAppCSPMiddleware,
+    HostDispatchMiddleware,
+)
 from portal.models import App, Setting, User
 from portal.scheduler import scheduler_loop
 from portal.security import (
@@ -131,12 +136,15 @@ app.add_middleware(
 # it (the strict-CSP nonce is stamped onto ``request.state`` pre-handler so
 # templates can substitute ``{{NONCE}}`` during render).
 #
-# Therefore: add ChildAppCSP first (innermost), then HostDispatch (outermost).
-# On request: HostDispatch → ChildAppCSP → handler. On response: handler →
-# ChildAppCSP (stamps the per-app Content-Security-Policy header) → HostDispatch.
+# Therefore: add AppHostGate first (innermost), then ChildAppCSP, then
+# HostDispatch (outermost). On request: HostDispatch → ChildAppCSP → AppHostGate
+# → handler. On response: handler → ChildAppCSP (stamps the per-app
+# Content-Security-Policy header) → HostDispatch. AppHostGate reads the slug
+# HostDispatch set and confines app subdomains to the child-app surface.
 #
 # Per-app CSP lives in the portal, not Caddy, because the allowed external
 # ``connect-src`` origins are per-app data sourced from ``App.allowed_origins``.
+app.add_middleware(AppHostGateMiddleware)
 app.add_middleware(ChildAppCSPMiddleware, engine=engine)
 app.add_middleware(HostDispatchMiddleware)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -167,9 +175,9 @@ if _mcp_setting is None or _mcp_setting:
     else:
         from starlette.routing import Route as _Route
         _mcp_instance, _mcp_asgi = build_mcp_app()
-        # Exact routes, appended now — before the catch-all GET route defined
-        # later in this module. Both slash forms target the same handler so
-        # there's no per-request redirect whichever URL the client was given.
+        # Exact routes rather than a Mount (a Mount only matches ``/mcp/``).
+        # Both slash forms target the same handler so there's no per-request
+        # redirect whichever URL the client was given.
         _mcp_methods = ["GET", "POST", "DELETE", "OPTIONS"]
         app.router.routes.append(_Route("/mcp", _mcp_asgi, methods=_mcp_methods))
         app.router.routes.append(_Route("/mcp/", _mcp_asgi, methods=_mcp_methods))
@@ -179,8 +187,7 @@ if _mcp_setting is None or _mcp_setting:
         # connector authenticates via OAuth (it can't send a static API token);
         # Claude Code/Desktop keep using API tokens. The SDK provides /authorize,
         # /token, /register (DCR), /revoke + metadata; the consent routes
-        # (/oauth/consent) reuse the portal's admin login. Appended here, before
-        # the catch-all GET, so the well-known + /authorize GET routes match.
+        # (/oauth/consent) reuse the portal's admin login.
         # Skipped (static tokens still work) when the issuer isn't a valid OAuth
         # issuer — the SDK requires HTTPS, except localhost for dev.
         try:
@@ -287,12 +294,8 @@ def _clear_login_failures(key: tuple[str, str]) -> None:
 
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request, db: DbDep, user: UserDep):
-    # On an app subdomain, ``/`` is the child app's index.html, not the
-    # portal dashboard. Dispatch to the child-app serve path which handles
-    # the no-cookie redirect back to the portal launcher.
-    if getattr(request.state, "app_slug", None):
-        return apps_module.serve_subdomain_request(request, db, path="")
-
+    # Portal origin only: on an app subdomain AppHostGateMiddleware rewrites
+    # ``/`` onto the bundle route below.
     if not admin_exists(db):
         return RedirectResponse("/setup", status_code=303)
     if user is None:
@@ -894,16 +897,39 @@ def share_view(token: str, db: DbDep):
     raise HTTPException(404)
 
 
-# ----- App subdomain catch-all -----
+# ----- App subdomain bundle -----
 #
-# Registered LAST so every other portal-origin route gets a chance to match
-# first. On the portal origin (``request.state.app_slug is None``) this hands
-# back a 404 — the route is effectively a no-op for portal-origin traffic.
-# On an app subdomain it serves the child app's static bundle out of
-# ``data/apps/<slug>/`` (or the shared SDK at ``/portal-sdk.js``).
+# On an app subdomain, AppHostGateMiddleware rewrites every GET that isn't part
+# of the child-app API surface onto this route, so the app's own files win over
+# any portal route with the same path (``/sw.js``, ``/login``, ...). On the
+# portal origin nothing is rewritten and the route just 404s.
 
-@app.get("/{full_path:path}", include_in_schema=False)
-def app_subdomain_catch_all(full_path: str, request: Request, db: DbDep):
-    if not getattr(request.state, "app_slug", None):
+# Portal assets the public intake form (a portal-rendered page on the app
+# subdomain) loads from its own origin: the bundled icons and the uploaded
+# logo/favicon. Served as a fallback only when the app's bundle has no file at
+# that path, so an app that ships its own ``static/`` tree still gets it.
+_PORTAL_ASSET_PREFIXES = ("static/", "branding/")
+
+
+def _portal_asset_on_app_host(path: str):
+    if path.startswith("branding/"):
+        return branding_logo(path[len("branding/"):])
+    static_root = STATIC_DIR.resolve()
+    target = (static_root / path[len("static/"):]).resolve()
+    try:
+        target.relative_to(static_root)
+    except ValueError:
+        raise HTTPException(404)
+    if not target.is_file():
+        raise HTTPException(404)
+    return FileResponse(target)
+
+
+@app.get(APP_BUNDLE_ROUTE_PREFIX + "/{full_path:path}", include_in_schema=False)
+def app_subdomain_bundle(full_path: str, request: Request, db: DbDep):
+    slug = getattr(request.state, "app_slug", None)
+    if not slug:
         raise HTTPException(status_code=404)
+    if full_path.startswith(_PORTAL_ASSET_PREFIXES) and not apps_module.bundle_has_file(slug, full_path):
+        return _portal_asset_on_app_host(full_path)
     return apps_module.serve_subdomain_request(request, db, path=full_path)

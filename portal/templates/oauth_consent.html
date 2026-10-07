@@ -12,6 +12,16 @@
 <h1>Authorize access</h1>
 <p><strong>{{ client_name }}</strong> wants to connect to this portal's MCP
 server, acting as <strong>{{ user.email }}</strong>.</p>
+<p>If you approve, access is handed to <strong>{{ redirect_host }}</strong>.</p>
+{% if not preregistered %}
+{# The name above is whatever the client chose when it registered itself, so
+   the destination host is the only part of this page an attacker can't fake. #}
+<div class="warn-banner" role="note">
+	<strong>Check the address above.</strong> This client registered itself, so
+	its name proves nothing. Only approve if you just started connecting from
+	<strong>{{ redirect_host }}</strong> yourself.
+</div>
+{% endif %}
 <p>This grants the same access as an admin API token — list, upload, and enable
 apps; run an app's tools; and manage schedules. Everything it does is recorded
 in the audit log, and you can revoke the connection later.</p>

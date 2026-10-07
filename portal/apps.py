@@ -1228,13 +1228,10 @@ async def api_apps_replace(
     bundle: UploadFile = File(...),
     x_csrf: Annotated[Optional[str], Header(alias="X-CSRF-Token")] = None,
 ):
-    if user is None:
-        raise HTTPException(401, "Sign in required")
-    if user.role != "admin":
-        raise HTTPException(403, "Admin role required")
     # Cross-module import: both routers are siblings under the same app; a
     # dedicated shared module for one helper would be over-engineering.
-    from portal.api import _require_csrf_for_cookie
+    from portal.api import _require_app_manager, _require_csrf_for_cookie
+    _require_app_manager(request, user)
     _require_csrf_for_cookie(request, x_csrf)
     app_row = db.exec(select(App).where(App.slug == slug)).first()
     if app_row is None:
@@ -1723,6 +1720,14 @@ def _serve_app_file(
 
 # ----- App-subdomain serving (the new per-app origin) -----
 
+def bundle_has_file(slug: str, path: str) -> bool:
+    """True if the installed bundle for ``slug`` contains a file at ``path``."""
+    try:
+        return get_storage().size(f"apps/{slug}/{path}") is not None
+    except ValueError:
+        return False
+
+
 def _serve_app_subdomain_path(
     request: Request, db: Session, slug: str, path: str
 ) -> FileResponse | RedirectResponse | Response:
@@ -1953,8 +1958,8 @@ def serve_subdomain_request(
 ) -> FileResponse | RedirectResponse:
     """Dispatch a subdomain GET ``/`` or ``/<path>`` request.
 
-    Used by the main app's catch-all (and by the explicit ``/`` handler when
-    a request arrived on an app subdomain). The slug comes from
+    Used by the main app's bundle route, which AppHostGateMiddleware rewrites
+    every non-API subdomain GET onto. The slug comes from
     ``request.state.app_slug`` (set by HostDispatchMiddleware); we never trust
     a path-derived slug here. Without an AppSession cookie matching this
     subdomain, we bounce back to the portal-origin launcher to mint one.

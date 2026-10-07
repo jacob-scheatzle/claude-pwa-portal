@@ -271,6 +271,17 @@ def delete_share_files(token_filenames: list[str]) -> None:
             pass
 
 
+def delete_shares_for_user(db: Session, user_id: int) -> None:
+    """Delete every share link ``user_id`` created, plus their PDF blobs.
+
+    Storage shares re-read the creator's namespace on every view, so one left
+    behind would keep publishing a deleted user's files. Caller commits.
+    """
+    rows = db.exec(select(ShareLink).where(ShareLink.created_by == user_id)).all()
+    delete_share_files([(r.payload or {}).get("path") for r in rows if r.kind == "pdf"])
+    db.exec(delete(ShareLink).where(ShareLink.created_by == user_id))
+
+
 def purge_expired_shares(db: Session) -> int:
     """Delete ShareLink rows that can never serve again, plus their PDF blobs.
 

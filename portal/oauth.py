@@ -38,6 +38,7 @@ from mcp.server.auth.provider import (
     AuthorizationCode,
     AuthorizationParams,
     RefreshToken,
+    RegistrationError,
     TokenError,
     construct_redirect_uri,
 )
@@ -58,13 +59,17 @@ from portal.models import (
     OAuthToken as OAuthTokenRow,
     User,
 )
-from portal.security import check_csrf
+from portal.security import check_csrf, is_allowed_redirect_uri, redirect_uri_host
 from portal.web import render
 
 logger = logging.getLogger("uvicorn.error")
 
 # Single scope — the connector gets full admin-equivalent MCP access or nothing.
 SCOPE = "mcp"
+# client_id prefix for clients an admin pre-registered at Admin → MCP OAuth
+# clients. Dynamically registered clients get a bare UUID from the SDK, so the
+# prefix reliably tells the consent page which clients an admin vouched for.
+PREREGISTERED_CLIENT_PREFIX = "portal-"
 # Authorization codes are single-use and short-lived (RFC 6749 §10.5).
 CODE_TTL = timedelta(seconds=60)
 # A parked /authorize request waiting on the admin to sign in + consent.
@@ -168,6 +173,16 @@ class PortalOAuthProvider:
             return OAuthClientInformationFull.model_validate(data)
 
     async def register_client(self, client_info: OAuthClientInformationFull) -> None:
+        # The SDK types redirect_uris as AnyUrl, which accepts any scheme. A
+        # javascript: URI would surface as a clickable link on the portal origin
+        # once an admin answers the consent page, so hold dynamically registered
+        # clients to the same https / loopback-http rule as admin-created ones.
+        for uri in client_info.redirect_uris or []:
+            if not is_allowed_redirect_uri(str(uri)):
+                raise RegistrationError(
+                    error="invalid_redirect_uri",
+                    error_description="redirect_uris must be https:// (or http:// on localhost)",
+                )
         with Session(engine) as db:
             data = client_info.model_dump(mode="json")
             # Encrypt the client secret at rest (get_client decrypts it back).
@@ -454,6 +469,16 @@ def _login_redirect(txn: str) -> RedirectResponse:
     return RedirectResponse(f"/login?next={nxt}", status_code=303)
 
 
+def _unsafe_redirect_page(request: Request, user):
+    # Clients registered before redirect URIs were validated can still hold an
+    # unsafe one (e.g. javascript:); never put it in front of the admin.
+    return render(
+        request, "oauth_error.html", user=user,
+        message="This client's redirect address isn't allowed. Delete the client "
+                "under Admin → MCP OAuth clients, then connect again.",
+    )
+
+
 def _client_redirect(request: Request, user, url: str):
     """Send the browser back to the OAuth client's redirect_uri.
 
@@ -465,7 +490,12 @@ def _client_redirect(request: Request, user, url: str):
     POST returns to 'self' (allowed); the meta-refresh then makes the
     cross-origin hop, which form-action does not govern. See oauth_redirect.html.
     """
-    return render(request, "oauth_redirect.html", user=user, redirect_url=url)
+    if not is_allowed_redirect_uri(url):
+        return _unsafe_redirect_page(request, user)
+    return render(
+        request, "oauth_redirect.html", user=user,
+        redirect_url=url, redirect_host=redirect_uri_host(url),
+    )
 
 
 def _client_name(db: Session, client_id: str) -> str:
@@ -491,9 +521,13 @@ def consent_form(txn: str, request: Request, db: DbDep, user: UserDep):
             request, "oauth_error.html", user=user,
             message="MCP access is admin-only. Sign in as an admin to connect this client.",
         )
+    if not is_allowed_redirect_uri(pending.redirect_uri):
+        return _unsafe_redirect_page(request, user)
     return render(
         request, "oauth_consent.html", user=user,
         txn=txn, client_name=_client_name(db, pending.client_id), scope=SCOPE,
+        redirect_host=redirect_uri_host(pending.redirect_uri),
+        preregistered=pending.client_id.startswith(PREREGISTERED_CLIENT_PREFIX),
     )
 
 
@@ -528,6 +562,10 @@ def consent_submit(
     redirect_uri = pending.redirect_uri
     state = pending.state
     client_id = pending.client_id  # capture before the row is deleted below
+    if not is_allowed_redirect_uri(redirect_uri):
+        db.delete(pending)
+        db.commit()
+        return _unsafe_redirect_page(request, user)
 
     if decision != "approve":
         db.delete(pending)

@@ -5,7 +5,12 @@
 	<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 	<title>{% block title %}{{ branding.business_name }}{% endblock %}</title>
 
+	{# On an app subdomain (the public intake form) /manifest.webmanifest and
+	   /sw.js belong to the app's bundle, not the portal — don't claim them. #}
+	{% set on_app_host = request.state.app_slug %}
+	{% if not on_app_host %}
 	<link rel="manifest" href="/manifest.webmanifest">
+	{% endif %}
 	{% if branding.favicon_url %}
 	<link rel="icon"{% if branding.favicon_mime %} type="{{ branding.favicon_mime }}"{% endif %} href="{{ branding.favicon_url }}">
 	<link rel="apple-touch-icon" href="{{ branding.favicon_url }}">
@@ -1328,11 +1333,13 @@
 	</main>
 
 	<script>
+		{% if not on_app_host %}
 		if ("serviceWorker" in navigator) {
 			window.addEventListener("load", () => {
 				navigator.serviceWorker.register("/sw.js").catch((e) => console.warn("SW register failed", e));
 			});
 		}
+		{% endif %}
 
 		// Theme cycle: System → Light → Dark → System. Persists to
 		// localStorage["portal-theme"] (matching the boot script in <head>);
