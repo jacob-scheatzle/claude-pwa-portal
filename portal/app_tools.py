@@ -235,12 +235,12 @@ def _render_pdf_bytes(html: str) -> bytes:
         raise AppToolError("PDF service unavailable: WeasyPrint not installed")
     except OSError:
         raise AppToolError("PDF service unavailable")
-    from portal.api import _no_external_fetcher, pdf_render_slot
+    from portal.api import pdf_render_slot, pdf_url_fetcher
 
     buf = io.BytesIO()
     try:
         with pdf_render_slot():
-            HTML(string=html, url_fetcher=_no_external_fetcher).write_pdf(buf)
+            HTML(string=html, url_fetcher=pdf_url_fetcher()).write_pdf(buf)
     except HTTPException:
         raise
     except Exception:

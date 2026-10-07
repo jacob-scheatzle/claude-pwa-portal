@@ -558,19 +558,20 @@ def pdf_render_slot():
         _pdf_slots.release()
 
 
-def _no_external_fetcher(url, timeout=10, ssl_context=None):
-    """url_fetcher that blocks every scheme except data: URIs.
+def pdf_url_fetcher():
+    """A WeasyPrint URL fetcher that resolves ``data:`` URIs and nothing else.
 
     Stops WeasyPrint from making outbound HTTP/file/etc. requests on behalf
-    of caller-controlled HTML (SSRF / local file exfiltration). Inline assets
-    via ``data:`` are still allowed.
+    of caller-controlled HTML (SSRF / local file exfiltration); inline assets
+    via ``data:`` still load. Built on WeasyPrint's own ``URLFetcher`` (68+):
+    the ``default_url_fetcher`` helper this used to wrap is gone in 69, and on
+    70 a plain-function fetcher makes every render that touches a resource —
+    a branded PDF's logo, any <img> — fail. A fresh instance per render, since
+    URLFetcher keeps per-request state.
     """
-    if not url.startswith("data:"):
-        raise ValueError(
-            f"External resource fetching is disabled (got {url[:60]!r})"
-        )
-    from weasyprint.urls import default_url_fetcher
-    return default_url_fetcher(url, timeout=timeout, ssl_context=ssl_context)
+    from weasyprint.urls import URLFetcher
+
+    return URLFetcher(allowed_protocols={"data"}, allow_redirects=False)
 
 
 @router.post("/pdf/render")
@@ -618,7 +619,7 @@ def pdf_render(
     buf = io.BytesIO()
     try:
         with pdf_render_slot():
-            HTML(string=html_to_render, url_fetcher=_no_external_fetcher).write_pdf(buf)
+            HTML(string=html_to_render, url_fetcher=pdf_url_fetcher()).write_pdf(buf)
     except HTTPException:
         _refund_pdf_render(me.id)
         raise

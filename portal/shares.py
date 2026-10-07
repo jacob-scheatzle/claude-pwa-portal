@@ -146,7 +146,7 @@ def create_pdf_share(
     ``data/shares/<token>.pdf``; tokens are random so they don't collide.
     Caller responsibility to gate against the "pdf" service permission.
     """
-    from portal.api import _no_external_fetcher, pdf_render_slot
+    from portal.api import pdf_render_slot, pdf_url_fetcher
 
     try:
         from weasyprint import HTML
@@ -162,7 +162,7 @@ def create_pdf_share(
 
     buf = io.BytesIO()
     with pdf_render_slot():
-        HTML(string=html, url_fetcher=_no_external_fetcher).write_pdf(buf)
+        HTML(string=html, url_fetcher=pdf_url_fetcher()).write_pdf(buf)
     body = buf.getvalue()
     if len(body) > MAX_PDF_BYTES:
         raise RuntimeError(

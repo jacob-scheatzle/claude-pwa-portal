@@ -19,7 +19,7 @@ dependencies = [
     "bcrypt>=4.1",
     "cryptography>=42",
     "email-validator>=2.1",
-    "weasyprint>=60",
+    "weasyprint>=68",
 ]
 
 [project.optional-dependencies]
@@ -35,10 +35,12 @@ dependencies = [
 # main.py, that's not a degraded /mcp endpoint — uvicorn raises
 # AttributeError before it can bind, and the container crash-loops.
 #
-# This bit us for real: the image is built from unpinned ranges, so a
-# rebuild five weeks after the previous one silently resolved 1.x -> 2.0.0
-# and took the portal down on the next `docker compose pull`. Nothing in the
-# application had changed. Raise the ceiling only alongside a port of
+# This bit us for real: the image used to be built from these unpinned
+# ranges, so a rebuild five weeks after the previous one silently resolved
+# 1.x -> 2.0.0 and took the portal down on the next `docker compose pull`.
+# The image now installs only from requirements.lock (see
+# contrib/scripts/update-lockfiles.sh), but keep the ceiling: it stops a
+# lockfile refresh from proposing 2.x. Raise it only alongside a port of
 # mcp_server.py to whatever 2.x replaced the decorators with.
 mcp = ["mcp>=1.27,<2"]
 

@@ -133,7 +133,7 @@ def get_logo_data_uri(db: Session) -> Optional[str]:
     """Return the uploaded logo as a ``data:`` URI for PDF embedding.
 
     WeasyPrint runs with a strict URL fetcher that blocks every scheme but
-    ``data:`` (see ``portal.api._no_external_fetcher``). Logos are read here
+    ``data:`` (see ``portal.api.pdf_url_fetcher``). Logos are read here
     once, base64-encoded, and handed back to the caller for inlining.
     """
     logo_name = (get_setting(db, "branding_logo_path") or "").strip()

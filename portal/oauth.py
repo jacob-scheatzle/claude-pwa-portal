@@ -235,7 +235,7 @@ class PortalOAuthProvider:
             # Expired rows are otherwise only swept at startup; clear them here so
             # the cap below counts live requests only.
             db.exec(delete(OAuthPendingAuthorization).where(
-                OAuthPendingAuthorization.expires_at < _utcnow().replace(tzinfo=None)))
+                OAuthPendingAuthorization.expires_at < _utcnow()))
             for scope_filter, cap in (
                 (OAuthPendingAuthorization.client_id == client.client_id, _MAX_PENDING_PER_CLIENT),
                 (true(), _MAX_LIVE_PENDING),
@@ -463,9 +463,11 @@ def prune_oauth(db: Session) -> None:
     """Best-effort cleanup of expired pending requests, codes, and dead tokens.
 
     Called opportunistically at startup (db.init_db), like the other rolling
-    tables. Cutoff is naive UTC to match how datetimes are stored on SQLite."""
-    cutoff = _utcnow().replace(tzinfo=None)
-    client_cutoff = (_utcnow() - timedelta(days=7)).replace(tzinfo=None)
+    tables."""
+    # Aware UTC: SQLModel >= 0.0.48 refuses naive datetimes in queries (and
+    # earlier versions store an aware value as the same naive-UTC string).
+    cutoff = _utcnow()
+    client_cutoff = _utcnow() - timedelta(days=7)
     try:
         # Encrypt any client secret still stored in plaintext — admin-created
         # clients were written that way before they went through
