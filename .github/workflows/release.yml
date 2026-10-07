@@ -11,6 +11,12 @@ name: Build and publish container images
 # Deployers reference `ghcr.io/<owner>/claude-pwa-portal:latest` from
 # docker-compose.yml; they can pin to a specific version via the
 # PORTAL_IMAGE_TAG env var.
+#
+# Nothing is published unless it's proven first: the regression tests run
+# against the lockfile's exact dependencies, and each image is started and
+# checked (portal /health, `caddy validate` on both Caddyfiles) before the push.
+# Every action is pinned to a commit SHA (the tag it was taken from is in the
+# trailing comment) so a moved or hijacked tag can't change what runs here.
 
 on:
   push:
@@ -18,26 +24,72 @@ on:
     tags: ['v*']
   workflow_dispatch:  # let us trigger manually if needed
 
+# Least privilege by default; jobs widen only what they need.
+permissions:
+  contents: read
+
+# A newer push to main supersedes an in-flight build of an older one, so an
+# out-of-order finish can't leave `latest` pointing at the older commit.
+# Release tags never cancel each other.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
 env:
   REGISTRY: ghcr.io
   PORTAL_IMAGE: ${{ github.repository_owner }}/claude-pwa-portal
   CADDY_IMAGE: ${{ github.repository_owner }}/claude-pwa-portal-caddy
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+
+      - name: System libraries for WeasyPrint
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz0b libfontconfig1 fonts-dejavu-core
+
+      - name: Python 3.12 (the image's version)
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: "3.12"
+
+      - name: Install the locked dependencies
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install --require-hashes -r requirements.lock
+          .venv/bin/pip install --no-deps --no-build-isolation .
+
+      - name: Regression tests
+        run: |
+          status=0
+          for t in tests/test_*.py; do
+            echo "::group::$t"
+            .venv/bin/python "$t" || status=1
+            echo "::endgroup::"
+          done
+          .venv/bin/python contrib/fail2ban/tests/test_pwa_portal_caddy_filter.py || status=1
+          exit $status
+
   build:
+    needs: test
     runs-on: ubuntu-latest
     permissions:
-      contents: write   # write needed so the bundle-skill step can create the GitHub release on v* tags
+      contents: read
       packages: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -45,7 +97,7 @@ jobs:
 
       - name: Portal image metadata
         id: portal_meta
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302  # v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.PORTAL_IMAGE }}
           tags: |
@@ -56,8 +108,34 @@ jobs:
             type=sha,format=short
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Build + push portal image
-        uses: docker/build-push-action@v7
+      - name: Build portal image (local, for the smoke test)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7
+        with:
+          context: .
+          file: Dockerfile
+          load: true
+          tags: portal-smoke:ci
+          cache-from: type=gha,scope=portal
+          cache-to: type=gha,mode=max,scope=portal
+
+      - name: Smoke-test the portal image
+        run: |
+          docker run -d --name portal-smoke -p 8000:8000 \
+            -e SECRET_KEY="$(openssl rand -hex 32)" -e SITE_URL=localhost \
+            -e COOKIES_SECURE=false -e DATA_DIR=/tmp/data \
+            -e DATABASE_URL=sqlite:////tmp/data/portal.db \
+            portal-smoke:ci
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8000/health; then echo; break; fi
+            if [ "$i" = 60 ]; then docker logs portal-smoke; exit 1; fi
+            sleep 1
+          done
+          # The MCP server must have loaded (the mcp 2.0 crash-loop lived here).
+          test "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8000/mcp)" = 401
+          docker rm -f portal-smoke
+
+      - name: Push portal image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7
         with:
           context: .
           file: Dockerfile
@@ -65,11 +143,10 @@ jobs:
           tags: ${{ steps.portal_meta.outputs.tags }}
           labels: ${{ steps.portal_meta.outputs.labels }}
           cache-from: type=gha,scope=portal
-          cache-to: type=gha,mode=max,scope=portal
 
       - name: Caddy image metadata
         id: caddy_meta
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302  # v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.CADDY_IMAGE }}
           tags: |
@@ -80,8 +157,25 @@ jobs:
             type=sha,format=short
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Build + push caddy image
-        uses: docker/build-push-action@v7
+      - name: Build caddy image (local, for the smoke test)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7
+        with:
+          context: .
+          file: Dockerfile.caddy
+          load: true
+          tags: caddy-smoke:ci
+          cache-from: type=gha,scope=caddy
+          cache-to: type=gha,mode=max,scope=caddy
+
+      - name: Validate both Caddyfiles in the built image
+        run: |
+          for f in Caddyfile Caddyfile.http; do
+            docker run --rm --entrypoint caddy -e SITE_URL=portal.example.com caddy-smoke:ci \
+              validate --config "/etc/caddy/$f" --adapter caddyfile
+          done
+
+      - name: Push caddy image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7
         with:
           context: .
           file: Dockerfile.caddy
@@ -89,14 +183,22 @@ jobs:
           tags: ${{ steps.caddy_meta.outputs.tags }}
           labels: ${{ steps.caddy_meta.outputs.labels }}
           cache-from: type=gha,scope=caddy
-          cache-to: type=gha,mode=max,scope=caddy
 
-      # On a v* tag push, bundle the Claude skill as a release asset so
-      # users can download it directly from the GitHub Releases page
-      # instead of cloning + zipping. Mirrors the README's claude.ai
-      # install path.
+  # On a v* tag push, bundle the Claude skill as a release asset so users can
+  # download it directly from the GitHub Releases page instead of cloning +
+  # zipping. Mirrors the README's claude.ai install path. The only job that
+  # can write to the repository.
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+
       - name: Build Claude skill zip
-        if: startsWith(github.ref, 'refs/tags/v')
         run: |
           cd claude-skill/pwa-portal-app
           zip -r "${GITHUB_WORKSPACE}/pwa-portal-app.zip" . \
@@ -104,8 +206,7 @@ jobs:
           ls -lh "${GITHUB_WORKSPACE}/pwa-portal-app.zip"
 
       - name: Create release with skill bundled
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64  # v3
         with:
           files: pwa-portal-app.zip
           generate_release_notes: true

@@ -1,0 +1,16 @@
+# Keep the build context to what the images need. Without this, `docker build`
+# sends .env (SECRET_KEY, SMTP password) and data/ (the database, every app and
+# user file) to the builder on every build.
+.env
+.env.*
+!.env.example
+data/
+.venv/
+venv/
+.git/
+**/__pycache__/
+**/*.pyc
+.DS_Store
+.claude/
+*.egg-info/
+pwa-portal-app.zip

@@ -5,7 +5,9 @@
 #
 # Developers iterating on either Caddyfile use the dev compose override
 # which bind-mounts the local files over these baked copies.
-FROM caddy:2
+# Pinned by digest so a rebuild can't pick up a different Caddy than the one
+# the Caddyfiles were validated against. Bump tag + digest together.
+FROM caddy:2.11.7@sha256:f2a1290d0463aad60660d4ec134943f183ee2a5f6c3eb7bf32dd984f2f020772
 COPY Caddyfile /etc/caddy/Caddyfile
 COPY Caddyfile.http /etc/caddy/Caddyfile.http
 COPY caddy-entrypoint.sh /usr/local/bin/portal-caddy-entrypoint.sh

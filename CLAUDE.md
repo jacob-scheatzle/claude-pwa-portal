@@ -50,7 +50,7 @@ alembic/              Migrations; initial revision is 7d3122820cf2
 claude-skill/         The pwa-portal-app skill (SKILL.md + templates + scripts)
 examples/             hello-receipt — reference child app using every SDK service
 docs/                 deploying, app-authoring, api-reference, project-state, per-app-origin-design
-aws/                  Cloud-native deploy: Terraform (ECS Fargate+ALB+CloudFront, RDS, S3, WAF) + bootstrap/deploy scripts + README
+aws/                  EXPERIMENTAL, unmaintained cloud deploy: Terraform (ECS Fargate+ALB+CloudFront, RDS, S3, WAF) + scripts — known not to start as written (see its README)
 ```
 
 ---
@@ -113,6 +113,16 @@ for t in tests/test_*.py; do .venv/bin/python "$t" || echo "FAILED: $t"; done
 Each is a standalone script (no pytest) that boots the app against a throwaway
 SQLite DB via `tests/_harness.py`; needs `httpx` (`.venv/bin/pip install httpx`).
 
+### Updating dependencies
+```bash
+./contrib/scripts/update-lockfiles.sh              # everything, within pyproject.toml's ranges
+./contrib/scripts/update-lockfiles.sh -P weasyprint # just one package
+# then run the regression tests against the locked set (Python 3.12, like the image):
+python3.12 -m venv /tmp/lockvenv && /tmp/lockvenv/bin/pip install --require-hashes -r requirements.lock
+for t in tests/test_*.py; do /tmp/lockvenv/bin/python "$t" || echo "FAILED: $t"; done
+```
+CI runs the same tests on every push and refuses to publish an image that fails them.
+
 ### Smoke-test the running stack
 ```bash
 # Through Caddy (HTTPS, self-signed for localhost)
@@ -158,6 +168,7 @@ docker compose exec portal python -m portal.cli reset-password admin@example.com
 - **Settings via the `settings` object in `portal.config`** — never read env vars directly in handlers.
 - **Path-traversal safety:** any code touching user-supplied filenames must do `.resolve()` then `relative_to(base)` check. Patterns in `portal/apps.py:_safe_extract`, `portal/api.py:storage_*`.
 - **Don't add new top-level dependencies casually.** Each one is in `pyproject.toml`; adding a base dep rebuilds the Docker image. We're at 12 base deps (plus the opt-in `[mcp]` and `[aws]` extras); aim to stay under ~15.
+- **The image installs only from `requirements.lock`** (hash-pinned; `requirements-aws.lock` for `INSTALL_AWS`). Changing `pyproject.toml` dependencies does nothing until you run `./contrib/scripts/update-lockfiles.sh`, run the tests against the result, and commit the lockfiles. Base images in `Dockerfile` / `Dockerfile.caddy` and the GitHub Actions are pinned by digest/SHA too — bump them deliberately.
 
 ---
 
@@ -187,7 +198,7 @@ Before making changes:
 
 Before committing:
 
-1. `.venv/bin/python -c "from portal.main import app; print(len(app.routes))"` — imports clean? expected route count?
+1. `.venv/bin/python -c "from portal.main import app"` — imports clean? (Don't rely on `len(app.routes)`: FastAPI ≥ 0.142 nests included routers instead of flattening them.)
 2. Run the smoke recipe from project-state.md if the change is non-trivial.
 3. Commit messages should explain **why**, not just **what**. The existing commits set the bar.
 4. Never `--no-verify` past hooks. Never amend a commit that's already pushed.
@@ -221,7 +232,7 @@ services are declared), stored in the new `App.tools` JSON column (migration
 `mcp_server.py` surfaces each enabled app's tools dynamically as `<slug>__<tool>`
 (its `list_tools` reads the DB per request, so no restart/notification needed).
 
-A second, **cloud-native AWS deployment** lives in `aws/` (Terraform: ECS
+A second, **experimental and unmaintained** cloud-native AWS deployment lives in `aws/` (known issues listed at the top of its README; the VPS Docker/Caddy stack is the supported one) (Terraform: ECS
 Fargate + ALB + CloudFront, RDS PostgreSQL, S3, WAF; `scripts/{bootstrap,deploy}.sh`;
 `README.md`). It runs the **same image** with two pluggable backends selected at
 runtime — **never hard-code `Path(settings.data_dir)/…` for blob state again**;

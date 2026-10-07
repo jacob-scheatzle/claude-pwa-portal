@@ -1,5 +1,19 @@
 # Deploying the portal on AWS (ECS Fargate + ALB + CloudFront)
 
+> **Experimental — not maintained or verified end to end.** The supported
+> deployment is Docker + Caddy on a VPS ([../docs/deploying.md](../docs/deploying.md)).
+> An October 2026 review found that this stack **can't start as written**: the
+> Caddy sidecar image is pulled from `ghcr.io` by tasks in private subnets that
+> have no NAT or other route to the internet. Fix that (mirror the Caddy image
+> into ECR, or add a NAT gateway) before trying it, and also review:
+> `deletion_protection = false` + `skip_final_snapshot = true` on RDS (a
+> destroy or replacing change loses the database *and* its backups); local
+> Terraform state that holds the RDS password, `SECRET_KEY`, and the
+> origin-verify secret in plaintext; every client appearing as the ALB's IP to
+> the portal's per-IP limits (configure `trusted_proxies` for CloudFront); the
+> ALB health check never reaching the portal; and `X-Origin-Verify` being
+> written to the CloudWatch access log.
+
 This is an alternative to the Docker/Caddy-on-a-VPS deployment in
 [../docs/deploying.md](../docs/deploying.md). It runs the **same portal image**
 as a cloud-native stack:

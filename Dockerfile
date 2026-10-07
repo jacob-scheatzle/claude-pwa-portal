@@ -1,4 +1,7 @@
-FROM python:3.12-slim
+# Pinned by digest: a moving tag means a rebuild can silently ship a different
+# OS + Python than the one that was tested. Bump deliberately (tag + digest
+# together) — see "Updating dependencies" in CLAUDE.md.
+FROM python:3.12.15-slim@sha256:05cda9777409a9c3ffddd94a4c476b79f0769a0b4857f0c7ed9226b6800b0d6f
 
 # System libraries WeasyPrint needs at runtime, plus a non-root runtime user.
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -12,7 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 	&& useradd --system --uid 1001 --gid portal --no-create-home --shell /usr/sbin/nologin portal
 
 WORKDIR /build
-COPY pyproject.toml ./
+COPY pyproject.toml requirements.lock requirements-aws.lock ./
 COPY portal/ ./portal/
 COPY alembic.ini ./
 COPY alembic/ ./alembic/
@@ -25,17 +28,18 @@ COPY alembic/ ./alembic/
 # PostgreSQL/RDS). Off by default so the standard Docker/Caddy image stays lean;
 # the AWS image (aws/) builds with --build-arg INSTALL_AWS=true. psycopg ships a
 # binary wheel and boto3 is pure Python, so no extra system libraries are needed.
+#
+# Dependencies come from hash-pinned lockfiles, never fresh resolution: a
+# rebuild that silently picked up mcp 2.0 crash-looped production, and one that
+# picked up WeasyPrint 70 / SQLModel 0.0.48 broke PDFs with images and OAuth.
+# The lockfiles include the mcp extra; INSTALL_MCP=false removes it afterwards.
 ARG INSTALL_MCP=true
 ARG INSTALL_AWS=false
-RUN extras=""; \
-	if [ "$INSTALL_MCP" = "true" ]; then extras="${extras}mcp,"; fi; \
-	if [ "$INSTALL_AWS" = "true" ]; then extras="${extras}aws,"; fi; \
-	extras="$(echo "$extras" | sed 's/,$//')"; \
-	if [ -n "$extras" ]; then \
-		pip install --no-cache-dir ".[$extras]"; \
-	else \
-		pip install --no-cache-dir .; \
-	fi
+RUN lock=requirements.lock; \
+	if [ "$INSTALL_AWS" = "true" ]; then lock=requirements-aws.lock; fi; \
+	pip install --no-cache-dir --require-hashes -r "$lock" \
+	&& pip install --no-cache-dir --no-deps --no-build-isolation . \
+	&& if [ "$INSTALL_MCP" != "true" ]; then pip uninstall -y mcp; fi
 
 WORKDIR /
 USER portal

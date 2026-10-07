@@ -428,8 +428,10 @@ docker compose up -d  # recreate containers with the new images
 ```
 
 That's it — no `git pull`, no rebuild. The container ships a pinned set
-of dependencies plus the Alembic migration chain, so a normal upgrade is
-just two commands.
+of dependencies (installed from the repo's hash-pinned lockfile, on
+digest-pinned base images) plus the Alembic migration chain, so a normal
+upgrade is just two commands. An image is only published after the
+regression tests pass and the built container answers `/health`.
 
 **Reclaim disk space.** Each `docker compose pull` leaves the previous
 `:latest` image behind as a dangling (untagged) layer, so repeated upgrades
