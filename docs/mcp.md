@@ -234,7 +234,7 @@ that declares them is uploaded/enabled and disappear when it's disabled, named
 | `name` | snake_case, unique within the app. Exposed as `<slug>__<name>`. |
 | `description` | what the tool does — shown to Claude. |
 | `params[]` | each `{name, type, required, description}`. `type` is `string`/`number`/`boolean`, or `array` for a list of objects — an array param adds `fields: [{name, type, required, description}]` for the element shape (line items). Becomes the tool's input schema. |
-| `render.html` | inline template; `{{ param }}` placeholders are substituted with **autoescaped** values via a sandboxed Jinja environment, then rendered to PDF (no external resources are fetched). |
+| `render.html` | inline template; `{{ param }}` placeholders are substituted with **autoescaped** values via a sandboxed Jinja environment, then rendered to PDF (no external resources are fetched). Templates render in a separate process capped at 15 s, 512 MB, and 4 MB of output — a template that loops or allocates without bound fails the call instead of stalling the portal. |
 | `render.branded` | prepend the portal's branding header (business name + logo). |
 | `deliver.kind` | what to do with the rendered PDF — see below. |
 

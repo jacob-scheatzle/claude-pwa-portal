@@ -103,6 +103,34 @@ def create_storage_share(
     return row
 
 
+# Rendered share PDFs live outside every storage namespace, so they get their
+# own per-user ceiling across the user's live (unexpired, unrevoked) PDF shares.
+MAX_PDF_SHARE_BYTES_PER_USER = 200 * 1024 * 1024
+
+
+class ShareQuotaExceeded(RuntimeError):
+    """The user's live PDF shares would exceed MAX_PDF_SHARE_BYTES_PER_USER."""
+
+
+def _live_pdf_share_bytes(db: Session, user_id: int) -> int:
+    now = datetime.now(timezone.utc)
+    rows = db.exec(
+        select(ShareLink).where(
+            ShareLink.created_by == user_id,
+            ShareLink.kind == "pdf",
+            ShareLink.revoked_at.is_(None),  # type: ignore[union-attr]
+            ShareLink.expires_at > now,
+        )
+    ).all()
+    storage = get_storage()
+    total = 0
+    for row in rows:
+        path = (row.payload or {}).get("path")
+        if path:
+            total += storage.size(f"shares/{path}") or 0
+    return total
+
+
 def create_pdf_share(
     db: Session,
     *,
@@ -120,7 +148,7 @@ def create_pdf_share(
     ``data/shares/<token>.pdf``; tokens are random so they don't collide.
     Caller responsibility to gate against the "pdf" service permission.
     """
-    from portal.api import _no_external_fetcher
+    from portal.api import _no_external_fetcher, pdf_render_slot
 
     try:
         from weasyprint import HTML
@@ -135,11 +163,18 @@ def create_pdf_share(
     import io
 
     buf = io.BytesIO()
-    HTML(string=html, url_fetcher=_no_external_fetcher).write_pdf(buf)
+    with pdf_render_slot():
+        HTML(string=html, url_fetcher=_no_external_fetcher).write_pdf(buf)
     body = buf.getvalue()
     if len(body) > MAX_PDF_BYTES:
         raise RuntimeError(
             f"Rendered PDF exceeds {MAX_PDF_BYTES // (1024 * 1024)}MB share cap"
+        )
+    if _live_pdf_share_bytes(db, user.id or 0) + len(body) > MAX_PDF_SHARE_BYTES_PER_USER:
+        raise ShareQuotaExceeded(
+            f"Live PDF share links would exceed "
+            f"{MAX_PDF_SHARE_BYTES_PER_USER // (1024 * 1024)}MB for this user; "
+            "revoke some or let them expire."
         )
     get_storage().write(f"shares/{token}.pdf", body, content_type="application/pdf")
 

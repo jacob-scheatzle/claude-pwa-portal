@@ -22,14 +22,16 @@ Session across threads.
 from __future__ import annotations
 
 import io
+import json
 import math
+import os
+import subprocess
+import sys
 from email.message import EmailMessage
 from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import HTTPException
-from jinja2 import StrictUndefined
-from jinja2.sandbox import SandboxedEnvironment
 from sqlmodel import Session, select
 
 from portal.access import user_can_access_app
@@ -43,13 +45,15 @@ class AppToolError(Exception):
     this message — keep messages user-facing and free of internals."""
 
 
-# Two sandboxed Jinja environments: HTML output is autoescaped (params can't
-# inject markup into the rendered document); plain-text fields (email to /
-# subject, storage key, filename) are NOT autoescaped — escaping an email
+# Tool templates render in portal/template_worker.py — a sandboxed Jinja
+# environment in a separate, memory- and CPU-capped process (see that module
+# for why), killed if it outlives this timeout. HTML output is autoescaped
+# (params can't inject markup into the rendered document); plain-text fields
+# (email to / subject, storage key, filename) are NOT — escaping an email
 # address or storage key would corrupt it. ``StrictUndefined`` surfaces typos
 # (an undeclared ``{{ param }}``) as a clear error rather than silently blank.
-_HTML_ENV = SandboxedEnvironment(autoescape=True, undefined=StrictUndefined)
-_TEXT_ENV = SandboxedEnvironment(autoescape=False, undefined=StrictUndefined)
+_TEMPLATE_WORKER = Path(__file__).with_name("template_worker.py")
+_RENDER_TIMEOUT_SECONDS = 15
 
 # Bound a single tool call's blast radius. An array param can't exceed this many
 # elements (also emitted as JSON-Schema ``maxItems``), and an email-deliver tool
@@ -165,22 +169,44 @@ def _build_context(tool: dict, args: dict) -> dict:
     return ctx
 
 
-def _render_html(template: str, ctx: dict) -> str:
+def _render_templates(templates: dict[str, tuple[Optional[str], bool]], ctx: dict) -> dict[str, str]:
+    """Render ``{name: (source, autoescape)}`` in one worker process.
+
+    Returns ``{name: output}``; a missing/empty source renders as "". One
+    process per tool call, however many of its fields are templated.
+    """
+    wanted = {
+        name: {"source": source, "autoescape": autoescape}
+        for name, (source, autoescape) in templates.items()
+        if source
+    }
+    out: dict[str, str] = {name: "" for name in templates}
+    if not wanted:
+        return out
     try:
-        return _HTML_ENV.from_string(template).render(**ctx)
-    except Exception as e:  # undefined var, template syntax, sandbox violation
-        raise AppToolError(f"template render failed: {e}")
+        proc = subprocess.run(
+            [sys.executable, "-I", str(_TEMPLATE_WORKER)],
+            input=json.dumps({"templates": wanted, "context": ctx}).encode(),
+            capture_output=True,
+            timeout=_RENDER_TIMEOUT_SECONDS,
+            env={"PATH": os.environ.get("PATH", ""), "LANG": "C.UTF-8"},
+        )
+    except subprocess.TimeoutExpired:
+        raise AppToolError("template render failed: it took too long")
+    try:
+        result = json.loads(proc.stdout)
+    except ValueError:
+        # Killed by the CPU or memory cap before it could report.
+        raise AppToolError("template render failed: it exceeded the render limits")
+    if "error" in result:
+        raise AppToolError(f"template render failed: {result['error']}")
+    out.update(result["ok"])
+    return out
 
 
-def _render_text(template: Optional[str], ctx: dict) -> str:
-    if not template:
-        return ""
-    try:
-        out = _TEXT_ENV.from_string(template).render(**ctx)
-    except Exception as e:
-        raise AppToolError(f"template render failed: {e}")
+def _one_line(text: str) -> str:
     # Strip CR/LF so a param can't inject extra email headers or break a key.
-    return out.replace("\r", " ").replace("\n", " ").strip()
+    return text.replace("\r", " ").replace("\n", " ").strip()
 
 
 def _maybe_brand(db: Session, html: str, branded: bool) -> str:
@@ -209,11 +235,14 @@ def _render_pdf_bytes(html: str) -> bytes:
         raise AppToolError("PDF service unavailable: WeasyPrint not installed")
     except OSError:
         raise AppToolError("PDF service unavailable")
-    from portal.api import _no_external_fetcher
+    from portal.api import _no_external_fetcher, pdf_render_slot
 
     buf = io.BytesIO()
     try:
-        HTML(string=html, url_fetcher=_no_external_fetcher).write_pdf(buf)
+        with pdf_render_slot():
+            HTML(string=html, url_fetcher=_no_external_fetcher).write_pdf(buf)
+    except HTTPException:
+        raise
     except Exception:
         raise AppToolError("PDF render failed")
     return buf.getvalue()
@@ -282,8 +311,15 @@ def run_tool(
             )
 
         ctx = _build_context(tool, args)
-        html = _maybe_brand(db, _render_html(render.get("html", ""), ctx), bool(render.get("branded")))
-        filename = _render_text(render.get("filename"), ctx) or "document.pdf"
+        rendered = _render_templates({
+            "html": (render.get("html", ""), True),
+            "filename": (render.get("filename"), False),
+            "key": (deliver.get("key"), False),
+            "to": (deliver.get("to"), False),
+            "subject": (deliver.get("subject"), False),
+        }, ctx)
+        html = _maybe_brand(db, rendered["html"], bool(render.get("branded")))
+        filename = _one_line(rendered["filename"]) or "document.pdf"
 
         # Rate-limit slots are reserved BEFORE the work and refunded if it fails —
         # checking afterwards would only report the limit once the PDF was
@@ -328,7 +364,7 @@ def run_tool(
                 }
 
             if kind == "store":
-                key = _render_text(deliver.get("key"), ctx)
+                key = _one_line(rendered["key"])
                 safe_key = _validate_key(key)
                 pdf = _render_pdf_bytes(html)
                 if len(pdf) > MAX_OBJECT_BYTES:
@@ -360,7 +396,7 @@ def run_tool(
                 cfg = smtp_config(db)
                 if not cfg["host"]:
                     raise AppToolError("Email service unavailable: SMTP not configured")
-                to_raw = _render_text(deliver.get("to"), ctx)
+                to_raw = _one_line(rendered["to"])
                 to_list = [a.strip() for a in to_raw.split(",") if a.strip()]
                 if not to_list:
                     raise AppToolError("no recipient resolved for email delivery")
@@ -376,7 +412,7 @@ def run_tool(
                     raise AppToolError(str(e))
                 _enforce_recipient_allowlist(to_list, _recipient_domain_allowlist(db))
                 # Template output may span lines; a header can't.
-                subject = " ".join(_render_text(deliver.get("subject"), ctx).split())
+                subject = " ".join(rendered["subject"].split())
                 _check_email_rate(user.id, len(to_list))
                 email_slots = len(to_list)
 
@@ -411,4 +447,7 @@ def run_tool(
                 # Reused SDK helpers (rate limits, recipient allowlist, key
                 # validation) signal via HTTPException; surface their message.
                 raise AppToolError(str(getattr(e, "detail", e)))
+            if isinstance(e, RuntimeError):
+                # create_pdf_share's size / quota / availability errors.
+                raise AppToolError(str(e))
             raise

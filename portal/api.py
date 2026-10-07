@@ -11,7 +11,8 @@ from collections import deque
 from datetime import datetime, timezone
 from email.message import EmailMessage
 from pathlib import Path
-from threading import Lock
+from contextlib import contextmanager
+from threading import BoundedSemaphore, Lock
 from typing import Annotated, Optional
 
 import anyio
@@ -538,6 +539,26 @@ def _refund_pdf_render(user_id: int) -> None:
             dq.pop()
 
 
+# WeasyPrint is CPU-bound and can't be interrupted; a large document takes tens
+# of seconds. Sync handlers share one 40-thread pool, so unbounded concurrent
+# renders could occupy all of it and stall login, admin, and every other API
+# call. Every render (SDK, share links, app tools) takes one of these slots; a
+# caller that can't get one within _PDF_SLOT_WAIT_SECONDS gets a 503.
+_PDF_CONCURRENCY = 2
+_PDF_SLOT_WAIT_SECONDS = 5
+_pdf_slots = BoundedSemaphore(_PDF_CONCURRENCY)
+
+
+@contextmanager
+def pdf_render_slot():
+    if not _pdf_slots.acquire(timeout=_PDF_SLOT_WAIT_SECONDS):
+        raise HTTPException(503, "The PDF service is busy; try again shortly.")
+    try:
+        yield
+    finally:
+        _pdf_slots.release()
+
+
 def _no_external_fetcher(url, timeout=10, ssl_context=None):
     """url_fetcher that blocks every scheme except data: URIs.
 
@@ -597,7 +618,11 @@ def pdf_render(
 
     buf = io.BytesIO()
     try:
-        HTML(string=html_to_render, url_fetcher=_no_external_fetcher).write_pdf(buf)
+        with pdf_render_slot():
+            HTML(string=html_to_render, url_fetcher=_no_external_fetcher).write_pdf(buf)
+    except HTTPException:
+        _refund_pdf_render(me.id)
+        raise
     except Exception:
         # WeasyPrint exceptions can carry internal paths and library versions.
         # Log the detail server-side; return a generic message to the caller.
@@ -987,8 +1012,8 @@ class ShareCreateRequest(BaseModel):
     kind: str = Field(default="storage")  # "storage" or "pdf"
     # storage kind:
     key: Optional[str] = None
-    # pdf kind:
-    html: Optional[str] = None
+    # pdf kind (same cap as /pdf/render):
+    html: Optional[str] = Field(default=None, max_length=_MAX_PDF_HTML_BYTES)
     # both:
     filename: Optional[str] = Field(default=None, max_length=80)
     ttl_seconds: Optional[int] = None
@@ -1023,6 +1048,7 @@ def share_create(
         raise HTTPException(400, "kind must be 'storage' or 'pdf'")
 
     from portal.shares import (
+        ShareQuotaExceeded,
         create_pdf_share,
         create_storage_share,
         share_url,
@@ -1051,6 +1077,8 @@ def share_create(
         _require_service(app_row, "pdf")
         if not body.html:
             raise HTTPException(400, "pdf shares require 'html'")
+        # A PDF share renders a PDF, so it counts against the same limit.
+        _check_pdf_rate(me.id)
         try:
             row = create_pdf_share(
                 db,
@@ -1061,8 +1089,15 @@ def share_create(
                 ttl_seconds=body.ttl_seconds,
                 max_views=body.max_views,
             )
+        except ShareQuotaExceeded as e:
+            _refund_pdf_render(me.id)
+            raise HTTPException(413, str(e))
         except RuntimeError as e:
+            _refund_pdf_render(me.id)
             raise HTTPException(500, str(e))
+        except BaseException:
+            _refund_pdf_render(me.id)
+            raise
 
     return {
         "token": row.token,

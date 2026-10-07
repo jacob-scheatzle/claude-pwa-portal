@@ -23,6 +23,7 @@ portal/
   mcp_server.py       Optional /mcp MCP server (low-level Server, dynamic list_tools) — app-mgmt tools + each app's declared tools; ASGI auth accepts admin API token OR OAuth access token; gated by MCP_ENABLED + [mcp] extra
   oauth.py            OAuth 2.1 AS for the /mcp connector (claude.ai can't use static tokens): mcp-SDK provider over OAuth* tables + /oauth/consent (reuses admin login). DCR + PKCE + refresh; admin-only
   app_tools.py        Phase 2 executor — runs an app's declared tools (sandboxed-Jinja template → PDF → share/email/store/download) over trusted primitives
+  template_worker.py  Standalone script app_tools runs per tool call to render its (untrusted) templates in a memory/CPU-capped child process with a timeout — never import portal code into it
   scheduler.py        In-process asyncio ticker (started in lifespan) — fires due ScheduledRun rows via app_tools.run_tool; no external cron; per-process so the deployment stays single-uvicorn
   shares.py           Public tokenized share URLs (/s/<token>) — storage shares (live re-read) + one-shot pdf shares; TTL + max_views clamping (cap 1000); admin revoke
   forms.py            Public no-sign-in intake forms served on the app's own origin (/forms/<form>); the only public WRITE surface — honeypot + per-IP rate limit + declared-field-only recording; records FormSubmission, optional notify email
