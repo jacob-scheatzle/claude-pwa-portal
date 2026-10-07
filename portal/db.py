@@ -3,9 +3,9 @@ from pathlib import Path
 
 from sqlmodel import Session, create_engine
 
-from portal.config import ensure_data_dir, settings
+from portal.config import settings, use_data_dir_for_temp_files
 
-ensure_data_dir()
+use_data_dir_for_temp_files()
 
 
 def _engine_kwargs() -> dict:
@@ -118,6 +118,34 @@ def init_db() -> None:
                 pass
     except Exception:
         pass
+    _sweep_stale_temp_files()
+
+
+def _sweep_stale_temp_files(max_age_hours: int = 24) -> None:
+    """Remove leftovers under ``<data_dir>/.tmp`` older than ``max_age_hours``.
+
+    Uploads, bundle extraction, and Backup / Export clean up after themselves,
+    but a crash or restart mid-operation strands a file or directory there, and
+    unlike the old tmpfs ``/tmp`` this volume survives restarts. Best-effort.
+    """
+    import shutil
+    import time
+
+    cutoff = time.time() - max_age_hours * 3600
+    try:
+        entries = list((Path(settings.data_dir) / ".tmp").iterdir())
+    except OSError:
+        return
+    for entry in entries:
+        try:
+            if entry.lstat().st_mtime >= cutoff:
+                continue
+            if entry.is_dir() and not entry.is_symlink():
+                shutil.rmtree(entry, ignore_errors=True)
+            else:
+                entry.unlink()
+        except OSError:
+            pass
 
 
 def get_db():

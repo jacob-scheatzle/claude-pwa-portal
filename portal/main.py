@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import ipaddress
 import logging
 import re
 import threading
@@ -33,6 +34,7 @@ from portal.deps import current_user, require_user
 from portal.middleware import (
     APP_BUNDLE_ROUTE_PREFIX,
     AppHostGateMiddleware,
+    BodySizeLimitMiddleware,
     ChildAppCSPMiddleware,
     HostDispatchMiddleware,
 )
@@ -147,6 +149,8 @@ app.add_middleware(
 app.add_middleware(AppHostGateMiddleware)
 app.add_middleware(ChildAppCSPMiddleware, engine=engine)
 app.add_middleware(HostDispatchMiddleware)
+# Outermost of all: refuse an oversized body before anything reads it.
+app.add_middleware(BodySizeLimitMiddleware)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.include_router(apps_module.router)
 app.include_router(api_module.router)
@@ -236,58 +240,106 @@ def _safe_next(value: str) -> str:
 
 # ----- Login rate limit (per-process, lost on restart) -----
 #
-# Rolling-window throttle keyed by (client IP, normalized email). Five failed
-# POSTs in ten minutes triggers a 429. Cleaned lazily on each check so the
-# dict can't grow without bound. Not a substitute for a real distributed
-# limiter; deliberately omits slowapi to keep dependencies minimal.
+# Two rolling-window limits, both counted atomically before bcrypt runs:
+#   - per (client network, email): 5 attempts in 10 minutes without a success
+#     — the classic per-account guess limit;
+#   - per client network across ALL emails: 30 attempts. Without it one source
+#     could spray throwaway emails, and spraying is also how it would flush its
+#     own blocked entry out of a size-capped table.
+# A "client network" is the IPv4 address, or the IPv6 /64 (one subscriber's
+# allocation, so rotating addresses inside it gains nothing). A success clears
+# its (network, email) entry and refunds one network attempt. Tables are capped
+# at _LOGIN_FAIL_MAX_KEYS entries as a memory safety valve — far more than the
+# 30-per-network limit lets any realistic set of sources fill in one window.
+# Not a substitute for a real distributed limiter; deliberately omits slowapi to
+# keep dependencies minimal.
 _LOGIN_FAIL_WINDOW_SECONDS = 600
 _LOGIN_FAIL_LIMIT = 5
+_LOGIN_NET_LIMIT = 30
+_LOGIN_FAIL_MAX_KEYS = 100_000
+# Longest email we'll key, log, or look up. RFC 5321 caps a deliverable address
+# at 254 characters, so nothing longer can belong to an account.
+_MAX_EMAIL_INPUT = 254
 _login_failures: dict[tuple[str, str], list[float]] = {}
+_login_net_hits: dict[str, list[float]] = {}
+_login_last_full_prune = 0.0
 # Login handlers are sync `def`, so FastAPI runs them in a threadpool — several
-# can mutate ``_login_failures`` concurrently. Guard every read/modify of the
-# dict with this lock so a prune can't race an append (lost update / corrupt
-# list under iteration).
+# can mutate the tables concurrently. Guard every read/modify with this lock so
+# a prune can't race an append (lost update / corrupt list under iteration).
 _login_failures_lock = threading.Lock()
+
+
+def _client_net(ip: str) -> str:
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return ip
+    if addr.version == 6:
+        if addr.ipv4_mapped:
+            return str(addr.ipv4_mapped)
+        return str(ipaddress.ip_network(f"{addr}/64", strict=False))
+    return str(addr)
 
 
 def _login_key(request: Request, email: str) -> tuple[str, str]:
     ip = request.client.host if request.client else "unknown"
-    return (ip, email.strip().lower())
+    return (_client_net(ip), email.strip().lower()[:_MAX_EMAIL_INPUT])
 
 
-def _prune_login_failures(now: float) -> None:
-    # Caller must hold ``_login_failures_lock``. Snapshot the items before
-    # iterating so we never mutate the dict mid-iteration.
+def _fresh_hits(table: dict, key, cutoff: float) -> list[float]:
+    """``key``'s hits inside the window (dropping the entry if none are)."""
+    hits = [t for t in table.get(key, ()) if t > cutoff]
+    if hits:
+        table[key] = hits
+    else:
+        table.pop(key, None)
+    return hits
+
+
+def _add_hit(table: dict, key, now: float) -> None:
+    if key not in table:
+        while len(table) >= _LOGIN_FAIL_MAX_KEYS:
+            table.pop(next(iter(table)))
+        table[key] = []
+    table[key].append(now)
+
+
+def _reserve_login_attempt(key: tuple[str, str]) -> bool:
+    """Count an attempt against ``key``; False if it's already over a limit.
+
+    Checking and counting under one lock acquisition is what makes the limit
+    hold under concurrency: with a separate check-then-record, a burst of
+    parallel POSTs all pass the check during the ~250 ms bcrypt and each gets a
+    guess. Every attempt counts; a successful login clears it again.
+    """
+    global _login_last_full_prune
+    now = time.monotonic()
     cutoff = now - _LOGIN_FAIL_WINDOW_SECONDS
-    stale: list[tuple[str, str]] = []
-    for key, hits in list(_login_failures.items()):
-        fresh = [t for t in hits if t > cutoff]
-        if fresh:
-            _login_failures[key] = fresh
-        else:
-            stale.append(key)
-    for key in stale:
-        _login_failures.pop(key, None)
-
-
-def _login_blocked(key: tuple[str, str]) -> bool:
-    now = time.monotonic()
     with _login_failures_lock:
-        _prune_login_failures(now)
-        hits = _login_failures.get(key, [])
-        return len(hits) >= _LOGIN_FAIL_LIMIT
-
-
-def _record_login_failure(key: tuple[str, str]) -> None:
-    now = time.monotonic()
-    with _login_failures_lock:
-        _prune_login_failures(now)
-        _login_failures.setdefault(key, []).append(now)
+        # Expire every entry now and then rather than on every request, so a
+        # large table doesn't make each login walk all of it.
+        if now - _login_last_full_prune > 30:
+            for table in (_login_failures, _login_net_hits):
+                for k in list(table):
+                    _fresh_hits(table, k, cutoff)
+            _login_last_full_prune = now
+        net = key[0]
+        if (
+            len(_fresh_hits(_login_net_hits, net, cutoff)) >= _LOGIN_NET_LIMIT
+            or len(_fresh_hits(_login_failures, key, cutoff)) >= _LOGIN_FAIL_LIMIT
+        ):
+            return False
+        _add_hit(_login_failures, key, now)
+        _add_hit(_login_net_hits, net, now)
+        return True
 
 
 def _clear_login_failures(key: tuple[str, str]) -> None:
     with _login_failures_lock:
         _login_failures.pop(key, None)
+        net_hits = _login_net_hits.get(key[0])
+        if net_hits:
+            net_hits.pop()
 
 
 # ----- Dashboard -----
@@ -643,9 +695,12 @@ def login_submit(
     check_csrf(request, csrf)
     from portal.health import record_login_attempt
 
+    # Bound what an anonymous caller can push into the throttle, the audit log,
+    # and security.log; no account has a longer address.
+    email = email[:_MAX_EMAIL_INPUT]
     client_ip = request.client.host if request.client else "unknown"
     key = _login_key(request, email)
-    if _login_blocked(key):
+    if not _reserve_login_attempt(key):
         record_login_attempt(
             db, ip=client_ip, email=email, success=False, reason="rate_limited",
         )
@@ -674,7 +729,6 @@ def login_submit(
     else:
         bad_password = not verify_password(password, user.password_hash)
     if user is None or bad_password:
-        _record_login_failure(key)
         record_login_attempt(
             db, ip=client_ip, email=email, success=False, reason="bad_credentials",
         )

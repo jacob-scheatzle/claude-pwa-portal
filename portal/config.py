@@ -150,3 +150,23 @@ def ensure_data_dir() -> Path:
     p = Path(settings.data_dir)
     p.mkdir(parents=True, exist_ok=True)
     return p
+
+
+def use_data_dir_for_temp_files() -> Path:
+    """Send Python's temp files to ``<data_dir>/.tmp`` instead of ``/tmp``.
+
+    In the Docker stack ``/tmp`` is a tmpfs: RAM, charged against the
+    container's memory limit. Multipart uploads spool there before any auth
+    runs, bundles extract there, and Backup / Export stage whole archives
+    there, so large-but-legitimate data (or a hostile upload) could OOM-kill
+    the portal. ``data_dir`` is the disk-backed volume. Done in code rather
+    than via TMPDIR in docker-compose.yml so existing deployments pick it up
+    on the next image pull. Must run before anything first calls
+    ``tempfile.gettempdir()``, which caches its answer.
+    """
+    import tempfile
+
+    tmp = ensure_data_dir() / ".tmp"
+    tmp.mkdir(exist_ok=True)
+    tempfile.tempdir = str(tmp)
+    return tmp

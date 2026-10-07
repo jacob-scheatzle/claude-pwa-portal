@@ -24,6 +24,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Uplo
 from fastapi.responses import FileResponse, RedirectResponse, Response
 from pydantic import EmailStr, TypeAdapter, ValidationError
 from sqlalchemy import delete, func
+from sqlalchemy.engine.url import make_url
 from sqlmodel import Session, select
 from starlette.background import BackgroundTask
 
@@ -878,7 +879,6 @@ def health_dashboard(request: Request, db: DbDep, admin: AdminDep):
     Storage usage and DB size both go through the configured backends, so the
     numbers are real on the AWS (Postgres + S3) deployment too.
     """
-    from sqlalchemy.engine.url import make_url
 
     from portal.config import settings as _settings
     from portal.health import (
@@ -896,13 +896,7 @@ def health_dashboard(request: Request, db: DbDep, admin: AdminDep):
     # file; for Postgres there's no local file, so show the (sanitized) URL host
     # for context and ask the server itself for the size in db_size_label.
     if is_sqlite:
-        url = make_url(_settings.database_url)
-        db_path = Path(url.database) if url.database else (data_dir / "portal.db")
-        if not db_path.is_absolute():
-            # Relative DB paths resolve against the working directory the
-            # portal was started in (which is the repo root in dev, /app in
-            # the container). Anchor to that explicitly.
-            db_path = Path.cwd() / db_path
+        db_path = _sqlite_db_file()
         db_path_display = str(db_path)
     else:
         # make_url().render_as_string(hide_password=True) keeps the secret out
@@ -1560,6 +1554,23 @@ def _snapshot_sqlite(src: Path, dest: Path) -> None:
         src_conn.close()
 
 
+def _sqlite_db_file() -> Path:
+    """On-disk path of the SQLite database ``DATABASE_URL`` names."""
+    url = make_url(settings.database_url)
+    db_path = Path(url.database) if url.database else (Path(settings.data_dir).resolve() / "portal.db")
+    if not db_path.is_absolute():
+        # Relative DB paths resolve against the working directory the portal
+        # was started in (the repo root in dev, / in the container).
+        db_path = Path.cwd() / db_path
+    return db_path
+
+
+# Blob directories under data_dir that make up a restorable portal, besides the
+# database: bundles, per-user storage, uploaded logo/favicon, and rendered PDF
+# share files (whose rows are in the DB snapshot and would 404 without them).
+_BACKUP_DIRS = ("apps", "storage", "branding", "shares")
+
+
 def _build_backup(data_dir: Path) -> tuple[Path, Path, str]:
     """Build a gzipped tarball of the portal data directory.
 
@@ -1573,18 +1584,17 @@ def _build_backup(data_dir: Path) -> tuple[Path, Path, str]:
     backup_path = tmp_dir / filename
     try:
         db_snapshot = tmp_dir / "portal.db"
-        db_file = data_dir / "portal.db"
-        if db_file.exists():
-            _snapshot_sqlite(db_file, db_snapshot)
+        db_file = _sqlite_db_file()
+        if not db_file.exists():
+            # Never hand back an archive that silently lacks the database.
+            raise FileNotFoundError(f"SQLite database not found at {db_file}")
+        _snapshot_sqlite(db_file, db_snapshot)
         with tarfile.open(backup_path, "w:gz") as tar:
-            if db_snapshot.exists():
-                tar.add(db_snapshot, arcname="portal.db")
-            apps_dir = data_dir / "apps"
-            if apps_dir.exists() and apps_dir.is_dir():
-                tar.add(apps_dir, arcname="apps")
-            storage_dir = data_dir / "storage"
-            if storage_dir.exists() and storage_dir.is_dir():
-                tar.add(storage_dir, arcname="storage")
+            tar.add(db_snapshot, arcname="portal.db")
+            for name in _BACKUP_DIRS:
+                src = data_dir / name
+                if src.is_dir():
+                    tar.add(src, arcname=name)
         return backup_path, tmp_dir, filename
     except BaseException:
         shutil.rmtree(tmp_dir, ignore_errors=True)

@@ -69,8 +69,21 @@
 	respond @dotpaths 404
 }
 
+# ─── Request-body ceiling, imported into every site block below ───
+#
+# An outer bound only: the portal enforces tighter per-path limits itself
+# (portal/middleware.py BodySizeLimitMiddleware — 1 MB by default, 80 MB for
+# app-bundle uploads), so this just keeps anything larger from reaching
+# uvicorn at all. Answered with a 413.
+(body_limit) {
+	request_body {
+		max_size 100MB
+	}
+}
+
 {$SITE_URL:localhost} {
 	import scanner_404
+	import body_limit
 
 	# lb_try_duration keeps a container restart from becoming a wall of
 	# 502s. The portal runs ``alembic upgrade head`` inside its lifespan
@@ -158,6 +171,7 @@
 	# as a 303 to the portal-origin launcher, confirming the slug is live.
 	# Now it's a flat 404 before Python ever sees it.
 	import scanner_404
+	import body_limit
 
 	reverse_proxy {$PORTAL_UPSTREAM:portal:8000} {
 		lb_try_duration 15s

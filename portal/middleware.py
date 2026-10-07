@@ -31,6 +31,7 @@ import secrets
 from typing import Iterable, Optional
 
 from sqlmodel import Session, select
+from starlette.exceptions import HTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -181,6 +182,89 @@ class AppHostGateMiddleware:
         if raw_path is not None:
             scope["raw_path"] = APP_BUNDLE_ROUTE_PREFIX.encode() + raw_path
         return await self.app(scope, receive, send)
+
+
+_MB = 1024 * 1024
+# Request-body ceilings, sized to the largest legitimate payload on each path
+# (each a little above the handler's own cap, so the handler's clearer error
+# still wins for an honest client). Everything else — login, setup, forms,
+# OAuth, admin forms — gets the 1 MB default.
+_BUNDLE_UPLOAD_PATH_RE = re.compile(
+    r"^(/admin/apps/upload|/api/v1/apps/upload|/admin/apps/[^/]+/replace|/api/v1/apps/[^/]+)$"
+)
+_DEFAULT_BODY_LIMIT = 1 * _MB
+
+
+def body_limit_for(path: str) -> int:
+    """Largest request body accepted on ``path``, in bytes."""
+    if _BUNDLE_UPLOAD_PATH_RE.match(path) or path in ("/mcp", "/mcp/"):
+        return 80 * _MB  # 50 MB zip (MAX_ZIP_BYTES), base64-inflated over MCP
+    if path.startswith("/api/v1/storage/"):
+        return 11 * _MB  # 10 MB object (MAX_OBJECT_BYTES)
+    if path in ("/api/v1/pdf/render", "/api/v1/share/create", "/api/v1/email/send"):
+        return 5 * _MB  # 2 MB HTML / 1 MB bodies, JSON-escaped
+    if path == "/admin/settings":
+        return 2 * _MB  # logo + favicon uploads (512 KB each)
+    return _DEFAULT_BODY_LIMIT
+
+
+class BodySizeLimitMiddleware:
+    """Reject request bodies over the path's ceiling with a 413.
+
+    Starlette parses multipart and urlencoded bodies — spooling them to disk
+    or memory — before any auth dependency runs, so without a ceiling an
+    anonymous client can push a body of any size at ``/login`` or a public
+    form. A declared ``Content-Length`` over the limit is refused before the
+    body is read; a chunked body is counted as it streams and cut off at the
+    limit (the 413 raised from ``receive`` surfaces through the handler that
+    was reading it). Caddy enforces a coarser cap in front of this.
+    """
+
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        limit = body_limit_for(scope["path"])
+        for name, value in scope.get("headers") or []:
+            if name == b"content-length":
+                try:
+                    declared = int(value)
+                except ValueError:
+                    declared = 0
+                if declared > limit:
+                    response = JSONResponse({"detail": "Request body too large"}, status_code=413)
+                    return await response(scope, receive, send)
+                break
+
+        received = 0
+        exceeded = False
+
+        async def limited_receive():
+            nonlocal received, exceeded
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > limit:
+                    exceeded = True
+                    raise HTTPException(413, "Request body too large")
+            return message
+
+        # FastAPI turns any error raised while it parses a body into a generic
+        # 400, so once we've cut the body off, answer with the 413 ourselves.
+        too_large = JSONResponse({"detail": "Request body too large"}, status_code=413)
+
+        async def limited_send(message):
+            if not exceeded:
+                return await send(message)
+            if message["type"] == "http.response.start":
+                await send({"type": "http.response.start", "status": 413,
+                            "headers": too_large.raw_headers})
+            elif message["type"] == "http.response.body" and not message.get("more_body"):
+                await send({"type": "http.response.body", "body": too_large.body})
+
+        return await self.app(scope, limited_receive, limited_send)
 
 
 # CSP for child-app subdomains. Matches the structure of the legacy Caddy

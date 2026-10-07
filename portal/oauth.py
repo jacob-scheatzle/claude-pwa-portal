@@ -29,7 +29,7 @@ from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from pydantic import AnyHttpUrl, AnyUrl
-from sqlalchemy import delete, or_, update
+from sqlalchemy import delete, func, or_, update
 from sqlmodel import Session, select
 from starlette.responses import JSONResponse, RedirectResponse
 
@@ -37,6 +37,7 @@ from mcp.server.auth.provider import (
     AccessToken,
     AuthorizationCode,
     AuthorizationParams,
+    AuthorizeError,
     RefreshToken,
     RegistrationError,
     TokenError,
@@ -74,6 +75,14 @@ PREREGISTERED_CLIENT_PREFIX = "portal-"
 CODE_TTL = timedelta(seconds=60)
 # A parked /authorize request waiting on the admin to sign in + consent.
 PENDING_TTL = timedelta(minutes=15)
+# /authorize is anonymous and parks a row per call, so bound both the row and
+# the table: RFC 7636 code challenges are 43-128 chars, real clients send short
+# state/resource values, and no deployment has hundreds of connections pending.
+# At the cap the OLDEST pending request is dropped — refusing new ones instead
+# would let anyone who fills the table lock the real admin out of connecting.
+_MAX_STATE_LEN = 512
+_MAX_RESOURCE_LEN = 512
+_MAX_LIVE_PENDING = 500
 # Issued token lifetimes. Access is short; the connector refreshes silently.
 ACCESS_TTL = timedelta(hours=1)
 REFRESH_TTL = timedelta(days=30)
@@ -203,8 +212,30 @@ class PortalOAuthProvider:
         authorize handler; we persist them and hand control to /oauth/consent,
         which authenticates the admin and (on approval) mints the code.
         """
+        if (
+            not 43 <= len(params.code_challenge or "") <= 128
+            or len(params.state or "") > _MAX_STATE_LEN
+            or len(str(params.resource or "")) > _MAX_RESOURCE_LEN
+        ):
+            raise AuthorizeError(
+                error="invalid_request",
+                error_description="code_challenge, state, or resource is out of range",
+            )
         txn = _gen()
         with Session(engine) as db:
+            # Expired rows are otherwise only swept at startup; clear them here so
+            # the cap below counts live requests only.
+            db.exec(delete(OAuthPendingAuthorization).where(
+                OAuthPendingAuthorization.expires_at < _utcnow().replace(tzinfo=None)))
+            live = db.exec(select(func.count()).select_from(OAuthPendingAuthorization)).one()
+            if live >= _MAX_LIVE_PENDING:
+                oldest = (
+                    select(OAuthPendingAuthorization.txn)
+                    .order_by(OAuthPendingAuthorization.expires_at)
+                    .limit(live - _MAX_LIVE_PENDING + 1)
+                )
+                db.exec(delete(OAuthPendingAuthorization).where(
+                    OAuthPendingAuthorization.txn.in_(oldest)))
             db.add(
                 OAuthPendingAuthorization(
                     txn=txn,
@@ -615,13 +646,9 @@ _AUDITED_PATHS = {"/authorize", "/token", "/register", "/revoke"}
 
 
 def _ip_from_scope(scope) -> str:
-    headers = {
-        k.decode("latin-1").lower(): v.decode("latin-1")
-        for k, v in (scope.get("headers") or [])
-    }
-    xff = headers.get("x-forwarded-for", "")
-    if xff:
-        return xff.split(",")[0].strip() or "-"
+    # uvicorn's --proxy-headers has already replaced ``client`` with the address
+    # Caddy forwarded, and only when the hop is in --forwarded-allow-ips. Reading
+    # X-Forwarded-For ourselves would trust whatever a direct caller sent.
     client = scope.get("client")
     return client[0] if client else "-"
 
@@ -685,33 +712,74 @@ class _HostGateASGI:
         await self._app(scope, receive, send)
 
 
-# Per-IP throttle on dynamic client registration (RFC 7591 /register). Open
-# registration is convenient for the connector but an unauthenticated write, so
-# bound how fast one IP can mint clients. Same in-process rolling-window shape as
-# the login limiter in main.py; lost on restart (acceptable — this is anti-abuse,
-# not correctness), and prune_oauth still sweeps abandoned client rows.
-_REGISTER_WINDOW_SECONDS = 3600
-_REGISTER_LIMIT = 10
-_register_hits: dict[str, list[float]] = {}
+class _IPRateLimiter:
+    """In-process rolling-window limit per client IP.
+
+    Same shape as the login limiter in main.py; lost on restart (acceptable —
+    this is anti-abuse, not correctness). Runs on the event loop (the wrapped
+    routes are ASGI), so no lock is needed. Capped at ``_MAX_KEYS`` IPs, oldest
+    evicted, so a spray from many addresses can't grow it without bound.
+    """
+
+    _MAX_KEYS = 10_000
+
+    def __init__(self, window_seconds: int, limit: int):
+        self._window = window_seconds
+        self._limit = limit
+        self._hits: dict[str, list[float]] = {}
+
+    def limited(self, ip: str) -> bool:
+        """Count a hit for ``ip``; True if it was already over the limit."""
+        import time
+
+        now = time.monotonic()
+        cutoff = now - self._window
+        for key in list(self._hits.keys()):
+            fresh = [t for t in self._hits[key] if t > cutoff]
+            if fresh:
+                self._hits[key] = fresh
+            else:
+                self._hits.pop(key, None)
+        hits = self._hits.get(ip)
+        if hits is not None and len(hits) >= self._limit:
+            return True
+        if hits is None:
+            while len(self._hits) >= self._MAX_KEYS:
+                self._hits.pop(next(iter(self._hits)))
+            hits = self._hits[ip] = []
+        hits.append(now)
+        return False
 
 
-def _register_rate_limited(ip: str) -> bool:
-    import time
+# Dynamic client registration (RFC 7591 /register) is convenient for the
+# connector but an unauthenticated write, so bound how fast one IP can mint
+# clients; prune_oauth still sweeps abandoned client rows. /authorize is the
+# other anonymous write (a pending-request row per call); a real connection
+# makes one call per connect, so 30 in 10 minutes leaves plenty of headroom.
+_register_limiter = _IPRateLimiter(window_seconds=3600, limit=10)
+_authorize_limiter = _IPRateLimiter(window_seconds=600, limit=30)
 
-    now = time.monotonic()
-    cutoff = now - _REGISTER_WINDOW_SECONDS
-    # Prune every IP's window so the dict can't grow without bound.
-    for key in list(_register_hits.keys()):
-        fresh = [t for t in _register_hits[key] if t > cutoff]
-        if fresh:
-            _register_hits[key] = fresh
-        else:
-            _register_hits.pop(key, None)
-    hits = _register_hits.get(ip, [])
-    if len(hits) >= _REGISTER_LIMIT:
-        return True
-    _register_hits.setdefault(ip, []).append(now)
-    return False
+
+class _AuthorizeGuardASGI:
+    """Wrap /authorize with the per-IP limit; 429 before the SDK handler runs."""
+
+    def __init__(self, app):
+        self._app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") == "http":
+            ip = _ip_from_scope(scope)
+            if _authorize_limiter.limited(ip):
+                try:
+                    emit_security_line("OAUTH_AUTHORIZE_RATE_LIMITED", ip, endpoint="/authorize")
+                except Exception:
+                    pass
+                await JSONResponse(
+                    {"error": "too_many_requests", "error_description": "authorization rate limit exceeded"},
+                    status_code=429,
+                )(scope, receive, send)
+                return
+        await self._app(scope, receive, send)
 
 
 class _RegisterGuardASGI:
@@ -730,7 +798,7 @@ class _RegisterGuardASGI:
             await self._app(scope, receive, send)
             return
         ip = _ip_from_scope(scope)
-        if _register_rate_limited(ip):
+        if _register_limiter.limited(ip):
             try:
                 emit_security_line("OAUTH_REGISTER_RATE_LIMITED", ip, endpoint="/register")
             except Exception:
@@ -786,6 +854,8 @@ def build_oauth_routes() -> list:
         path = getattr(route, "path", None)
         if path == "/register":
             route.app = _RegisterGuardASGI(route.app)
+        if path == "/authorize":
+            route.app = _AuthorizeGuardASGI(route.app)
         if path in _AUDITED_PATHS:
             route.app = _OAuthAuditASGI(route.app, path)
         route.app = _HostGateASGI(route.app)

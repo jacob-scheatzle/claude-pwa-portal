@@ -24,6 +24,21 @@
 #     the browser sees the portal at HTTP (local-testing) or HTTPS
 #     (behind-LB) — only one matches the real document URL at runtime.
 
+# ─── Trust forwarded client addresses from the load balancer ───
+#
+# In shape 1 every request reaches Caddy from the LB. Without trusted_proxies
+# Caddy discards the LB's X-Forwarded-For and substitutes the LB's own address,
+# so every visitor looks like one IP to the portal — and its per-IP limits
+# (login, public forms, OAuth) then throttle all of them together, letting one
+# person lock everyone out. Trusting private-range peers keeps the real client
+# address. A public client can't exploit this: only a peer inside a private
+# range is believed (on a LAN-only install, LAN clients are trusted too).
+{
+	servers {
+		trusted_proxies static private_ranges
+	}
+}
+
 # ─── Shared edge hardening ───
 #
 # Identical to the ``(scanner_404)`` snippet in the default Caddyfile; see
@@ -51,8 +66,21 @@
 	respond @dotpaths 404
 }
 
+# ─── Request-body ceiling, imported into every site block below ───
+#
+# An outer bound only: the portal enforces tighter per-path limits itself
+# (portal/middleware.py BodySizeLimitMiddleware — 1 MB by default, 80 MB for
+# app-bundle uploads), so this just keeps anything larger from reaching
+# uvicorn at all. Answered with a 413.
+(body_limit) {
+	request_body {
+		max_size 100MB
+	}
+}
+
 http://{$SITE_URL:localhost} {
 	import scanner_404
+	import body_limit
 
 	# Retry a failed dial for 15s instead of 502ing while the portal runs
 	# its startup migrations. See the default Caddyfile for the full note.
@@ -106,6 +134,7 @@ http://{$SITE_URL:localhost} {
 # stay scoped to the subdomain.
 http://*.apps.{$SITE_URL} {
 	import scanner_404
+	import body_limit
 
 	reverse_proxy {$PORTAL_UPSTREAM:portal:8000} {
 		lb_try_duration 15s

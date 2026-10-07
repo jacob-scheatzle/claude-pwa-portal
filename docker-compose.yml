@@ -44,8 +44,12 @@ services:
     # PYTHONDONTWRITEBYTECODE=1 in the Dockerfile (otherwise Python tries to
     # write .pyc into a read-only site-packages on every import), this means
     # a code-exec exploit can't drop a webshell anywhere persistent.
+    #
+    # The tmpfs is RAM and counts against mem_limit, so it's capped. The portal
+    # doesn't stage uploads, bundle extraction, or Backup/Export here — it
+    # points Python's tempfile at /data/.tmp on the disk-backed volume.
     read_only: true
-    tmpfs: [/tmp]
+    tmpfs: ["/tmp:size=64m"]
     # Resource caps prevent a single misbehaving child-app (or DoS attempt
     # that gets past Caddy + fail2ban) from exhausting host RAM/CPU. The
     # portal itself is tiny — WeasyPrint renders are the only memory spike
