@@ -10,9 +10,14 @@ HOST = (
 )
 
 patterns: list[str] = []
+variables: dict[str, str] = {}
 in_failregex = False
 with open("contrib/fail2ban/filter.d/pwa-portal-caddy.conf") as f:
     for raw in f:
+        if raw.startswith("_") and "=" in raw:
+            name, value = raw.split("=", 1)
+            variables[name.strip()] = value.strip()
+            continue
         if raw.startswith("failregex"):
             in_failregex = True
             patterns.append(raw.split("=", 1)[1].strip())
@@ -30,19 +35,21 @@ def expand(p: str) -> str:
     # fail2ban filters use ``%%`` as an escape for a literal ``%`` because
     # ConfigParser interprets ``%(name)s``. Unescape before compiling for
     # this offline test.
+    for name, value in variables.items():
+        p = p.replace(f"%({name})s", value)
     return p.replace("%%", "%").replace("<HOST>", HOST)
 
 
 compiled = [re.compile(expand(p)) for p in patterns]
 
 
-def caddy_line(path: str) -> str:
+def caddy_line(path: str, host: str = "shelbyfish.example.com") -> str:
     return (
         '{"level":"info","ts":1779895953.123,'
         '"logger":"http.log.access","msg":"handled request",'
         '"request":{"remote_ip":"45.88.138.44","remote_port":"56375",'
         f'"client_ip":"45.88.138.44","proto":"HTTP/2.0","method":"GET",'
-        '"host":"shelbyfish.example.com","uri":"' + path + '","headers":{}},"status":404}'
+        '"host":"' + host + '","uri":"' + path + '","headers":{}},"status":404}'
     )
 
 
@@ -172,7 +179,36 @@ samples = [
     ("/api/v1/storage/list", False),
 ]
 
+# On an app subdomain the browser loads whatever files the uploaded app ships,
+# so bundle-plausible paths must NOT ban there — but pure scanner probes still do.
+APP_HOST = "notes.apps.shelbyfish.example.com"
+app_host_samples = [
+    ("/config.json", False),
+    ("/console/index.html", False),
+    ("/backup/notes.json", False),
+    ("/backups/", False),
+    ("/backup.zip", False),
+    ("/CHANGELOG.txt", False),
+    ("/swagger-ui/", False),
+    ("/api/v1/storage/notes.environment", False),
+    ("/api/v1/storage/settings.env.json", False),
+    ("/.env", True),
+    ("/.git/config", True),
+    ("/wp-login.php", True),
+    ("/vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php", True),
+    ("/api/.env", True),
+]
+
 fails: list[str] = []
+for path, should_ban in app_host_samples:
+    matched = any(p.search(caddy_line(path, APP_HOST)) for p in compiled)
+    expected = "BAN" if should_ban else "pass"
+    actual = "BAN" if matched else "pass"
+    status = "OK" if expected == actual else "FAIL"
+    print(f"{status:5s} expected={expected:4s} actual={actual:4s} | {APP_HOST}{path}")
+    if expected != actual:
+        fails.append(APP_HOST + path)
+
 for path, should_ban in samples:
     matched = any(p.search(caddy_line(path)) for p in compiled)
     expected = "BAN" if should_ban else "pass"
@@ -182,7 +218,8 @@ for path, should_ban in samples:
     if expected != actual:
         fails.append(path)
 
-print(f"\n{len(samples) - len(fails)}/{len(samples)} OK")
+total = len(samples) + len(app_host_samples)
+print(f"\n{total - len(fails)}/{total} OK")
 if fails:
     print(f"FAILURES: {fails}")
     raise SystemExit(1)

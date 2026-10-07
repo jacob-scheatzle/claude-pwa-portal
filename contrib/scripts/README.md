@@ -45,8 +45,10 @@ echo '17 4 * * * root /usr/local/sbin/spamhaus-drop.sh' | sudo tee /etc/cron.d/s
 # How many CIDRs are loaded
 sudo ipset list spamhaus-drop | grep -c '^[0-9]'
 
-# That the firewall rule is in place
+# That the firewall rules are in place (DOCKER-USER is the one that
+# protects the portal; Docker-forwarded traffic never passes INPUT)
 sudo iptables -L INPUT -n --line-numbers | grep spamhaus-drop
+sudo iptables -L DOCKER-USER -n --line-numbers | grep spamhaus-drop
 
 # Recent runs in the journal
 journalctl -t spamhaus-drop --since "2 days ago"
@@ -70,6 +72,7 @@ sudo iptables-save > /etc/iptables/rules.v4
 ```bash
 sudo rm /etc/cron.d/spamhaus-drop /usr/local/sbin/spamhaus-drop.sh
 sudo iptables -D INPUT -m set --match-set spamhaus-drop src -j DROP
+sudo iptables -D DOCKER-USER -m set --match-set spamhaus-drop src -j DROP
 sudo ipset destroy spamhaus-drop
 ```
 

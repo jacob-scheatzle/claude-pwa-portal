@@ -256,15 +256,29 @@ bantime.maxtime = -1   # 0 or negative = forever
 
 ### Different firewall backend
 
-The default `banaction` is `iptables-multiport`. If your VPS uses
-nftables (Debian 11+, Ubuntu 22.04+ default) or `ufw`, set per-jail:
+The portal jails ban in Docker's `DOCKER-USER` chain (`chain = DOCKER-USER`
+in the jail file). Docker DNATs the published ports 80/443 to the Caddy
+container, so that traffic passes through FORWARD — never INPUT, where
+fail2ban bans by default. A ban in INPUT would be logged as a success and
+block nothing.
+
+The default `banaction` is `iptables-multiport`, which honors `chain`. If
+your VPS uses nftables (Debian 11+, Ubuntu 22.04+ default), hook the ban
+into forwarding instead:
 
 ```ini
 [pwa-portal-login]
-banaction = nftables-multiport
-# or
-banaction = ufw
+banaction  = nftables-multiport
+chain_hook = forward
 ```
+
+(Same for `[pwa-portal-caddy]`.) **Don't use `banaction = ufw`** for the
+portal jails: ufw's rules live in INPUT, so they can't block
+Docker-published ports. It's fine for the `sshd` jail.
+
+To confirm a ban really blocks: `sudo iptables -L DOCKER-USER -n` should
+show the `f2b-pwa-portal-*` jump, and a banned IP's `curl` to the portal
+should time out rather than get a response.
 
 ### Notify on ban
 

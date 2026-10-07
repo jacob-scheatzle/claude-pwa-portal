@@ -9,7 +9,9 @@
 #
 # Mechanics:
 #   - Maintains an ipset called ``spamhaus-drop`` (hash:net).
-#   - Iptables INPUT rule "match set + DROP" is created idempotently.
+#   - Iptables "match set + DROP" rules are created idempotently in INPUT
+#     (the host's own services, e.g. SSH) and DOCKER-USER (traffic to the
+#     Docker-published 80/443, which is forwarded and never touches INPUT).
 #   - Refresh is atomic: fetch into a TEMP ipset, swap, destroy old.
 #     If the fetch fails or the file looks empty/truncated, we abort
 #     before swapping — the previous list keeps protecting you.
@@ -59,12 +61,20 @@ if ! ipset list -n | grep -qx "$SET_NAME"; then
   log "created ipset $SET_NAME"
 fi
 
-# 2) Ensure the DROP rule is in place. -C tests for existence; if it's not
-#    there, -I inserts at the top of INPUT so it runs before any ACCEPT.
-if ! iptables -C INPUT -m set --match-set "$SET_NAME" src -j DROP 2>/dev/null; then
-  iptables -I INPUT 1 -m set --match-set "$SET_NAME" src -j DROP
-  log "installed iptables DROP rule for $SET_NAME"
-fi
+# 2) Ensure the DROP rules are in place. -C tests for existence; if a rule
+#    isn't there, -I inserts it at the top of its chain so it runs before any
+#    ACCEPT. INPUT covers the host itself; DOCKER-USER covers the portal —
+#    Docker forwards 80/443 to the Caddy container, bypassing INPUT entirely.
+for chain in INPUT DOCKER-USER; do
+  if ! iptables -n -L "$chain" >/dev/null 2>&1; then
+    log "chain $chain not present (is Docker running?); skipping it"
+    continue
+  fi
+  if ! iptables -C "$chain" -m set --match-set "$SET_NAME" src -j DROP 2>/dev/null; then
+    iptables -I "$chain" 1 -m set --match-set "$SET_NAME" src -j DROP
+    log "installed iptables DROP rule for $SET_NAME in $chain"
+  fi
+done
 
 # 3) Fetch + parse into a temporary set, then atomically swap.
 #    Spamhaus DROP format: "<cidr> ; <comment>" with ; comment lines.
