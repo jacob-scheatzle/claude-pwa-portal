@@ -1,6 +1,6 @@
 # Project state
 
-_Last updated: October 7, 2026 (v0.16.2 + security review batch 1)._ Originally written May 21, 2026; kept
+_Last updated: October 7, 2026 (v0.16.2 + security review batches 1–2)._ Originally written May 21, 2026; kept
 current as the project evolved (MCP server, schedules, public forms, AWS deploy).
 
 A snapshot of where ProgressiveWebAppPortal stands at the end of a long
@@ -146,10 +146,23 @@ project up on a different machine or after a break.
      share links survived delete and SQLite reused the id. Delete now purges
      both; `user` is AUTOINCREMENT (migration `9c41e7d2a8b3`, which also seeds
      the sequence past ids still referenced by leftover data).
-  Batches 2 (hardening: body-size limits, SMTP cert verification, email caps,
-  revocation on reset/demote, template DoS, cache headers, `__Host-` cookies,
-  fail2ban DOCKER-USER chain) and 3 (correctness/docs drift, lockfile + pinned
-  images + CI smoke test) are still open. The AWS path is unused and was not
+  **Batch 2** (hardening) followed the same day, each part with tests:
+  per-path request-body ceilings (+ a Caddy cap) and temp files moved from the
+  RAM tmpfs to `data/.tmp`; an atomic, bounded login throttle with a
+  per-network (IPv4 / IPv6 /64) limit; `/authorize` field/row/rate caps;
+  complete backups; SMTP certificate verification; recipient caps and
+  per-recipient email rate limits, with the allowlist applied to bare
+  addresses everywhere (tools, forms); rate slots reserved *before* tool
+  work; admin/CLI resets and demotions that actually revoke sessions, tokens,
+  and grants; server-side session expiry (14 d idle / 30 d absolute);
+  `__Host-` cookie names on Secure deployments (signs everyone out once);
+  `no-store` on `/api/v1`; tool templates rendered in a capped child process
+  (`portal/template_worker.py`); PDF render concurrency gate + share quotas;
+  fail2ban banning in `DOCKER-USER` with app-host-aware bait patterns (the
+  host fail2ban/Spamhaus configs must be re-copied to `/etc` to take effect).
+  A background review of each commit caught four follow-ups, each fixed in
+  its own commit. **Batch 3** (correctness/docs drift, lockfile + pinned
+  images + CI smoke test) is still open. The AWS path is unused and was not
   fixed (it can't pull its Caddy image from private subnets as written).
 
 ---

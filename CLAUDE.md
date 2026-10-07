@@ -108,6 +108,7 @@ cron; see `contrib/scripts/README.md`.
 ### Run the regression tests
 ```bash
 for t in tests/test_*.py; do .venv/bin/python "$t" || echo "FAILED: $t"; done
+.venv/bin/python contrib/fail2ban/tests/test_pwa_portal_caddy_filter.py
 ```
 Each is a standalone script (no pytest) that boots the app against a throwaway
 SQLite DB via `tests/_harness.py`; needs `httpx` (`.venv/bin/pip install httpx`).
