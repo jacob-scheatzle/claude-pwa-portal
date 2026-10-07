@@ -1,6 +1,6 @@
 # Project state
 
-_Last updated: October 7, 2026 (v0.16.2 + security review batches 1–2)._ Originally written May 21, 2026; kept
+_Last updated: October 7, 2026 (v0.16.2 + security review batches 1–3)._ Originally written May 21, 2026; kept
 current as the project evolved (MCP server, schedules, public forms, AWS deploy).
 
 A snapshot of where ProgressiveWebAppPortal stands at the end of a long
@@ -161,9 +161,21 @@ project up on a different machine or after a break.
   fail2ban banning in `DOCKER-USER` with app-host-aware bait patterns (the
   host fail2ban/Spamhaus configs must be re-copied to `/etc` to take effect).
   A background review of each commit caught four follow-ups, each fixed in
-  its own commit. **Batch 3** (correctness/docs drift, lockfile + pinned
-  images + CI smoke test) is still open. The AWS path is unused and was not
-  fixed (it can't pull its Caddy image from private subnets as written).
+  its own commit. **Batch 3** closed the review: a correctness pass (strict-CSP
+  launch, MCP boolean args, replace remembering revocations
+  — `revoked_*` columns, migration `4f7a2c9e1b05` — undeclared apps now get no
+  services with existing ones grandfathered via `services_ungated`, serialized
+  installs/setup/admin changes + `cli promote`, form open redirect, audit
+  retention buckets, storage object cap); skill-script token handling; and the
+  supply chain — **the image now installs only from hash-pinned
+  `requirements.lock`** (regenerate with `contrib/scripts/update-lockfiles.sh`),
+  base images and Actions are digest/SHA-pinned, and CI runs the regression
+  suite + an image smoke test before publishing. Building the lockfile showed
+  that recent unpinned images already shipped WeasyPrint 70 and SQLModel
+  0.0.48, which broke PDFs with images and OAuth `/authorize`; both fixed. The
+  AWS path is marked experimental (known blockers at the top of
+  `aws/README.md`). Still open by choice: a one-time first-run setup token,
+  disabling (vs deleting) users, binding launch tokens to the minting browser.
 
 ---
 
