@@ -23,6 +23,7 @@ Lifecycle:
 from __future__ import annotations
 
 import secrets
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -104,23 +105,20 @@ def create_storage_share(
 
 
 # Rendered share PDFs live outside every storage namespace, so they get their
-# own per-user ceiling across the user's live (unexpired, unrevoked) PDF shares.
+# own per-user ceiling across every PDF share file the user has on disk.
 MAX_PDF_SHARE_BYTES_PER_USER = 200 * 1024 * 1024
+# Serializes the purge → measure → write sequence below, so two concurrent
+# creations can't both measure the same headroom (single-process portal).
+_pdf_share_quota_lock = threading.Lock()
 
 
 class ShareQuotaExceeded(RuntimeError):
-    """The user's live PDF shares would exceed MAX_PDF_SHARE_BYTES_PER_USER."""
+    """The user's PDF shares would exceed MAX_PDF_SHARE_BYTES_PER_USER."""
 
 
-def _live_pdf_share_bytes(db: Session, user_id: int) -> int:
-    now = datetime.now(timezone.utc)
+def _pdf_share_bytes(db: Session, user_id: int) -> int:
     rows = db.exec(
-        select(ShareLink).where(
-            ShareLink.created_by == user_id,
-            ShareLink.kind == "pdf",
-            ShareLink.revoked_at.is_(None),  # type: ignore[union-attr]
-            ShareLink.expires_at > now,
-        )
+        select(ShareLink).where(ShareLink.created_by == user_id, ShareLink.kind == "pdf")
     ).all()
     storage = get_storage()
     total = 0
@@ -170,30 +168,35 @@ def create_pdf_share(
         raise RuntimeError(
             f"Rendered PDF exceeds {MAX_PDF_BYTES // (1024 * 1024)}MB share cap"
         )
-    if _live_pdf_share_bytes(db, user.id or 0) + len(body) > MAX_PDF_SHARE_BYTES_PER_USER:
-        raise ShareQuotaExceeded(
-            f"Live PDF share links would exceed "
-            f"{MAX_PDF_SHARE_BYTES_PER_USER // (1024 * 1024)}MB for this user; "
-            "revoke some or let them expire."
-        )
-    get_storage().write(f"shares/{token}.pdf", body, content_type="application/pdf")
+    with _pdf_share_quota_lock:
+        # An expired, revoked, or used-up share can't serve again but keeps its
+        # file until purged (otherwise only at startup) — so clear this user's
+        # first, or short-lived shares would slip their files past the ceiling.
+        purge_expired_shares(db, created_by=user.id or 0)
+        if _pdf_share_bytes(db, user.id or 0) + len(body) > MAX_PDF_SHARE_BYTES_PER_USER:
+            raise ShareQuotaExceeded(
+                f"PDF share links would exceed "
+                f"{MAX_PDF_SHARE_BYTES_PER_USER // (1024 * 1024)}MB for this user; "
+                "revoke some or let them expire."
+            )
+        get_storage().write(f"shares/{token}.pdf", body, content_type="application/pdf")
 
-    expires_at = datetime.now(timezone.utc) + timedelta(
-        seconds=_clamp_ttl(ttl_seconds)
-    )
-    row = ShareLink(
-        token=token,
-        app_id=app_row.id or 0,
-        created_by=user.id or 0,
-        kind="pdf",
-        payload={"path": f"{token}.pdf"},
-        filename=(filename or "shared.pdf")[:80],
-        expires_at=expires_at,
-        max_views=_clamp_views(max_views),
-    )
-    db.add(row)
-    db.commit()
-    db.refresh(row)
+        expires_at = datetime.now(timezone.utc) + timedelta(
+            seconds=_clamp_ttl(ttl_seconds)
+        )
+        row = ShareLink(
+            token=token,
+            app_id=app_row.id or 0,
+            created_by=user.id or 0,
+            kind="pdf",
+            payload={"path": f"{token}.pdf"},
+            filename=(filename or "shared.pdf")[:80],
+            expires_at=expires_at,
+            max_views=_clamp_views(max_views),
+        )
+        db.add(row)
+        db.commit()
+        db.refresh(row)
     return row
 
 
@@ -317,26 +320,28 @@ def delete_shares_for_user(db: Session, user_id: int) -> None:
     db.exec(delete(ShareLink).where(ShareLink.created_by == user_id))
 
 
-def purge_expired_shares(db: Session) -> int:
+def purge_expired_shares(db: Session, created_by: Optional[int] = None) -> int:
     """Delete ShareLink rows that can never serve again, plus their PDF blobs.
 
     A row is dead once it's revoked, past its ``expires_at``, or has reached a
     nonzero ``max_views`` cap — the public /s/<token> handler refuses all three.
     Without this sweep the table (and the ``pdf`` rows' on-disk files) would grow
-    without bound. Called opportunistically from ``init_db`` at startup, mirroring
-    the other rolling-history cleanups. Returns the number of rows deleted.
+    without bound. Called from ``init_db`` at startup for everyone, and for one
+    user (``created_by``) before each PDF share they create. Returns the number
+    of rows deleted.
     """
     now = datetime.now(timezone.utc)
-    dead = db.exec(
-        select(ShareLink).where(
-            or_(
-                ShareLink.revoked_at.is_not(None),  # type: ignore[union-attr]
-                ShareLink.expires_at < now,
-                (ShareLink.max_views > 0)
-                & (ShareLink.view_count >= ShareLink.max_views),
-            )
+    stmt = select(ShareLink).where(
+        or_(
+            ShareLink.revoked_at.is_not(None),  # type: ignore[union-attr]
+            ShareLink.expires_at < now,
+            (ShareLink.max_views > 0)
+            & (ShareLink.view_count >= ShareLink.max_views),
         )
-    ).all()
+    )
+    if created_by is not None:
+        stmt = stmt.where(ShareLink.created_by == created_by)
+    dead = db.exec(stmt).all()
     if not dead:
         return 0
     # Remove rendered-PDF blobs first so a row deletion never orphans a file.

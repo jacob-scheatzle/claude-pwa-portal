@@ -16,6 +16,7 @@ Run from anywhere:
 """
 import time
 from collections import deque
+from datetime import datetime, timedelta, timezone
 
 import _harness as h
 
@@ -24,6 +25,7 @@ from sqlmodel import Session, select
 from portal import api, shares
 from portal.db import engine
 from portal.models import ShareLink
+from portal.storage_backend import get_storage
 
 client = h.boot()
 admin_id = h.add_user("admin@example.com", "admin")
@@ -57,6 +59,17 @@ shares.MAX_PDF_SHARE_BYTES_PER_USER = 3000  # about one tiny PDF
 r = docs.post("/api/v1/share/create", headers=H, json={"kind": "pdf", "html": "<p>again</p>"})
 h.check("over the per-user share storage cap: 413", r.status_code, 413)
 h.check("  ...and the rate slot was refunded", len(api._pdf_render_log.get(admin_id, ())), 1)
+# An expired share can't serve, but its file stays on disk until purged. If
+# only live shares counted, short-lived shares would fill the disk unchecked.
+with Session(engine) as db:
+    for row in db.exec(select(ShareLink)).all():
+        row.expires_at = datetime.now(timezone.utc) - timedelta(hours=1)
+        db.add(row)
+    db.commit()
+r = docs.post("/api/v1/share/create", headers=H, json={"kind": "pdf", "html": "<p>fresh</p>"})
+h.check("after the old share expires, a new one fits", r.status_code, 200)
+h.check("  ...because the expired share's file was purged first",
+        len(get_storage().list("shares")), 1)
 shares.MAX_PDF_SHARE_BYTES_PER_USER = saved
 
 print("--- renders are gated ---")
