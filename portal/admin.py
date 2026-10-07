@@ -13,6 +13,7 @@ import shutil
 import sqlite3
 import tarfile
 import tempfile
+import threading
 import zipfile
 from datetime import datetime, timezone
 from email.message import EmailMessage
@@ -78,6 +79,12 @@ from portal.smtp import send_message
 from portal.web import flash, render
 
 logger = logging.getLogger("uvicorn.error")
+
+# Role changes and deletes check "is this the last admin?" and then act. Two
+# admins demoting or deleting each other at once both saw two admins and both
+# went ahead, leaving none. Holding this across check-and-commit (single-process
+# portal) makes the count hold.
+_admin_change_lock = threading.Lock()
 
 router = APIRouter()
 
@@ -573,7 +580,7 @@ def oauth_clients_create(
     try:
         from mcp.shared.auth import OAuthClientInformationFull
 
-        from portal.oauth import PREREGISTERED_CLIENT_PREFIX
+        from portal.oauth import PREREGISTERED_CLIENT_PREFIX, _encrypt_client_secret
     except ImportError:
         return _back("OAuth is unavailable: the 'mcp' package isn't installed.")
 
@@ -595,7 +602,11 @@ def oauth_clients_create(
     except Exception as e:
         return _back(f"Invalid redirect URI: {e}")
 
-    db.add(OAuthClient(client_id=client_id, client_info=info.model_dump(mode="json")))
+    # Encrypted at rest like dynamically registered clients' secrets
+    # (PortalOAuthProvider.register_client); get_client decrypts on read.
+    stored = info.model_dump(mode="json")
+    stored["client_secret"] = _encrypt_client_secret(stored["client_secret"])
+    db.add(OAuthClient(client_id=client_id, client_info=stored))
     db.commit()
     record_event(
         db, actor=admin, action="oauth_client.create", request=request,
@@ -702,16 +713,18 @@ def users_set_role(
     if role not in ("admin", "user"):
         flash(request, "Invalid role.", level="error")
         return RedirectResponse("/admin/users", status_code=303)
-    target = db.get(User, user_id)
-    if target is None:
-        raise HTTPException(404)
-    if target.role == "admin" and role == "user" and _count_admins(db) <= 1:
-        flash(request, "Can't demote the last admin.", level="error")
-        return RedirectResponse("/admin/users", status_code=303)
-    old_role = target.role
-    target.role = role
-    db.add(target)
-    db.commit()
+    with _admin_change_lock:
+        target = db.get(User, user_id)
+        if target is None:
+            raise HTTPException(404)
+        db.refresh(target)
+        if target.role == "admin" and role == "user" and _count_admins(db) <= 1:
+            flash(request, "Can't demote the last admin.", level="error")
+            return RedirectResponse("/admin/users", status_code=303)
+        old_role = target.role
+        target.role = role
+        db.add(target)
+        db.commit()
     if old_role == "admin" and role != "admin" and target.id is not None:
         revoke_admin_credentials(db, target.id)
     record_event(
@@ -758,6 +771,11 @@ def users_delete(
     csrf: Annotated[str, Form(alias="_csrf")] = "",
 ):
     check_csrf(request, csrf)
+    with _admin_change_lock:
+        return _delete_user(request, db, admin, user_id)
+
+
+def _delete_user(request: Request, db: Session, admin: User, user_id: int):
     target = db.get(User, user_id)
     if target is None:
         raise HTTPException(404)
@@ -957,18 +975,19 @@ def health_dashboard(request: Request, db: DbDep, admin: AdminDep):
 # ----- Audit log -----
 
 @router.get("/admin/audit")
-def audit_log(request: Request, db: DbDep, admin: AdminDep):
+def audit_log(request: Request, db: DbDep, admin: AdminDep, failed_logins: bool = False):
     """Forensic view of every state-changing action.
 
     Renders the most recent 200 events newest-first. Each row shows who
-    did what, when, where from (IP), and an optional details dict. The
-    underlying table is bounded by ``portal.audit.MAX_ROWS`` so this query
-    is always cheap.
+    did what, when, where from (IP), and an optional details dict. Failed
+    logins (anonymous, floodable) are hidden unless ``?failed_logins=1``.
+    The underlying table is bounded by ``portal.audit.MAX_ROWS`` so this
+    query is always cheap.
     """
-    events = recent_events(db, limit=200)
+    events = recent_events(db, limit=200, include_noisy=failed_logins)
     return render(
         request, "admin_audit.html",
-        user=admin, events=events,
+        user=admin, events=events, failed_logins=failed_logins,
     )
 
 

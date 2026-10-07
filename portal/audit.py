@@ -53,6 +53,12 @@ from portal.models import AuditEvent, User
 # Adjust if you're operating with many more daily admins than the typical
 # SMB single-tenant deployment.
 MAX_ROWS = 5000
+# Actions anyone on the internet can generate at will. They get their own
+# retention bucket and stay out of the default /admin/audit view: in one shared
+# bucket, a burst of failed logins pushed admin actions out of the 200-row view
+# at once and out of the table at the next restart.
+NOISY_ACTIONS = ("login.failure",)
+MAX_NOISY_ROWS = 5000
 
 # ----- fail2ban-friendly text log -----
 #
@@ -264,29 +270,36 @@ def record_anonymous(
             pass
 
 
-def recent_events(db: Session, limit: int = 200) -> list[AuditEvent]:
-    """Most recent ``limit`` events, newest first."""
-    return list(db.exec(
-        select(AuditEvent).order_by(AuditEvent.at.desc()).limit(limit)
-    ).all())
+def recent_events(
+    db: Session, limit: int = 200, include_noisy: bool = False
+) -> list[AuditEvent]:
+    """Most recent ``limit`` events, newest first (without NOISY_ACTIONS unless asked)."""
+    stmt = select(AuditEvent)
+    if not include_noisy:
+        stmt = stmt.where(AuditEvent.action.not_in(NOISY_ACTIONS))  # type: ignore[attr-defined]
+    return list(db.exec(stmt.order_by(AuditEvent.at.desc()).limit(limit)).all())
 
 
 def prune(db: Session) -> None:
-    """Trim the table to the most recent ``MAX_ROWS`` rows.
+    """Trim each retention bucket to its most recent rows.
 
+    NOISY_ACTIONS keep ``MAX_NOISY_ROWS``; everything else keeps ``MAX_ROWS``.
     Called from ``init_db`` on every boot. Same SELECT-then-DELETE shape
     as ``portal.health.prune_logs`` to keep the SQL portable.
     """
-    cutoff = db.exec(
-        select(AuditEvent.id).order_by(AuditEvent.id.desc()).offset(MAX_ROWS).limit(1)
-    ).first()
-    if cutoff is None:
-        return
-    try:
-        db.exec(delete(AuditEvent).where(AuditEvent.id <= cutoff))
-        db.commit()
-    except Exception:
+    noisy = AuditEvent.action.in_(NOISY_ACTIONS)  # type: ignore[attr-defined]
+    for bucket, keep in ((noisy, MAX_NOISY_ROWS), (~noisy, MAX_ROWS)):
+        cutoff = db.exec(
+            select(AuditEvent.id).where(bucket)
+            .order_by(AuditEvent.id.desc()).offset(keep).limit(1)
+        ).first()
+        if cutoff is None:
+            continue
         try:
-            db.rollback()
+            db.exec(delete(AuditEvent).where(bucket, AuditEvent.id <= cutoff))
+            db.commit()
         except Exception:
-            pass
+            try:
+                db.rollback()
+            except Exception:
+                pass

@@ -158,11 +158,10 @@ def _maybe_resolve_app(
 def _require_service(app_row: Optional[App], service: str) -> None:
     """403 if ``service`` isn't in this app's admin-approved list.
 
-    Back-compat: an app whose manifest declared NO services at all gets a
-    pass — pre-feature apps and apps that never opted in keep working. The
-    moment an app declares ``services: [...]`` in its manifest, only the
-    declared + admin-approved subset is callable; the admin can revoke
-    individual services from /admin/apps.
+    Only the declared + admin-approved subset is callable; the admin can revoke
+    individual services from /admin/apps. An app that declares no services can
+    call none — except one flagged ``services_ungated``: installed back when a
+    missing list meant "everything", it keeps that until re-uploaded with one.
 
     ``app_row`` may be None — a token client without X-Portal-App, for
     instance. In that case there's no app to gate against, so we allow.
@@ -170,8 +169,8 @@ def _require_service(app_row: Optional[App], service: str) -> None:
     if app_row is None:
         return
     declared = set(app_row.services or [])
-    if not declared:
-        return  # legacy / undeclared — no gate
+    if not declared and app_row.services_ungated:
+        return  # pre-gating app, grandfathered until its next declared upload
     allowed = set(app_row.allowed_services or [])
     if service not in allowed:
         raise HTTPException(
@@ -829,6 +828,9 @@ def email_send(
 
 MAX_OBJECT_BYTES = 10 * 1024 * 1024
 MAX_NAMESPACE_BYTES = 100 * 1024 * 1024
+# Bytes alone don't bound a namespace: empty objects cost nothing against the
+# byte quota, so an app could create files until the disk ran out of inodes.
+MAX_NAMESPACE_OBJECTS = 10_000
 KEY_RE = re.compile(r"^[A-Za-z0-9_./-]+$")
 
 
@@ -969,13 +971,24 @@ async def storage_put(
         # remotely); run them in a worker thread so a large namespace listing
         # or a slow backend can't stall the event loop. The lock above is
         # already acquired off-loop.
-        existing = storage.size(full_key) or 0
-        if storage.usage(prefix) - existing + written > MAX_NAMESPACE_BYTES:
+        objects = storage.list(prefix)
+        existing = storage.size(full_key)
+        if existing is None and len(objects) >= MAX_NAMESPACE_OBJECTS:
+            raise HTTPException(
+                507, f"storage namespace is limited to {MAX_NAMESPACE_OBJECTS} objects"
+            )
+        if sum(o.size for o in objects) - (existing or 0) + written > MAX_NAMESPACE_BYTES:
             raise HTTPException(
                 507,
                 f"storage namespace exceeds {MAX_NAMESPACE_BYTES // (1024 * 1024)}MB limit",
             )
-        storage.write(full_key, data, content_type=content_type)
+        try:
+            storage.write(full_key, data, content_type=content_type)
+        except (IsADirectoryError, NotADirectoryError, FileExistsError):
+            # Keys are paths: "a" and "a/b" can't both exist on disk.
+            raise HTTPException(
+                409, f"key {key!r} conflicts with an existing key used as a folder (or vice versa)"
+            )
 
     async with namespace_lock_async(app_row.slug, me.id):
         await anyio.to_thread.run_sync(_guarded_write)

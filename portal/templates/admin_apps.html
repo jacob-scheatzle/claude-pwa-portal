@@ -61,6 +61,9 @@
 				</form>
 				{% set declared_services = app.services or [] %}
 				{% set allowed_services = app.allowed_services or [] %}
+				{% if not declared_services and app.services_ungated %}
+				<span class="action-chip" title="Installed before undeclared apps were gated: this app can call email, PDF, and storage. Re-upload it with a services list in portal.json to restrict it.">All services (legacy)</span>
+				{% endif %}
 				{% if declared_services %}
 				<details style="display:inline-block;">
 					<summary class="action-chip">Services ({{ allowed_services|length }}/{{ declared_services|length }})</summary>

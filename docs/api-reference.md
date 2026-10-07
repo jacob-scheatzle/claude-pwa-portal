@@ -166,7 +166,7 @@ parsed JSON. If you need a specific type back, give the key a matching suffix
 
 ### `PUT /api/v1/storage/{key:path}`
 
-Stores an object. The raw request body is the value; `Content-Type` is preserved for subsequent GETs.
+Stores an object. The raw request body is the value. The request's `Content-Type` is **not** stored — a later GET infers the type from the key's extension (see above). A namespace holds at most 10,000 objects and 100 MB (`507` past either); a key that collides with another key used as a folder (`a` vs `a/b`) gets a `409`.
 
 **Header**: `X-Portal-App: <slug>`
 
@@ -265,10 +265,8 @@ storage; `pdf` renders fresh HTML server-side and stores the result.
 ```
 
 - `ttl_seconds` — link expiry. Default 7 days, max 90 days.
-- `max_views` — view cap. `0` (or omitted) means unlimited within TTL. Any
-  positive value is **clamped to 1000** (the effective maximum) before it's
-  stored, so the `max_views` echoed back in the response may be lower than
-  what you requested.
+- `max_views` — view cap. `0` (or omitted) means unlimited within TTL. The
+  maximum is **1000**; a larger value is rejected with a 422.
 - `filename` — optional, up to 80 chars; shown as the download filename.
 
 **Response**:
@@ -283,8 +281,10 @@ storage; `pdf` renders fresh HTML server-side and stores the result.
 }
 ```
 
-The `/s/<token>` URL serves with `Content-Disposition: attachment` and
-no portal cookie — links can be safely shared. View counts are atomic
+The `/s/<token>` URL needs no portal cookie, so links can be safely shared.
+Storage shares download (`Content-Disposition: attachment`,
+`application/octet-stream`); PDF shares open in the browser (`inline`,
+`application/pdf`). Links stop working when the app is disabled or deleted. View counts are atomic
 against `max_views`; concurrent hits past the cap get 404.
 
 Active shares are listed and revoked by an admin from the **Admin → Shares**
@@ -320,7 +320,7 @@ The script attaches a single global, `window.portal`, exposing:
 | `portal.storage.get(key)` | `Blob`, `string`, or parsed JSON (auto by Content-Type) |
 | `portal.storage.list()` | `{ items, usage, limit }` |
 | `portal.storage.delete(key)` | `{ deleted }` |
-| `portal.share.create({ kind, key?, html?, filename?, ttl_seconds?, max_views? })` | `{ token, url, expires_at, kind, max_views }` |
+| `portal.share.create({ kind, key?, html?, filename?, ttlSeconds?, maxViews? })` | `{ token, url, expires_at, kind, max_views }` |
 | `portal.appSlug` | string or `null` — auto-detected from URL |
 
 All methods are async (return Promises). On HTTP failure they throw an `Error` with `.status` (HTTP code) and `.detail` (server-provided message) populated.
@@ -345,7 +345,7 @@ All methods are async (return Promises). On HTTP failure they throw an `Error` w
 | App bundle uncompressed | 100 MB |
 | Files per app bundle | 1,000 |
 | Storage object | 10 MB |
-| Storage namespace | 100 MB per `(app, user)` |
+| Storage namespace | 100 MB and 10,000 objects per `(app, user)` |
 | Email subject | 200 chars, single line |
 | Email recipients | 20 per message; 100 per user per rolling hour |
 | Request body | 1 MB by default; 5 MB for PDF / email / share; 11 MB for storage PUT; 80 MB for app uploads |

@@ -2,6 +2,7 @@
 
 Usage:
     python -m portal.cli reset-password <email>
+    python -m portal.cli promote <email>
     python -m portal.cli list-users
 """
 import argparse
@@ -41,6 +42,21 @@ def reset_password(email: str) -> int:
         return 0
 
 
+def promote(email: str) -> int:
+    """Make ``email`` an admin — the way back in if no admin account is left."""
+    init_db()
+    with Session(engine) as db:
+        user = db.exec(select(User).where(User.email == email.lower())).first()
+        if user is None:
+            print(f"No user found with email {email}", file=sys.stderr)
+            return 1
+        user.role = "admin"
+        db.add(user)
+        db.commit()
+        print(f"{user.email} is now an admin")
+        return 0
+
+
 def list_users() -> int:
     init_db()
     with Session(engine) as db:
@@ -58,11 +74,15 @@ def main() -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
     p_reset = sub.add_parser("reset-password", help="Reset a user's password")
     p_reset.add_argument("email")
+    p_promote = sub.add_parser("promote", help="Make a user an admin")
+    p_promote.add_argument("email")
     sub.add_parser("list-users", help="List all users")
 
     args = parser.parse_args()
     if args.cmd == "reset-password":
         return reset_password(args.email)
+    if args.cmd == "promote":
+        return promote(args.email)
     if args.cmd == "list-users":
         return list_users()
     return 2

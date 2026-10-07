@@ -256,9 +256,11 @@ bundle). The admin can later revoke any service per-app under `/admin/apps`
 across re-uploads of the same slug — an updated bundle can't silently
 re-enable a service an admin turned off.
 
-**Back-compat**: an app that declares NO `services` at all is treated as
-legacy and not gated. The moment you add even one entry, the gate
-activates and only the declared + admin-approved subset is callable.
+**No `services` means no services**: an app that declares none (or `[]`)
+gets a 403 from `portal.pdf`, `portal.email`, and `portal.storage`.
+(`portal.user.current()` and public `forms` need no service.) Only apps
+installed before this rule — shown as "All services (legacy)" on the admin
+page — still get everything, until they're re-uploaded with a list.
 
 **Authoring rule**: list every service your `index.html` touches. If you
 add a `portal.pdf` call later, bump the manifest first.
@@ -606,7 +608,7 @@ const shareA = await portal.share.create({
   key: "receipts/123.pdf",       // must exist in this user's storage
   filename: "receipt.pdf",       // shown on download
   ttlSeconds: 7 * 24 * 3600,     // 7 days default; 90d cap
-  maxViews: 0,                   // 0 = unlimited; cap at 10000
+  maxViews: 0,                   // 0 = unlimited; max 1000
 });
 // → { token, url: "https://<site>/s/<token>", expires_at, kind, max_views }
 

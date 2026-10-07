@@ -72,6 +72,17 @@ class App(SQLModel, table=True):
     # everything the manifest declared (the admin uploaded it); revocations
     # made through the admin UI persist across re-uploads of the same slug.
     allowed_origins: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    # Origins / services an admin turned off. Kept apart from the lists above
+    # because a revocation has to outlive the manifest that asked: if v2 of an
+    # app stops requesting an origin and v3 asks again, the admin's "no" still
+    # stands. Replace auto-approves only what's newly declared AND not in here.
+    revoked_origins: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    revoked_services: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    # True only for apps installed before service gating covered undeclared
+    # apps: their manifests declared no ``services`` and they were allowed
+    # every service, so they keep that until a re-upload declares a list.
+    # Every other app with no declared services can call none.
+    services_ungated: bool = Field(default=False)
     # Phase 2: declarative MCP tools this app exposes. Each entry is a tool
     # declaration (name, description, params, render template, deliver action),
     # validated by ``portal.apps.PortalAppManifest`` at upload. The portal

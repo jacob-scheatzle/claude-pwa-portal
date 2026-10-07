@@ -227,13 +227,15 @@ async def form_submit_sub(form_name: str, request: Request, db: DbDep):
 def form_page_portal(slug: str, form_name: str, request: Request, db: DbDep):
     if getattr(request.state, "app_slug", None):
         raise HTTPException(404)  # two-segment URLs don't apply on a subdomain
-    if not settings.child_apps_same_origin:
-        # Subdomain mode: the form lives on the app's own origin. Redirect any
-        # portal-origin link to the canonical subdomain URL.
-        return RedirectResponse(public_form_url(slug, form_name, request), status_code=307)
+    # Resolve the form first: the slug goes into the redirect's hostname, so an
+    # unchecked one (``evil.example%23``) made this an open redirect.
     app_row, decl = _load(db, slug, form_name)
     if app_row is None or decl is None:
         raise HTTPException(404)
+    if not settings.child_apps_same_origin:
+        # Subdomain mode: the form lives on the app's own origin. Redirect any
+        # portal-origin link to the canonical subdomain URL.
+        return RedirectResponse(public_form_url(app_row.slug, form_name, request), status_code=307)
     return _render_form(request, app_row, decl, slug, form_name)
 
 

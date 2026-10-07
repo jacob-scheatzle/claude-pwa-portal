@@ -467,6 +467,16 @@ def prune_oauth(db: Session) -> None:
     cutoff = _utcnow().replace(tzinfo=None)
     client_cutoff = (_utcnow() - timedelta(days=7)).replace(tzinfo=None)
     try:
+        # Encrypt any client secret still stored in plaintext — admin-created
+        # clients were written that way before they went through
+        # _encrypt_client_secret.
+        for client in db.exec(select(OAuthClient)).all():
+            info = dict(client.client_info or {})
+            secret = info.get("client_secret")
+            if secret and not secret.startswith(_SECRET_ENC_PREFIX):
+                info["client_secret"] = _encrypt_client_secret(secret)
+                client.client_info = info
+                db.add(client)
         db.exec(delete(OAuthPendingAuthorization).where(OAuthPendingAuthorization.expires_at < cutoff))
         db.exec(delete(OAuthCode).where(OAuthCode.expires_at < cutoff))
         # Drop tokens whose refresh window has fully lapsed (access already dead).

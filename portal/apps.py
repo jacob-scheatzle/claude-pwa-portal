@@ -7,7 +7,9 @@ import re
 import secrets
 import shutil
 import tempfile
+import unicodedata
 import zipfile
+import zlib
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -563,7 +565,9 @@ def _validate_zip(path: Path) -> None:
             if mode == 0o120000:
                 # POSIX-created symlink entry.
                 raise UploadError(f"Symlink not allowed: {name}")
-            norm = os.path.normpath(name).lower()
+            # NFC as well: macOS filesystems treat composed and decomposed forms
+            # of the same accented name as one file.
+            norm = unicodedata.normalize("NFC", os.path.normpath(name)).lower()
             if norm in seen:
                 raise UploadError(f"Duplicate entry in zip: {name}")
             seen.add(norm)
@@ -576,6 +580,12 @@ def _validate_zip(path: Path) -> None:
                 ratio = info.file_size / info.compress_size
                 if ratio > MAX_COMPRESS_RATIO:
                     raise UploadError(f"Suspicious compression ratio in {name}")
+        # A name can't be both a file and a folder (``a`` plus ``a/b``): one of
+        # them can't be extracted.
+        folders = {str(parent).lower() for n in seen for parent in Path(n).parents if str(parent) != "."}
+        clash = sorted(seen & folders)
+        if clash:
+            raise UploadError(f"Entry is both a file and a folder in zip: {clash[0]}")
 
 
 def _read_manifest(zip_path: Path) -> PortalAppManifest:
@@ -635,8 +645,16 @@ def _prepare_bundle(tmp_path: Path) -> PortalAppManifest:
 
 
 def _extract_into(tmp_path: Path, dest: Path) -> None:
-    """Blocking extraction (run via to_thread)."""
-    _safe_extract(tmp_path, dest)
+    """Blocking extraction (run via to_thread).
+
+    Validation reads only the zip's directory; a corrupt member (bad CRC,
+    truncated data) only surfaces here, so report it as an upload error
+    rather than a 500.
+    """
+    try:
+        _safe_extract(tmp_path, dest)
+    except (OSError, EOFError, zipfile.BadZipFile, zlib.error) as e:
+        raise UploadError(f"The zip couldn't be extracted (corrupt or inconsistent): {e}")
 
 
 def _build_bundle_zip(slug: str, version: str) -> tuple[Optional[Path], Optional[Path]]:
@@ -757,7 +775,29 @@ async def install_bundle(
     )
 
 
+# Installs run one at a time. Two concurrent first uploads of the same slug
+# both passed the "no row yet" check and copied files; the loser's cleanup then
+# deleted the winner's bundle, leaving an app with no files. Installs are rare
+# admin actions, so one lock (single-process portal) is the simple, safe fix.
+_install_lock = anyio.Lock()
+
+
 async def install_bundle_from_path(
+    db: Session,
+    uploader: User,
+    tmp_path: Path,
+    *,
+    allow_replace: bool = False,
+    expected_slug: Optional[str] = None,
+) -> InstallResult:
+    """Validate + extract + register a zip already at ``tmp_path``, one at a time."""
+    async with _install_lock:
+        return await _install_bundle_from_path(
+            db, uploader, tmp_path, allow_replace=allow_replace, expected_slug=expected_slug,
+        )
+
+
+async def _install_bundle_from_path(
     db: Session,
     uploader: User,
     tmp_path: Path,
@@ -866,26 +906,25 @@ async def install_bundle_from_path(
         # ``storage/<slug>/`` is a separate prefix and is left untouched.
         await anyio.to_thread.run_sync(storage.replace_tree, bundle_prefix, extract_dir)
 
-        # On replace, preserve any origins the admin explicitly revoked
-        # (present in the previous requested list but absent from
-        # allowed_origins) so an in-place update of the same slug doesn't
-        # silently re-grant network access the admin deliberately turned off.
-        # Newly-declared origins are auto-approved on the same logic as
-        # fresh installs.
+        # On replace, everything the new manifest declares is auto-approved
+        # (the admin is uploading it) EXCEPT what the admin has revoked —
+        # ``revoked_*`` remembers that even across versions that stopped
+        # asking. Origins the admin added by hand (allowed but never requested)
+        # are kept too.
         new_requested = list(manifest.permissions.network)
-        prev_requested = list(existing.requested_origins or [])
-        prev_allowed = set(existing.allowed_origins or [])
-        revoked = set(prev_requested) - prev_allowed
-        new_allowed = [o for o in new_requested if o not in revoked]
-        # Same preserve-revocations logic for service scopes: any service the
-        # admin had explicitly turned off (declared previously but absent
-        # from allowed_services) stays off after the replace. Services newly
-        # declared in this upload are auto-approved.
+        revoked_origins = set(existing.revoked_origins or [])
+        admin_extras = [
+            o for o in (existing.allowed_origins or [])
+            if o not in set(existing.requested_origins or [])
+        ]
+        new_allowed = [o for o in new_requested if o not in revoked_origins]
+        new_allowed += [o for o in admin_extras if o not in new_allowed]
         new_services = list(manifest.services)
-        prev_services_declared = list(existing.services or [])
-        prev_services_allowed = set(existing.allowed_services or [])
-        services_revoked = set(prev_services_declared) - prev_services_allowed
-        new_allowed_services = [s for s in new_services if s not in services_revoked]
+        revoked_services = set(existing.revoked_services or [])
+        new_allowed_services = [s for s in new_services if s not in revoked_services]
+        # A grandfathered ungated app stays that way only while it still
+        # declares nothing; the first upload with a services list gates it.
+        existing.services_ungated = bool(existing.services_ungated) and not new_services
         existing.name = manifest.name
         existing.description = manifest.description
         existing.version = manifest.version
@@ -1322,6 +1361,12 @@ def admin_apps_network_update(
         new_allowed.append(o)
 
     app_row.allowed_origins = new_allowed
+    # An unchecked requested origin is a revocation that must survive future
+    # replaces; a checked one clears it. Revocations of origins the current
+    # manifest no longer requests are left as they were.
+    app_row.revoked_origins = sorted(
+        (set(app_row.revoked_origins or []) - requested) | (requested - set(checked))
+    )
     db.add(app_row)
     db.commit()
     record_event(
@@ -1366,6 +1411,11 @@ def admin_apps_services_update(
         seen.add(s)
         final.append(s)
     app_row.allowed_services = final
+    # Same bookkeeping as origins: unchecked declared services are revocations
+    # that outlive the manifest; checked ones clear any earlier revocation.
+    app_row.revoked_services = sorted(
+        (set(app_row.revoked_services or []) - declared) | (declared - set(final))
+    )
     db.add(app_row)
     db.commit()
     record_event(
@@ -1886,13 +1936,17 @@ def _launch_bootstrap_html(request: Request, slug: str) -> Response:
     # recovers via the launcher chrome's ← Apps link. Keep this call so the
     # validate-launcher-url-format invariant is exercised on every hit.
     _launcher_url(request, slug)
+    # A csp_strict app's subdomain gets a nonce-only CSP even on this page, so
+    # the inline style/script must carry the nonce or the exchange never runs.
+    nonce = getattr(request.state, "csp_nonce", None)
+    nonce_attr = f' nonce="{nonce}"' if nonce else ""
 
     html = f"""<!doctype html>
 <html lang=\"en\">
 <head>
 <meta charset=\"utf-8\">
 <title>Loading…</title>
-<style>
+<style{nonce_attr}>
 body {{
   font-family: -apple-system, BlinkMacSystemFont, \"Inter\", \"Segoe UI\",
     Roboto, sans-serif;
@@ -1916,7 +1970,7 @@ body {{
   Couldn’t start the app. Use the <strong>← Apps</strong> link above
   to return to the dashboard and try again.
 </p>
-<script>
+<script{nonce_attr}>
 (function () {{
   function fail() {{
     var msg = document.getElementById(\"msg\");

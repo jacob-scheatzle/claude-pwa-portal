@@ -265,8 +265,11 @@
 					key: opts.key,
 					html: opts.html,
 					filename: opts.filename,
-					ttl_seconds: opts.ttlSeconds,
-					max_views: opts.maxViews,
+					// camelCase is canonical; the snake_case spellings are accepted
+					// too because the API reference once listed them, and dropping
+					// them silently turned "one view" links into unlimited ones.
+					ttl_seconds: opts.ttlSeconds != null ? opts.ttlSeconds : opts.ttl_seconds,
+					max_views: opts.maxViews != null ? opts.maxViews : opts.max_views,
 				};
 				var res = await call("/share/create", {
 					method: "POST",

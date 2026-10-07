@@ -611,6 +611,16 @@ def setup_submit(
     csrf: Annotated[str, Form(alias="_csrf")] = "",
 ):
     check_csrf(request, csrf)
+    with _setup_lock:
+        return _complete_setup(request, db, email, password, password_confirm, site_url)
+
+
+# Serializes first-run setup: two submissions racing the "no admin yet" check
+# would otherwise both create an admin (single-process portal).
+_setup_lock = threading.Lock()
+
+
+def _complete_setup(request, db, email, password, password_confirm, site_url):
     if admin_exists(db):
         return RedirectResponse("/", status_code=303)
 
@@ -869,6 +879,12 @@ def share_view(token: str, db: DbDep):
     if row is None:
         raise HTTPException(404)
 
+    # A disabled app's links go dark with it, whatever their kind — the admin
+    # switched the app off, and its outputs shouldn't keep circulating.
+    app_row = db.get(_App, row.app_id)
+    if app_row is None or not app_row.enabled:
+        raise HTTPException(404)
+
     safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", row.filename or "shared") or "shared"
     storage = get_storage()
 
@@ -901,9 +917,6 @@ def share_view(token: str, db: DbDep):
         # creator's access to the app doesn't break the link — that's
         # arguably right (the link is independent capability) but a
         # design choice worth being explicit about.
-        app_row = db.get(_App, row.app_id)
-        if app_row is None or not app_row.enabled:
-            raise HTTPException(404)
         key = (row.payload or {}).get("key") or ""
         if not key:
             raise HTTPException(404)

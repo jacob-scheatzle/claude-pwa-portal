@@ -392,6 +392,31 @@ Usage:
 
 # ----- serialization helpers -----
 
+def _bool_arg(args: dict, name: str, default: bool = False) -> bool:
+    """Read a boolean tool argument strictly.
+
+    Input-schema validation is off (``call_tool`` is registered with
+    ``validate_input=False`` so a stale cached schema can't reject valid args),
+    and model clients sometimes send ``"false"`` as a string — which ``bool()``
+    reads as True: ``create_app`` replaced an app it was told not to, and
+    ``set_app_enabled(enabled="false")`` enabled one.
+    """
+    value = args.get(name, default)
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in ("true", "1", "yes", "on"):
+            return True
+        if text in ("false", "0", "no", "off", ""):
+            return False
+    raise ValueError(f"'{name}' must be true or false")
+
+
 def _app_summary(a: App) -> dict:
     return {
         "slug": a.slug,
@@ -852,7 +877,7 @@ def build_mcp_app():
             try:
                 result = await install_bundle_from_path(
                     db, user, tmp_path,
-                    allow_replace=bool(args.get("replace", False)),
+                    allow_replace=_bool_arg(args, "replace"),
                     expected_slug=None,
                 )
             except UploadError as e:
@@ -885,7 +910,7 @@ def build_mcp_app():
             try:
                 result = await install_bundle_from_path(
                     db, user, tmp_path,
-                    allow_replace=bool(args.get("replace", False)),
+                    allow_replace=_bool_arg(args, "replace"),
                     expected_slug=None,
                 )
             except UploadError as e:
@@ -904,7 +929,7 @@ def build_mcp_app():
     def _do_set_enabled(args: dict) -> dict:
         ident = _ctx_user()
         slug = args.get("slug")
-        enabled = bool(args.get("enabled"))
+        enabled = _bool_arg(args, "enabled")
         with Session(engine) as db:
             app = db.exec(select(App).where(App.slug == slug)).first()
             if app is None:
@@ -1010,7 +1035,7 @@ def build_mcp_app():
     def _do_set_schedule_enabled(args: dict) -> dict:
         ident = _ctx_user()
         sid = args.get("id")
-        enabled = bool(args.get("enabled"))
+        enabled = _bool_arg(args, "enabled")
         with Session(engine) as db:
             sched = db.get(ScheduledRun, sid)
             if sched is None:

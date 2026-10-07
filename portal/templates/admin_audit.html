@@ -5,9 +5,17 @@
 <h1>Audit log</h1>
 <p class="hint">
 	Append-only record of every state-changing action and every login attempt.
-	Pruned to the most recent {{ events|length }} rows shown; the table itself
-	is capped at 5000 rows by an opportunistic cleanup on each restart.
+	Showing the most recent {{ events|length }} rows. Failed logins are kept
+	separately (5000 each, trimmed on restart) so a flood of them can't push
+	admin actions out of view.
 	Useful for "what did the contractor admin actually do?" after the fact.
+</p>
+<p>
+	{% if failed_logins %}
+	<a href="/admin/audit">Hide failed logins</a>
+	{% else %}
+	<a href="/admin/audit?failed_logins=1">Include failed logins</a>
+	{% endif %}
 </p>
 
 {% if events %}
