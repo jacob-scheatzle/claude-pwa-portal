@@ -29,6 +29,7 @@ from portal.db import engine
 from portal.models import (
     ApiToken,
     App,
+    AppLaunchToken,
     AppSession,
     OAuthToken,
     ScheduledRun,
@@ -75,11 +76,21 @@ victim_id = h.add_user("victim@example.com", "admin")
 stolen = portal_client("victim@example.com")
 stolen_app = h.open_app("notes", victim_id)
 grant_oauth(victim_id)
+planted_token = h.api_token_headers(victim_id)  # minted with the stolen account
+with Session(engine) as db:
+    now = datetime.now(timezone.utc)
+    db.add(AppLaunchToken(token="pending-launch", user_id=victim_id, slug="notes",
+                          created_at=now, expires_at=now + timedelta(seconds=60)))
+    db.commit()
 h.check("stolen session works before", stolen.get("/profile").status_code, 200)
 admin_post(f"/admin/users/{victim_id}/reset-password", password="Brand-new-pass-1")
 h.check("stolen portal session is dead", stolen.get("/profile", follow_redirects=False).status_code != 200, True)
 h.check("stolen app session is dead", stolen_app.get("/api/v1/user/me").status_code, 401)
 h.check("OAuth grants are gone", oauth_count(victim_id), 0)
+h.check("an API token minted with the account is dead",
+        client.get("/api/v1/user/me", headers=planted_token).status_code, 401)
+r = h.app_host_client("notes").post("/api/v1/session/exchange", json={"token": "pending-launch"})
+h.check("an unexchanged launch token can't mint a new app session", r.status_code, 401)
 
 print("--- so does a CLI reset ---")
 cli_id = h.add_user("cli@example.com")
@@ -89,6 +100,24 @@ getpass.getpass = lambda prompt="": "Another-new-pass-2"
 h.check("cli reset-password exits 0", cli.reset_password("cli@example.com"), 0)
 h.check("existing session is dead", cli_session.get("/profile", follow_redirects=False).status_code != 200, True)
 h.check("OAuth grants are gone", oauth_count(cli_id), 0)
+
+print("--- a self-service password change ends other sessions and grants ---")
+self_id = h.add_user("self@example.com", "admin")
+other_device = portal_client("self@example.com")
+here = portal_client("self@example.com")
+grant_oauth(self_id)
+own_token = h.api_token_headers(self_id)
+page = here.get("/profile")
+csrf = re.search(r'name="_csrf" value="([^"]+)"', page.text).group(1)
+here.post("/profile/change-password", data={
+    "_csrf": csrf, "old_password": h.PASSWORD,
+    "new_password": "Changed-pass-3", "new_password_confirm": "Changed-pass-3"})
+h.check("this browser stays signed in", here.get("/profile").status_code, 200)
+h.check("the other device is signed out",
+        other_device.get("/profile", follow_redirects=False).status_code != 200, True)
+h.check("OAuth grants are gone", oauth_count(self_id), 0)
+h.check("the user's own API token is kept",
+        client.get("/api/v1/user/me", headers=own_token).status_code, 200)
 
 print("--- demotion takes away admin-only credentials ---")
 demoted_id = h.add_user("demoted@example.com", "admin")

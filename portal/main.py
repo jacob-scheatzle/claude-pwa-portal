@@ -51,8 +51,8 @@ from portal.security import (
 from portal.sessions import (
     create_session,
     revoke_all_app_sessions_for_user,
-    revoke_all_for_user,
     revoke_session,
+    sign_out_everywhere,
 )
 from portal.settings_store import get_setting, set_setting
 from portal.web import STATIC_DIR, flash, render
@@ -819,14 +819,13 @@ def profile_change_password(
     user.password_hash = hash_password(new_password)
     db.add(user)
     db.commit()
-    # Rotate the session after a successful password change: revoke every
-    # active portal session AND every open child-app session for this user
-    # (logging out other devices that may have been hijacked under the old
-    # password) and mint a fresh portal session for the current browser so
-    # the user stays signed in here. Child-app sessions can be re-minted by
-    # re-launching from the dashboard.
-    revoke_all_for_user(db, user.id)
-    revoke_all_app_sessions_for_user(db, user.id)
+    # Rotate the session after a successful password change: end every portal
+    # session, child-app session, pending launch token, and MCP OAuth grant
+    # for this user (logging out other devices that may have been hijacked
+    # under the old password), then mint a fresh portal session for the
+    # current browser so the user stays signed in here. Child-app sessions can
+    # be re-minted by re-launching from the dashboard.
+    sign_out_everywhere(db, user.id, keep_api_tokens=True)
     new_sid = create_session(db, user)
     request.session.clear()
     request.session["session_id"] = new_sid

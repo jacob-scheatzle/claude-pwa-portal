@@ -271,19 +271,24 @@ def touch_app_session(db: Session, session: AppSession) -> None:
 # ----- Revocation on admin action -----
 
 
-def sign_out_everywhere(db: Session, user_id: int) -> None:
-    """End every session and OAuth grant ``user_id`` holds.
+def sign_out_everywhere(db: Session, user_id: int, *, keep_api_tokens: bool = False) -> None:
+    """End every session and grant ``user_id`` holds.
 
-    Called when an admin (or the CLI) resets someone's password — the usual
-    reason is a compromised account, so an attacker's live portal session, open
-    child-app sessions, and connected MCP clients all have to go, not just the
-    password. API tokens are kept: they're deliberate admin-issued credentials,
-    listed and revocable at Admin → API tokens.
+    Portal sessions, child-app sessions, unexchanged launch tokens (each can
+    still mint an app session for up to a minute), and MCP OAuth grants. API
+    tokens go too unless ``keep_api_tokens``: when an admin or the CLI resets a
+    password the account may be compromised, and a token minted through it
+    would otherwise outlive the reset meant to lock the attacker out. The
+    self-service password change keeps them — the user is acting deliberately
+    and an admin can revoke tokens at Admin → API tokens.
     """
     revoke_all_for_user(db, user_id)
     revoke_all_app_sessions_for_user(db, user_id)
+    db.exec(delete(AppLaunchToken).where(AppLaunchToken.user_id == user_id))
     db.exec(delete(OAuthToken).where(OAuthToken.user_id == user_id))
     db.exec(delete(OAuthCode).where(OAuthCode.user_id == user_id))
+    if not keep_api_tokens:
+        db.exec(delete(ApiToken).where(ApiToken.created_by == user_id))
     db.commit()
 
 
